@@ -1,0 +1,27 @@
+{
+  "i2c_bus": 1,
+  "mpu6050_address": 104,
+  "gps_serial_port": "/dev/ttyAMA0",
+  "gps_baud_rate": 9600,
+  "process_noise": {
+    "position": 0.1,
+    "velocity": 0.1,
+    "heading": 0.01,
+    "heading_rate": 0.01
+  },
+  "measurement_noise": {
+    "gps_position": 5.0,
+    "imu_accel": 0.1,
+    "imu_gyro": 0.01
+  },
+  "enable_logging": true,
+  "log_file": "dr_vehicle.log",
+  "log_level": "INFO",
+  "output_rate_hz": 1.0,
+  "enable_web_interface": false,
+  "web_port": 8080,
+  "auto_calibrate_imu": true,
+  "calibration_duration_s": 5,
+  "save_calibration": true,
+  "calibration_file": "imu_calibration.json"
+}
