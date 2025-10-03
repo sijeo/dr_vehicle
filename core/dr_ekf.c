@@ -183,6 +183,15 @@ static void dr_ekf_init_covariance(dr_ekf_t* ekf)
     float PHt[DR_STATE_ERR_DIM * 3];
     float K[DR_STATE_ERR_DIM * 3]; // Kalman Gain
     float dx[DR_STATE_ERR_DIM] = {0}; // error state
+    float I15[DR_STATE_ERR_DIM * DR_STATE_ERR_DIM] = { 0 };
+    float KH[DR_STATE_ERR_DIM * DR_STATE_ERR_DIM];
+    float I_KH[DR_STATE_ERR_DIM * DR_STATE_ERR_DIM];
+    float tmp[DR_STATE_ERR_DIM * DR_STATE_ERR_DIM];
+    float I_KH_T[DR_STATE_ERR_DIM * DR_STATE_ERR_DIM];
+    float Pnew[DR_STATE_ERR_DIM * DR_STATE_ERR_DIM];
+    float KR[DR_STATE_ERR_DIM * 3];
+    float KT[3 * DR_STATE_ERR_DIM];
+    float KRT[DR_STATE_ERR_DIM * DR_STATE_ERR_DIM];
     dr_quatf_t dq;
     int i;
 
@@ -220,7 +229,26 @@ static void dr_ekf_init_covariance(dr_ekf_t* ekf)
     }
     dq = dr_q_from_rotvec(dr_v3(dx[6], dx[7], dx[8]));
     ekf->x.q = dr_q_normalize(dr_q_mult(ekf->x.q, dq));
+    for( i = 0; i < 3; i++) ekf->x.bg[i] += dx[i + 9];
+    for( i = 0; i < 3; i++) ekf->x.ba[i] += dx[i + 12];
 
+    /* Joseph-stable covariance update */
+    dr_mat_set_identity(I15, DR_STATE_ERR_DIM);
+    dr_mat_mul(KH, K, H, DR_STATE_ERR_DIM, 3, DR_STATE_ERR_DIM);
+    for( i = 0; i < DR_STATE_ERR_DIM * DR_STATE_ERR_DIM; i++ ) {
+        I_KH[i] = I15[i] - KH[i];
+    }
+    dr_mat_mul(tmp, I_KH, ekf->P, DR_STATE_ERR_DIM, DR_STATE_ERR_DIM, DR_STATE_ERR_DIM);
+    dr_mat_transpose(I_KH_T, I_KH, DR_STATE_ERR_DIM, DR_STATE_ERR_DIM);
+    dr_mat_mul(Pnew, tmp, I_KH_T, DR_STATE_ERR_DIM, DR_STATE_ERR_DIM, DR_STATE_ERR_DIM);
+    dr_mat_mul(KR, K, Rpos, DR_STATE_ERR_DIM, 3, 3);
+    dr_mat_transpose(KT, K, DR_STATE_ERR_DIM, 3);
+    dr_mat_mul(KRT, KR, KT, DR_STATE_ERR_DIM, 3, DR_STATE_ERR_DIM);
+    for( i = 0; i < DR_STATE_ERR_DIM * DR_STATE_ERR_DIM; i++ ) {
+        ekf->P[i] = Pnew[i] + KRT[i];
+    }
+    return 0;
+    
  }
 
 
