@@ -306,7 +306,7 @@ void dr_mat_transpose( float *AT, const float *A, int rows, int cols )
 int dr_mat3_inv(float inv[9], const float M[9])
 {
     float A[9]; // copy of M
-    int i;
+    int i, r, c;
     float I[9] = {1,0,0, 0,1,0, 0,0,1}; // identity
     int piv;
     float amax, v, invp;
@@ -323,6 +323,7 @@ int dr_mat3_inv(float inv[9], const float M[9])
                 piv = r;
                 amax = v;
             }
+        }
             if( amax < 1e-12f ) {
                 return -1; // singular
             }
