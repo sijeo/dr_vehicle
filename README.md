@@ -24,6 +24,9 @@ $\delta \mathbf{x}=[\delta\mathbf{r},\delta\mathbf{v},\delta\boldsymbol{\theta},
 where $\delta\boldsymbol{\theta}\in\mathbb{R}^3$ is the small-angle attitude error.
 
 ### 1) Continuous-time nominal model
+```latex
+### 1) Continuous-time nominal model
+
 \[
 \dot{\mathbf{r}}=\mathbf{v},\qquad
 \dot{\mathbf{v}}=R(\mathbf{q})\,\mathbf{a}+\mathbf{g},\qquad
@@ -35,6 +38,7 @@ where $\delta\boldsymbol{\theta}\in\mathbb{R}^3$ is the small-angle attitude err
 \]
 
 ### 2) Discrete nominal propagation (IMU period $\Delta t$)
+
 \[
 \delta\boldsymbol{\theta}=\boldsymbol{\omega}\,\Delta t,\quad
 \delta\mathbf{q}=\begin{bmatrix}\cos(\frac{\|\delta\boldsymbol{\theta}\|}{2})\\ \hat{\delta\boldsymbol{\theta}}\sin(\frac{\|\delta\boldsymbol{\theta}\|}{2})\end{bmatrix},\quad
@@ -50,6 +54,7 @@ where $\delta\boldsymbol{\theta}\in\mathbb{R}^3$ is the small-angle attitude err
 \]
 
 ### 3) Continuous-time error-state model
+
 Using $S(\cdot)$ as the skew operator ($S(\mathbf{x})\,\mathbf{y}=\mathbf{x}\times\mathbf{y}$),
 \[
 \begin{aligned}
@@ -63,6 +68,7 @@ Using $S(\cdot)$ as the skew operator ($S(\mathbf{x})\,\mathbf{y}=\mathbf{x}\tim
 Compactly, $\dot{\delta\mathbf{x}} = F_c\,\delta\mathbf{x} + G_c\,\mathbf{n}$.
 
 ### 4) Discrete covariance propagation
+
 First-order discretization:
 \[
 \Phi_k \approx I + F_c\,\Delta t,\qquad
@@ -73,12 +79,14 @@ P_{k+1}^- = \Phi_k\,P_k^+\,\Phi_k^\top + Q_k.
 \]
 
 ### 5) Measurements (examples) and Jacobians
+
 - GPS position: $h(\cdot)=\mathbf{r}$, hence $H=[I\ 0\ 0\ 0\ 0]$.
 - GPS velocity: $h(\cdot)=\mathbf{v}$, hence $H=[0\ I\ 0\ 0\ 0]$.
 - Barometer: $h(\cdot)=r_z$, pick row from position block.
 - Magnetometer: $h(\cdot)=R(\mathbf{q})^\top \mathbf{m}_w$, linearize wrt $\delta\boldsymbol{\theta}$.
 
 ### 6) Measurement update (error-state)
+
 \[
 S_k = H_k P_k^- H_k^\top + R_k,\qquad
 K_k = P_k^- H_k^\top S_k^{-1},\qquad
@@ -98,4 +106,4 @@ P_k^+ = (I - K_k H_k) P_k^-.
 \mathbf{b}_a\leftarrow \mathbf{b}_a+\delta\mathbf{b}_a,
 \]
 then reset $\delta\mathbf{x}\!=\!\mathbf{0}$.
-
+```
