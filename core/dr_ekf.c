@@ -72,7 +72,7 @@ static void dr_ekf_init_covariance(dr_ekf_t* ekf)
     float Rwb[9]; // Rotation body to world
     float accx[9]; // Skew symmetric acc
     float omegax[9]; // Skew symmetric omega
-    float Raccx[9]; // Rwb * accx
+    float Raccx[9] = {0}; // Rwb * accx
     float Qc[12 * 12] = { 0 };
     float sg2, sa2, sbg2, sba2;
     int r, c;
