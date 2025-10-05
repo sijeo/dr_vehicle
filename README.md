@@ -22,7 +22,6 @@ $\mathbf{a} = \mathbf{a}_m - \mathbf{b}_a$.
 $\delta \mathbf{x} = [\delta\mathbf{r},\ \delta\mathbf{v},\ \delta\boldsymbol{\theta},\ \delta\mathbf{b}_g,\ \delta\mathbf{b}_a]$  
 where $\delta\boldsymbol{\theta} \in \mathbb{R}^3$ is the small-angle attitude error.
 
----
 
 ## Continuous-Time Nominal Model
 
@@ -33,8 +32,6 @@ $\begin{aligned}
 \dot{\mathbf{b}_{g}} &= \mathbf{n}_{wg} \\
 \dot{\mathbf{b}_{a}} &= \mathbf{n}_{wa}
 \end{aligned}$
-
----
 
 ## Discrete Nominal Propagation (IMU period $\Delta t$)
 
