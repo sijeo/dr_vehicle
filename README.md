@@ -1,6 +1,7 @@
 # dr_vehicle
 Dead Reackoning... 
-$$  ## 3D Quaternion EKF (Error-State) — Overview
+$$ 
+ ## 3D Quaternion EKF (Error-State) — Overview
 
 **Frames.**
 World/navigation frame $\mathcal{W}$ (ENU), body frame $\mathcal{B}$.
