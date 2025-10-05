@@ -9,7 +9,7 @@ World/navigation frame $\mathcal{W}$ (ENU), body frame $\mathcal{B}$.
 **Nominal state.**
 $\mathbf{r}\in\mathbb{R}^3$ (pos, ENU), $\mathbf{v}\in\mathbb{R}^3$ (vel, ENU),
 $\mathbf{q}\in\mathbb{H}$ (unit quaternion, world $\to$ body),
-$\mathbf{b}_g,\in\mathbf{b}_a\in\mathbb{R}^3$ (gyro/accel biases).
+$\mathbf{b}_g,\ \mathbf{b}_a\in\mathbb{R}^3$ (gyro/accel biases).
 \[
 $x_{\text{nom}}=[\mathbf{r},\mathbf{v},\mathbf{q},\mathbf{b}_g,\mathbf{b}_a]$
 \]
