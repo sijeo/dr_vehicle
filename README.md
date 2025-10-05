@@ -25,12 +25,14 @@ where $\delta\boldsymbol{\theta} \in \mathbb{R}^3$ is the small-angle attitude e
 
 ## Continuous-Time Nominal Model
 
+$$
+\dot{\mathbf{r}} = \mathbf{v} \\
+\dot{\mathbf{v}} = R(\mathbf{q})\,\mathbf{a} + \mathbf{g} \\
+\dot{\mathbf{q}} = \tfrac{1}{2}\,\Omega(\boldsymbol{\omega})\,\mathbf{q},\quad |\mathbf{q}| = 1 \\
+\dot{\mathbf{b}}_{g} = \mathbf{n}_{wg} \\
+\dot{\mathbf{b}}_{a} = \mathbf{n}_{wa}
+$$
 
-$\dot{\mathbf{r}} &= \mathbf{v} \\
-\dot{\mathbf{v}} &= R(\mathbf{q})\,\mathbf{a} + \mathbf{g} \\
-\dot{\mathbf{q}} &= \frac{1}{2}\,\Omega(\boldsymbol{\omega})\,\mathbf{q},\quad \|\mathbf{q}\| = 1 \\
-\dot{\mathbf{b}_{g}} &= \mathbf{n}_{wg} \\
-\dot{\mathbf{b}_{a}} &= \mathbf{n}_{wa}$
 
 ## Discrete Nominal Propagation (IMU period $\Delta t$)
 
