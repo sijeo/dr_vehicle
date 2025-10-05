@@ -1,6 +1,6 @@
 # dr_vehicle
 Dead Reackoning... 
-$$ 
+$
  ## 3D Quaternion EKF (Error-State) — Overview
 
 **Frames.**
@@ -98,4 +98,4 @@ P_k^+ = (I - K_k H_k) P_k^-.
 \mathbf{b}_a\leftarrow \mathbf{b}_a+\delta\mathbf{b}_a,
 \]
 then reset $\delta\mathbf{x}\!=\!\mathbf{0}$.
-$$
+$
