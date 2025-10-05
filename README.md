@@ -1,4 +1,4 @@
-\documentclass{article}
+$$\documentclass{article}
 \usepackage{amsmath, amssymb}
 \usepackage{bm}
 \usepackage{hyperref}
@@ -111,4 +111,4 @@ P_k^+ &= (I - K_k H_k) P_k^-
 \end{align*}
 Then reset $\delta\mathbf{x} = \mathbf{0}$.
 
-\end{document}
+\end{document}$$
