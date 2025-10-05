@@ -37,42 +37,44 @@ $\mathbf{a} = \mathbf{a}_m - \mathbf{b}_a$.
 \]
 where $\delta\boldsymbol{\theta} \in \mathbb{R}^3$ is the small-angle attitude error.
 
-### 1) Continuous-time nominal model
+\section{Continuous-Time Nominal Model}
+\begin{align*}
+\dot{\mathbf{r}} &= \mathbf{v} \\
+\dot{\mathbf{v}} &= R(\mathbf{q})\,\mathbf{a} + \mathbf{g} \\
+\dot{\mathbf{q}} &= \frac{1}{2}\,\Omega(\boldsymbol{\omega})\,\mathbf{q},\quad \|\mathbf{q}\| = 1 \\
+\dot{\mathbf{b}_{g}} &= \mathbf{n}_{wg} \\
+\dot{\mathbf{b}_{a}} &= \mathbf{n}_{wa}
+\end{align*}
 
-$\dot{\mathbf{r}} = \mathbf{v}$
-$\dot{\mathbf{v}} = R(\mathbf{q})\,\mathbf{a} + \mathbf{g}$
-$\dot{\mathbf{q}} = \frac{1}{2}\,\Omega(\boldsymbol{\omega})\,\mathbf{q},\quad \|\mathbf{q}\| = 1$
-$\dot{\mathbf{b}}_{g} = \mathbf{n}_{wg}$
-$\dot{\mathbf{b}}_{a} = \mathbf{n}_{wa}$
+\section{Discrete Nominal Propagation (IMU period $\Delta t$)}
+\begin{align*}
+\delta\boldsymbol{\theta} &= \boldsymbol{\omega}\,\Delta t, \\
+\delta\mathbf{q} &=
+\begin{bmatrix}
+\cos\left(\frac{\|\delta\boldsymbol{\theta}\|}{2}\right)\\
+\hat{\delta\boldsymbol{\theta}}\sin\left(\frac{\|\delta\boldsymbol{\theta}\|}{2}\right)
+\end{bmatrix}, \\
+\mathbf{q}_{k+1} &= \text{normalize}(\delta\mathbf{q} \otimes \mathbf{q}_k).
+\end{align*}
 
+\begin{align*}
+\mathbf{f}_w &= R(\mathbf{q}_k)\,\mathbf{a} \\
+\mathbf{v}_{k+1} &= \mathbf{v}_k + (\mathbf{f}_w + \mathbf{g})\,\Delta t \\
+\mathbf{r}_{k+1} &= \mathbf{r}_k + \mathbf{v}_k\,\Delta t + \frac{1}{2}(\mathbf{f}_w + \mathbf{g})\,\Delta t^2 \\
+\mathbf{b}_{g,k+1} &= \mathbf{b}_{g,k} \\
+\mathbf{b}_{a,k+1} &= \mathbf{b}_{a,k}
+\end{align*}
 
+\section{Continuous-Time Error-State Model}
+Using $S(\cdot)$ as the skew operator ($S(\mathbf{x})\,\mathbf{y} = \mathbf{x} \times \mathbf{y}$),
+\begin{align*}
+\delta\dot{\mathbf{r}} &= \delta\mathbf{v} \\
+\delta\dot{\mathbf{v}} &= -\,R(\mathbf{q})\,S(\mathbf{a})\,\delta\boldsymbol{\theta} - R(\mathbf{q})\,\delta\mathbf{b}_a + \mathbf{n}_{a} \\
+\delta\dot{\boldsymbol{\theta}} &= -\,S(\boldsymbol{\omega})\,\delta\boldsymbol{\theta} - \delta\mathbf{b}_g + \mathbf{n}_{g} \\
+\delta\dot{\mathbf{b}}_g &= \mathbf{n}_{wg} \\
+\delta\dot{\mathbf{b}}_a &= \mathbf{n}_{wa}
+\end{align*}
 
-### 2) Discrete nominal propagation (IMU period $\Delta t$)
-\[
-\delta\boldsymbol{\theta}=\boldsymbol{\omega}\,\Delta t,\quad
-\delta\mathbf{q}=\begin{bmatrix}\cos(\frac{\|\delta\boldsymbol{\theta}\|}{2})\\ \hat{\delta\boldsymbol{\theta}}\sin(\frac{\|\delta\boldsymbol{\theta}\|}{2})\end{bmatrix},\quad
-\mathbf{q}_{k+1}=\text{normalize}(\delta\mathbf{q}\otimes\mathbf{q}_k).
-\]
-\[
-\mathbf{f}_w=R(\mathbf{q}_k)\,\mathbf{a},\quad
-\mathbf{v}_{k+1}=\mathbf{v}_k+(\mathbf{f}_w+\mathbf{g})\,\Delta t,\quad
-\mathbf{r}_{k+1}=\mathbf{r}_k+\mathbf{v}_k\,\Delta t+\tfrac12(\mathbf{f}_w+\mathbf{g})\,\Delta t^2.
-\]
-\[
-\mathbf{b}_{g,k+1}=\mathbf{b}_{g,k},\qquad \mathbf{b}_{a,k+1}=\mathbf{b}_{a,k}.
-\]
-
-### 3) Continuous-time error-state model
-Using $S(\cdot)$ as the skew operator ($S(\mathbf{x})\,\mathbf{y}=\mathbf{x}\times\mathbf{y}$),
-$\[
-\begin{aligned}
-\delta\dot{\mathbf{r}} &= \delta\mathbf{v},\\
-\delta\dot{\mathbf{v}} &= -\,R(\mathbf{q})\,S(\mathbf{a})\,\delta\boldsymbol{\theta}\;-\;R(\mathbf{q})\,\delta\mathbf{b}_a\;+\;\mathbf{n}_{a},\\
-\delta\dot{\boldsymbol{\theta}} &= -\,S(\boldsymbol{\omega})\,\delta\boldsymbol{\theta}\;-\;\delta\mathbf{b}_g\;+\;\mathbf{n}_{g},\\
-\delta\dot{\mathbf{b}}_g &= \mathbf{n}_{wg},\\
-\delta\dot{\mathbf{b}}_a &= \mathbf{n}_{wa}.
-\end{aligned}
-\]$
 Compactly, $\dot{\delta\mathbf{x}} = F_c\,\delta\mathbf{x} + G_c\,\mathbf{n}$.
 
 \section{Discrete Covariance Propagation}
