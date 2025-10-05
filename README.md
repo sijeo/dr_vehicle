@@ -25,15 +25,13 @@ where $\delta\boldsymbol{\theta}\in\mathbb{R}^3$ is the small-angle attitude err
 
 ### 1) Continuous-time nominal model
 
-\[
-\dot{\mathbf{r}}=\mathbf{v},\qquad
-\dot{\mathbf{v}}=R(\mathbf{q})\,\mathbf{a}+\mathbf{g},\qquad
-\dot{\mathbf{q}}=\tfrac12\,\Omega(\boldsymbol{\omega})\,\mathbf{q},\ \ \|\mathbf{q}\|=1,
-\]
-\[
-\dot{\mathbf{b}}_g=\mathbf{n}_{wg},\qquad
-\dot{\mathbf{b}}_a=\mathbf{n}_{wa}.
-\]
+```
+\dot{\mathbf{r}} = \mathbf{v}
+\dot{\mathbf{v}} = R(\mathbf{q})\,\mathbf{a} + \mathbf{g}
+\dot{\mathbf{q}} = \frac{1}{2}\,\Omega(\boldsymbol{\omega})\,\mathbf{q},\quad \|\mathbf{q}\| = 1
+\dot{\mathbf{b}}_g = \mathbf{n}_{wg}
+\dot{\mathbf{b}}_a = \mathbf{n}_{wa}
+```
 
 ### 2) Discrete nominal propagation (IMU period $\Delta t$)
 \[
