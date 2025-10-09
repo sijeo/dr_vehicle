@@ -1,0 +1,33 @@
+/**************** Doxygen: Quick Doxyfile ****************
+# Save as Doxyfile (or Doxyfile.mpu6050) alongside this source.
+# Then run: doxygen Doxyfile
+
+
+PROJECT_NAME = "MPU-6050 IIO Driver"
+OUTPUT_DIRECTORY = docs
+GENERATE_HTML = YES
+GENERATE_LATEX = NO
+OPTIMIZE_OUTPUT_FOR_C = YES
+EXTRACT_ALL = YES
+EXTRACT_STATIC = YES
+EXTRACT_PRIVATE = NO
+EXTRACT_LOCAL_CLASSES = YES
+FULL_PATH_NAMES = NO
+INLINE_SOURCES = YES
+HAVE_DOT = YES
+CALL_GRAPH = NO
+CALLER_GRAPH = NO
+DOT_TRANSPARENT = YES
+RECURSIVE = NO
+INPUT = mpu6050_iio_driver.c
+FILE_PATTERNS = *.c *.h
+QUIET = NO
+WARN_IF_UNDOCUMENTED = YES
+WARN_LOGFILE = doxygen-warnings.log
+GENERATE_TREEVIEW = YES
+HTML_TIMESTAMP = YES
+
+
+# Grouping example (optional):
+# Add `@defgroup mpu6050_drv` to the file header and `@ingroup mpu6050_drv` to functions.
+/**************** End: Quick Doxyfile ****************
