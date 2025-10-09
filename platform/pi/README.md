@@ -120,13 +120,13 @@ sudo raspi-config    # Interface Options -> I2C -> Enable
 # dtparam=i2c_arm_baudrate=400000
 
 # 2) Compile overlay
-dtc -@ -I dts -O dtb -o mpu6050-rpi3-overlay.dtbo mpu6050-rpi3-overlay.dts
+dtc -@ -I dts -O dtb -o mpu6050-rpi3-overlay.dtbo mpu6050-rpi3-b-overlay.dts
 
 # 3) Install overlay
-sudo cp mpu6050-rpi3-overlay.dtbo /boot/overlays/
+sudo cp mpu6050-rpi3-overlay.dtbo /boot/firmware/overlays/
 
 # 4) Load overlay via firmware
-echo 'dtoverlay=mpu6050-rpi3-overlay' | sudo tee -a /boot/config.txt
+echo 'dtoverlay=mpu6050-rpi3-overlay' | sudo tee -a /boot/firmware/config.txt
 
 # 5) Reboot
 sudo reboot

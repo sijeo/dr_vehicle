@@ -365,7 +365,7 @@ struct mpu6050_scan {
     s16 gx, gy, gz; // Gyro
     s16 temp; // Temp
     s64 ts; // Timestamp
-}
+};
 
 /**
  * @brief Threaded IRQ handler for data-ready interrupt.
@@ -382,7 +382,7 @@ struct mpu6050_scan {
  {
     struct iio_dev *indio_dev = p;
     struct mpu6050_data *st = iio_priv(indio_dev);
-    u8 status;
+    unsigned int status;
     int ret;
 
     ret = regmap_read(st->regmap, MPU6050_REG_INT_STATUS, &status);
@@ -526,7 +526,9 @@ static int mpu6050_probe(struct i2c_client *client)
 
     st->regmap = devm_regmap_init_i2c(client, &mpu6050_regmap_config);
     if (IS_ERR(st->regmap)) {
-        return dev_err_probe(&client->dev, PTR_ERR(st->regmap), "Failed to init regmap\n");
+        ret = PTR_ERR(st->regmap);
+        dev_err(&client->dev, "Failed to init regmap: %d\n", ret);
+        return ret;
     }
     // Parse DT properties
     device_property_read_u32(&client->dev, "invensens,odr-hz", &odr);
@@ -597,9 +599,10 @@ err_pm_disable:
  * @brief Remove callback for the I2C driver.
  * Disable Runtime PM.
  */
-static void mpu6050_remove( struct i2c_client *client)
+static int mpu6050_remove( struct i2c_client *client)
 {
     pm_runtime_disable(&client->dev);
+    return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -659,7 +662,7 @@ static const struct i2c_device_id mpu6050_id[] = {
 MODULE_DEVICE_TABLE(i2c, mpu6050_id);
 
 static const struct dev_pm_ops mpu6050_pm_ops = {
-    SET_SYSTEM_SLEEP_PM(mpu6050_suspend, mpu6050_resume)
+    SET_SYSTEM_SLEEP_PM_OPS(mpu6050_suspend, mpu6050_resume)
     SET_RUNTIME_PM_OPS(mpu6050_runtime_suspend, mpu6050_runtime_resume, NULL)
 };
 

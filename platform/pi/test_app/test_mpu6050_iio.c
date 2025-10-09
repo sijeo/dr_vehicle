@@ -31,7 +31,7 @@ static int read_string( const char* path, char *buf, size_t sz ){
     fclose(f);
     //trim newline
     size_t n = strlen(buf);
-    if ( n && (buf[n-1] == '\n') || (buf[n-1] == '\r') )
+    if ( ( n && (buf[n-1] == '\n')) || (buf[n-1] == '\r') )
         buf[n-1] = '\0';
     return 0;
 }
