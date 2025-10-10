@@ -1,4 +1,4 @@
-obj-m := mpu6050_iio_driver.o
+obj-m := neo6m_gnss_serdev.o
 
 KDIR := $(HOME)/rpi_work/kernel_rpi/linux
 CROSS_COMPILE ?= arm-linux-gnueabihf-
@@ -13,13 +13,13 @@ clean:
 	$(RM) test_app/test_mpu6050_iio
 
 # Build user-space app without kernel include paths
-app: test_app/test_mpu6050_iio.c
-	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -o test_app/test_mpu6050_iio $<
+app: test_app/test_neo6m_gnss_serdev.c
+	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -o test_app/test_neo6m_gnss_serdev $<
 
 deploy:
-	scp *.ko sijeo@192.168.1.2:/home/sijeo/dr_vehicle/
+	scp *.ko sijeo@192.168.1.3:/home/sijeo/dr_vehicle/
 
 deploy_app:
-	scp test_app/test_mpu6050_iio sijeo@192.168.1.2:/home/sijeo/dr_vehicle/
+	scp test_app/test_neo6m_gnss_serdev sijeo@192.168.1.3:/home/sijeo/dr_vehicle/
 
 .PHONY: all clean app

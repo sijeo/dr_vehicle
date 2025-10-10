@@ -6,7 +6,7 @@
 #include <sys/ioctl.h>
 #include <string.h>
 #include <errno.h>
-#include "neo6m_gnss_ioctl.h"
+#include "../neo6m_gnss_ioctl.h"
 
 static volatile int keep_running = 1;
 
@@ -38,7 +38,7 @@ int main(void)
 
     signal(SIGINT, sigint_handler);
 
-    fd = open("/dev/neo6m_gnss", O_RDONLY);
+    fd = open("/dev/neo6m0", O_RDONLY);
     if (fd < 0) {
         perror("open");
         return 1;

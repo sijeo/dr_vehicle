@@ -31,6 +31,8 @@
 #include <linux/fs.h>
 #include <linux/uaccess.h>
 #include <linux/ctype.h>
+#include <linux/cdev.h>        // added
+#include <linux/string.h>      // added
 
 #include "neo6m_gnss_ioctl.h"
 
@@ -39,16 +41,16 @@
 #define RX_RING_SIZE 2048
 
 /*******************Utilities ********************/
-static inline bool nmea_checksum_ok( const char *s, size_t len)
+static inline bool nmea_checksum_ok(const char *s, size_t len)
 {
     /* s point to '$', len includes full line without CRLF. Expect *XX at end. */
     const char *star = memchr(s, '*', len);
     unsigned int sum = 0, got;
     size_t i;
 
-    if ( (!star )|| (star[0] != '$'))
+    if (!star || s[0] != '$')
     {
-        return false; // no star or empty
+        return false; // no star or not starting with '$'
     }
 
     /* Compute checksum  by XORing all the characters between '$' and '*' */
@@ -105,12 +107,12 @@ static inline long strtod_milli(const char *p, long def )
         return def; // empty field
     }
 
-    if ( c == '-')
+    if ( *c == '-')
     {
         s = -1;
         c++;
     }
-    else if (c == '+')
+    else if (*c == '+')
     {
         c++;
     }
@@ -139,40 +141,44 @@ static inline long strtod_milli(const char *p, long def )
 
 static bool nmea_latlon_to_e7(const char *val, const char *hem, s32 *out_e7)
 {
-    /* val: ddmm.mmmm (lat) or dddmm.mmmm (lon). hem: N/S or E/W */
     long sign = 1;
     long milli = 0;
-    long deg, minutes_milli;
-    if(!val || !*val || !hem || !*hem)
-    {
-        return false; // empty field
-    }
-    if (hem[0] == 'S' || hem[0] == 'W')
-    {
-        sign = -1;
-    }
-    
-    /* Split degrees vs minutes: degrees are first 2 (lat) or 3( lon ) chdrs */
-    size_t len = strlen(val);
-    if (len < 4) return false; // too short
-
-    /* Find the decimal point to decide */
-    const char *dot = strchr(val, '.');
-    size_t mm_start = (len > 5) ? (len - 7) : 2; /* heuristic */
-    /* Better: degrees are all chars before the last 7 mm.mmmm*/
-    if( (dot) && (dot  - val >= 3))
-    {
-        /* for lon: 3 deg digits */
-        mm_start = (dot - val) - 2; /* xxmm.mmmm => mm start 2 dot before */
-    }
-
+    long deg;
+    size_t len;
+    const char *dot;
+    size_t mm_start;
     char deg_str[4] = {0};
     char mm_str[16] = {0};
+    long deg_e7;
+    long minutes_deg_milli;
+    long minutes_e7;
+    long total;
+
+    if (!val || !*val || !hem || !*hem) {
+        return false; // empty field
+    }
+    if (hem[0] == 'S' || hem[0] == 'W') {
+        sign = -1;
+    }
+
+    /* Split degrees vs minutes: degrees are first 2 (lat) or 3 (lon) chars */
+    len = strlen(val);
+    if (len < 4)
+        return false; // too short
+
+    /* Find the decimal point to decide */
+    dot = strchr(val, '.');
+    mm_start = (len > 5) ? (len - 7) : 2; /* heuristic */
+    /* Better: degrees are all chars before the last 7 mm.mmmm */
+    if (dot && (dot - val >= 3)) {
+        /* for lon: 3 deg digits */
+        mm_start = (dot - val) - 2; /* xxmm.mmmm => mm start 2 before dot */
+    }
 
     /* Copy degrees part */
     if (mm_start > sizeof(deg_str)) {
-        /* likely lon ( 3 deg digits)*/
-        if ( mm_start > 3) return false; // too long
+        if (mm_start > 3)
+            return false; // too long
         strncpy(deg_str, val, mm_start);
     } else {
         strncpy(deg_str, val, mm_start);
@@ -182,19 +188,14 @@ static bool nmea_latlon_to_e7(const char *val, const char *hem, s32 *out_e7)
     strlcpy(mm_str, val + mm_start, sizeof(mm_str));
 
     deg = strtol_safe(deg_str, 0);
-    milli = strtod_milli(mm_str, 0); /* minutes in milli-units  */
+    milli = strtod_milli(mm_str, 0); /* minutes in milli-units */
 
-    /* Convert ddmm.mmmm to degrees: degrees + minutes/60.0*/
-    /* milli minutes to nano degrees: We want degrees * 1e7*/
-    /* minutes (milli) -> degrees (milli/60), then degrees * 1e7*/
+    /* Convert ddmm.mmmm to degrees*1e7 */
+    deg_e7 = deg * 10000000L;
+    minutes_deg_milli = (milli + 30) / 60; /* rounded */
+    minutes_e7 = minutes_deg_milli * 10000L;
 
-    long deg_e7 = deg * 10000000L;
-    /* minutes: milli -> degrees milli = milli/60*/
-    long minutes_deg_milli = (milli + 30) / 60; /* rounded */
-    /* Convert milli-deg to e7: 1 deg = 1e7 e7 units; 1 milli-deg = 1e4 e7 units */
-    long minutes_e7 = minutes_deg_milli * 10000L;
-
-    long total = deg_e7 + minutes_e7;
+    total = deg_e7 + minutes_e7;
     *out_e7 = (s32)(sign * total);
     return true;
 }
@@ -231,9 +232,10 @@ struct neo6m_priv {
     struct neo6m_gnss_fix fix;
 
     /* Character device */
-    int major;
+    dev_t devt;
+    struct cdev cdev;       // embedded cdev
     struct class *cls;
-    struct device *cdev;
+    struct device *chardev; // created with device_create()
 
     /* sysfs kobj */
     struct kobject *kobj;
@@ -294,9 +296,9 @@ MODULE_DEVICE_TABLE(of, neo6m_of_match);
         long mo = (strtol_safe(d, 0) / 100) % 100;
         long yy = strtol_safe(d, 0) % 100;
         f->utc_day = clamp_t(int, dd, 1, 31);
-        f->utc_mon = clamp_t(int mo, 1, 12);
-        /* NMEA two digit year: 80..90 => 1980 .. 1999, 0,,79 => 2000..2079*/
-        f->utc_year = (yy >= 80) ? (1900 + yy) : (2000 : yy);
+        f->utc_mon = clamp_t(int, mo, 1, 12);
+        /* NMEA two digit year: 80..99 => 1980..1999, 00..79 => 2000..2079 */
+        f->utc_year = (yy >= 80) ? (1900 + yy) : (2000 + yy);
     }
   }
 
@@ -309,35 +311,33 @@ MODULE_DEVICE_TABLE(of, neo6m_of_match);
 
    static void neo6m_parse_line(struct neo6m_priv *priv, const char *s, size_t len)
    {
-    char *tmp, *p, *save;
-    char *tok[32]; 
-    int i, ntok = 0;
+    char *tmp, *p;
+    char *tok[32];
+    int ntok = 0;
     struct neo6m_gnss_fix newfix;
 
-    if( !nmea_checksum_ok(s, len))
-    {
+    if (!nmea_checksum_ok(s, len)) {
         dev_warn(priv->dev, "Bad checksum: %.*s\n", (int)len, s);
         return;
     }
 
     tmp = kstrdup(s, GFP_KERNEL);
     if (!tmp)
-    {
         return;
-    }   
-    
+
     /* Tokenize on ',' and strip trailing *cs */
     p = tmp;
-    while ( (ntok < ARRAY_SIZE(tok)) && (tok[ntok] = strsep(&p, ",")) != NULL)
-    ntok++;
+    while ((ntok < ARRAY_SIZE(tok)) && (tok[ntok] = strsep(&p, ",")) != NULL)
+        ntok++;
 
     /* Remove trailing *XX from last token if present */
-    if ( ntok > 0 ) {
+    if (ntok > 0) {
         char *star = strchr(tok[ntok - 1], '*');
-        if ( star ) *star = '\0';   
+        if (star)
+            *star = '\0';
     }
 
-    /* Intialize from last fix */
+    /* Initialize from last fix */
     spin_lock_bh(&priv->lock);
     newfix = priv->fix;
     spin_unlock_bh(&priv->lock);
@@ -399,14 +399,13 @@ MODULE_DEVICE_TABLE(of, neo6m_of_match);
                 { newfix.lon_e7 = lon_e7;}
             }
             /* altitude in meters -> mm*/
-            if( (ntok >9) && (tok[9]) && (*tok[9]))
+            if( (ntok > 9) && (tok[9]) && (*tok[9]))
             {
                 long alt_milli = strtod_milli(tok[9], 0);
-                newfix.altmm = (s32)(alt_milli * 1); /* milli-meters already*/
-
+                newfix.alt_mm = (s32)(alt_milli * 1); /* milli-meters already */
             }
             /* UTC from field[1] if not set by RMC*/
-            if((ntok  > 1) && (tok[1]) && (*tok[1])){
+            if ((ntok > 1) && (tok[1]) && (*tok[1])) {
                 const char *t = tok[1];
                 long hh = strtol_safe(t, 0) / 10000;
                 long mm = (strtol_safe(t, 0) / 100) % 100;
@@ -416,10 +415,10 @@ MODULE_DEVICE_TABLE(of, neo6m_of_match);
 
                 if(dot) {
                     ms = strtol_safe(dot + 1, 0);
-                    while( ms > 999 ) ms /= 10;
+                    while (ms > 999) ms /= 10;
                 }
                 newfix.utc_hour = clamp_t(int, hh, 0, 23);
-                newfix.utc_min = clamp_t(iint, mm, 0, 59);
+                newfix.utc_min = clamp_t(int, mm, 0, 59);
                 newfix.utc_sec = clamp_t(int, ss, 0, 60);
                 newfix.utc_millis = clamp_t(int, ms, 0, 999);
             }
@@ -484,7 +483,9 @@ static int neo6m_receive( struct serdev_device *serdev, const unsigned char *buf
             /* Line too long, drop i.e. overflow -> reset*/
             priv->line_len = 0;
         }
-        return count;
+        
+    }
+    return count;
 }
 
 static void neo6m_write_wakeup(struct serdev_device *serdev)
@@ -611,9 +612,7 @@ static long neo6m_chr_ioctl(struct file *file, unsigned int cmd, unsigned long a
 
 static int neo6m_chr_open(struct inode *inode, struct file *file)
 {
-    struct neo6m_priv *p = container_of(inode->i_cdev, struct neo6m_priv,/* Not used */ fix );
-    /* We don't embed cdev in priv; instead stash via class device's drvdata */
-    struct device *dev = class_find_device(p->cls, NULL, p, (void*)NULL);
+    struct neo6m_priv *p = container_of(inode->i_cdev, struct neo6m_priv, cdev);
     file->private_data = p;
     return 0;
 }
@@ -660,7 +659,7 @@ static int neo6m_probe(struct serdev_device *serdev)
     INIT_WORK(&p->parse_work, neo6m_parse_workfn);
 
     serdev_device_set_drvdata(serdev, p);
-    serdev_set_client_ops(serdev, &neo6m_serdev_ops);
+    serdev_device_set_client_ops(serdev, &neo6m_serdev_ops);
 
     /* Configure UART (typical NEO-6M default 9600-8N1)*/
     ret = serdev_device_open(serdev);
@@ -670,7 +669,7 @@ static int neo6m_probe(struct serdev_device *serdev)
         return ret; 
     }
     ret = serdev_device_set_baudrate(serdev, 9600);
-    if (ret)
+    if (ret == 0)
     {               
         dev_err(dev, "Failed to set baudrate\n");
         goto err_close;
@@ -678,7 +677,7 @@ static int neo6m_probe(struct serdev_device *serdev)
     serdev_device_set_flow_control(serdev, false);
     /* 8N1 is default */
 
-    /* Create class + device for sysfs */
+    /* Create class */
     p->cls = class_create(THIS_MODULE, "neo6m_gnss");
     if (IS_ERR(p->cls))
     {
@@ -686,41 +685,48 @@ static int neo6m_probe(struct serdev_device *serdev)
         ret = PTR_ERR(p->cls);
         goto err_close;
     }
-    p->cdev = device_create(p->cls, dev, 0, p, "neo6m0");
-    if (IS_ERR(p->cdev))
-    {
-        dev_err(dev, "Failed to create device\n");
-        ret = PTR_ERR(p->cdev);
+
+    /* Allocate devt, register cdev, create device node */
+    ret = alloc_chrdev_region(&p->devt, 0, 1, NEO6M_GNSS_CHARDEV_NAME);
+    if (ret) {
+        dev_err(dev, "alloc_chrdev_region failed: %d\n", ret);
         goto err_class;
     }
-    dev_set_drvdata(p->cdev, p);
+    cdev_init(&p->cdev, &neo6m_fops);
+    p->cdev.owner = THIS_MODULE;
+    ret = cdev_add(&p->cdev, p->devt, 1);
+    if (ret) {
+        dev_err(dev, "cdev_add failed: %d\n", ret);
+        goto err_unreg_devt;
+    }
+    p->chardev = device_create(p->cls, dev, p->devt, p, "neo6m0");
+    if (IS_ERR(p->chardev)) {
+        ret = PTR_ERR(p->chardev);
+        dev_err(dev, "device_create failed: %d\n", ret);
+        goto err_cdev_del;
+    }
+    dev_set_drvdata(p->chardev, p);
 
-    ret = sysfs_create_group(&p->cdev->kobj, &neo6m_attr_group);
+    ret = sysfs_create_group(&p->chardev->kobj, &neo6m_attr_group);
     if (ret)
     {
         dev_err(dev, "Failed to create sysfs group\n");
-        goto err_dev;
-    }
-    /* Register char device major dynamically */
-    p->major = register_chrdev(0, NEO6M_GNSS_CHARDEV_NAME, &neo6m_fops);
-    if (p->major < 0)
-    {
-        dev_err(dev, "Failed to register char device\n");
-        ret = p->major;
-        goto err_sysfs;
+        goto err_dev_destroy;
     }
     dev_info(dev, "NEO-6M GNSS driver probed and ready @9600 8N1\n");
     return 0;
 
-err_sysfs:
-    sysfs_remove_group(&p->cdev->kobj, &neo6m_attr_group);
-err_dev:
-    device_destroy(p->cls, 0);
-err_class:
-    class_destroy(p->cls);
-err_close:
-    serdev_device_close(serdev);
-    return ret;
+err_dev_destroy:
+    device_destroy(p->cls, p->devt);
+err_cdev_del:
+    cdev_del(&p->cdev);
+err_unreg_devt:
+    unregister_chrdev_region(p->devt, 1);
+ err_class:
+     class_destroy(p->cls);
+ err_close:
+     serdev_device_close(serdev);
+     return ret;
 }
 
 
@@ -731,9 +737,10 @@ static void neo6m_remove(struct serdev_device *serdev)
 {
     struct neo6m_priv *p = serdev_device_get_drvdata(serdev);
 
-    unregister_chrdev(p->major, NEO6M_GNSS_CHARDEV_NAME);
-    sysfs_remove_group(&p->cdev->kobj, &neo6m_attr_group);
-    device_destroy(p->cls, 0);
+    sysfs_remove_group(&p->chardev->kobj, &neo6m_attr_group);
+    device_destroy(p->cls, p->devt);
+    cdev_del(&p->cdev);
+    unregister_chrdev_region(p->devt, 1);
     class_destroy(p->cls);
     serdev_device_close(serdev);
     cancel_work_sync(&p->parse_work);
