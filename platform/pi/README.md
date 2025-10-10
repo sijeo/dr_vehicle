@@ -147,7 +147,7 @@ ls -l /sys/bus/iio/devices/
 - Instantiates the MPU-6050 on I2C1 at 0x68 (or 0x69 if AD0=1).
 - Connects INT to GPIO17, enabling low-jitter buffered capture.
 - Sets optional defaults (FSR/ODR) read by your driver from DT.
-- Without the DTS/overlay, Linux won’t create the IIO node and the test apps won’t find iio:deviceN.
+- Without the DTS/overlay, Linux won't create the IIO node and the test apps won't find iio:deviceN.
 
 ## Build and run the test apps
 
@@ -162,8 +162,8 @@ sudo ./test_mpu6050_iio_buffered   # buffer/enable usually requires root
 ```
 
 Tips:
-- If buffered app reports “Missing scan enable” or “Permission denied,” run with sudo or adjust udev rules for /sys/bus/iio/devices/** and /dev/iio:device*.
-- If IRQ doesn’t fire:
+- If buffered app reports "Missing scan enable" or "Permission denied," run with sudo or adjust udev rules for /sys/bus/iio/devices/** and /dev/iio:device*.
+- If IRQ doesn't fire:
   ```sh
   grep -i mpu6050 /proc/interrupts
   dmesg | tail -n 100
@@ -174,7 +174,7 @@ Tips:
 - Wrong address: If i2cdetect shows 0x69, set AD0 → 3V3 and use reg = <0x69> in the overlay.
 - No I²C devices: Ensure dtparam=i2c_arm=on and probe bus 1 (`i2cdetect -y 1`).
 - INT noise: Keep wire short, use rising edge (0x8). If spurious interrupts occur, try level-high (0x4) and/or debounce in the driver.
-- Power: Some breakout boards add regulators/level shifters—ensure they’re 3.3 V-safe on SDA/SCL and INT.
+- Power: Some breakout boards add regulators/level shifters—ensure they're 3.3 V-safe on SDA/SCL and INT.
 
 ---
 
@@ -213,10 +213,41 @@ make
 sudo insmod neo6m_gnss_serdev.ko
 # or
 sudo modprobe neo6m_gnss_serdev
+```
+
+## NEO-6M Wiring (Raspberry Pi 3 Model B)
+
+### Physical Connections
+
+| NEO-6M Pin | Raspberry Pi 3B Pin   | Signal           | Notes     |
+|------------|-----------------------|------------------|-----------|
+| **VCC**    | Pin 1 or 17 (3V3)     | 3.3V Power       | Required  |
+| **GND**    | Pin 6 (GND) | Ground  | Required         |           |
+| **TX**     | Pin 10 (RXD0/GPIO15)  | UART Data        | Required  |
+| **RX**     | Pin 8 (TXD0/GPIO14)   | UART Data        | Optional* |
+| **PPS**    | Pin 12 (GPIO18)       | Pulse Per Second | Optional  |
+
+> **\*** RX connection is only needed if you plan to send UBX/NMEA configuration commands to the module.
+
+### Wiring Guidelines
+
+⚠️ **Important Safety Notes:**
+- **Use 3.3V only** - Raspberry Pi UART pins are **NOT** 5V tolerant
+- Most NEO-6M breakout boards accept 5V on VCC (internal regulator) but output 3.3V logic
+- When in doubt, power from 3.3V to be safe
+
+### Minimum Setup
+For basic NMEA data reception, you only need:
+1. **VCC** → 3.3V
+2. **GND** → Ground  
+3. **TX** (NEO-6M) → **RX** (Pi)
+
+### UART Configuration
+The NEO-6M uses **9600 baud, 8N1** by default, connected to Raspberry Pi's primary UART (UART0).
 
 ---
 
-## Notes on robustness & “production-grade” details
+## Notes on robustness & "production-grade" details
 
 - **Checksum verified** (`*XX`) before parsing; malformed or partial lines are discarded.
 - **Back-pressure safe**: RX path only assembles one line and defers parsing to a **workqueue** to keep interrupt context short.
@@ -242,4 +273,4 @@ doxygen -g  # creates Doxyfile
 #   RECURSIVE              = YES
 #   EXTRACT_ALL            = YES
 doxygen
-
+```
