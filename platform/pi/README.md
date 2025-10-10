@@ -194,3 +194,52 @@ Tips:
 
 
 
+# NEO-6M GNSS (NMEA over UART) — serdev kernel driver
+
+- Exposes parsed fields:
+  - `/sys/class/neo6m_gnss/neo6m0/lat` (degrees × 1e7, signed)
+  - `/sys/class/neo6m_gnss/neo6m0/lon` (degrees × 1e7, signed)
+  - `/sys/class/neo6m_gnss/neo6m0/alt_mm` (mm)
+  - `/sys/class/neo6m_gnss/neo6m0/speed_mmps` (mm/s)
+  - `/sys/class/neo6m_gnss/neo6m0/have_fix` (0/1)
+  - `/sys/class/neo6m_gnss/neo6m0/utc` (ISO 8601)
+
+- Character device: `/dev/neo6m_gnss` → `ioctl(NEO6M_GNSS_IOC_GET_FIX, struct neo6m_gnss_fix*)`
+
+## Build (out of tree)
+
+```bash
+make
+sudo insmod neo6m_gnss_serdev.ko
+# or
+sudo modprobe neo6m_gnss_serdev
+
+---
+
+## Notes on robustness & “production-grade” details
+
+- **Checksum verified** (`*XX`) before parsing; malformed or partial lines are discarded.
+- **Back-pressure safe**: RX path only assembles one line and defers parsing to a **workqueue** to keep interrupt context short.
+- **Empty fields** (no fix) do not overwrite prior values unless a field is present; we still mark `have_fix = 0` if GGA fix=0 or RMC status `V`.
+- **Units** are SI and integer where possible to avoid FP in kernel:
+  - lat/lon as **deg × 1e7** (`int32_t`).
+  - altitude **mm**, speed **mm/s**.
+- **Locking**: a `spinlock_t` guards the latest fix snapshot for sysfs/ioctl reads.
+- **Baud** defaults to **9600 8N1** (NEO-6M default). Changeable in code if you reconfigure the module to 38400/115200 via u-blox CFG.
+- **No policy in kernel**: we only parse and expose; consumers (EKF, logging, etc.) stay in user space or other kernel clients via ioctl.
+
+---
+
+## Doxygen
+
+All public structs/functions in the driver and the exported `neo6m_gnss_ioctl.h` include **Doxygen** comments. To generate HTML:
+
+```bash
+doxygen -g  # creates Doxyfile
+# Edit Doxyfile minimally:
+#   PROJECT_NAME           = "NEO6M GNSS Driver"
+#   INPUT                  = drivers/ include/
+#   RECURSIVE              = YES
+#   EXTRACT_ALL            = YES
+doxygen
+
