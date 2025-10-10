@@ -244,6 +244,15 @@ For basic NMEA data reception, you only need:
 
 ### UART Configuration
 The NEO-6M uses **9600 baud, 8N1** by default, connected to Raspberry Pi's primary UART (UART0).
+Remove serial console from /boot/cmdline.txt (no console=ttyAMA0,...).
+
+Device Tree should bind to uart0:
+&uart0 {
+    status = "okay";
+    neo6m: gnss@0 {
+        compatible = "sijeo,neo6m-nmea";
+    };
+};
 
 ---
 
