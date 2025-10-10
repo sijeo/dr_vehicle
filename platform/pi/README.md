@@ -191,3 +191,6 @@ Tips:
 | SCL          | Pin 5 (GPIO3 / SCL1)          | I2C clock            |
 | INT          | Pin 11 (GPIO17)               | Data-ready interrupt |
 | AD0          | GND = 0x68, 3V3 = 0x69        | I2C address select   |
+
+
+
