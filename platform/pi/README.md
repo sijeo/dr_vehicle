@@ -247,12 +247,16 @@ The NEO-6M uses **9600 baud, 8N1** by default, connected to Raspberry Pi's prima
 Remove serial console from /boot/cmdline.txt (no console=ttyAMA0,...).
 
 Device Tree should bind to uart0:
-&uart0 {
+&uart1 {
     status = "okay";
     neo6m: gnss@0 {
         compatible = "sijeo,neo6m-nmea";
     };
 };
+This modifications have to be done in the linux kernel bcm2710-rpi-3-b.dts and cross compiled using
+
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- dtbs
+and then scp the corresponding dtb file to /boot/firmware/
 
 ---
 
