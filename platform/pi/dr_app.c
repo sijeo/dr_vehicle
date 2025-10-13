@@ -438,8 +438,10 @@ static void imu_ma_get(const imu_ma_t *ma, float g_avg[3], float a_avg[3])
     /* Main Loop @ IMU_LOOP_HZ */
     const float dt = 1.0f / IMU_LOOP_HZ;
     imu_ma_t imu_ma;;
-
-
+    float g[3], a[3], g_f[3], a_f[3], g_cal[3], a_cal[3];
+    dr_imu_sample_t imu = {.gyro = {g_cal[0], g_cal[1], g_cal[2]},
+                           .accel = {a_cal[0], a_cal[1], a_cal[2]}};
+    
 
     /* 1) Discover Devices */
     char iio_path[512];
@@ -492,7 +494,44 @@ static void imu_ma_get(const imu_ma_t *ma, float g_avg[3], float a_avg[3])
 
     for(;;)
     {
+        /* IMU Read and Average */
         
+        if ( read_imu_once(iio_path, g, a)) { fprintf(stderr, "IMU read error\n"); break;}
+        imu_ma_push(&ma, g, a);
+        imu_ma_get(&ma, g_f, a_f);
+        for( int k = 0; k < 3; k++){ g_cal[k] = g_f[k] - bg[k]; a_cal[k] = a_f[k] - ba[k];}
+
+        /* Predict */
+        dr_ekf_predict(&ekf, &imu, dt);
+
+        /*GNSS update (best-effort)*/
+        have = 0; tns = 0; spd = 0.0f;
+        rc = get_gnss_fix(fd_gnss, &cur, &have, &y, &m, &d, &H, &M, &S, &ms, &tns, &spd);
+        if( rc > 0 && have ){
+            /* Convert to ENU */
+            ecef_t e = lla_to_ecef =(cur);
+            dr_gps_pos_t z;
+            ecef_delta_to_enu(ref_lla, e, ref_ecef, z.pos);
+            (void)dr_ekf_update_gps_pos(&ekf, &z, Rpos);
+        }
+        /* Output CSV (EKF nominal to ENU, plus back to LLA for convenience)*/
+        float yaw, pitch, roll; 
+        quat_to_euler_deg(ekf.x.q, &yaw, &pitch, &roll);
+        geodetic_t out_lla = enu_to_lla(ref_lla, ref_ecef, ekf.x.p);
+        char utc[40] = "0000-00-00T00:00:00.000Z";
+        if( rc > 0 ){
+            snprintf(utc, sizeof(utc), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",y,m,d,H,M,S,ms);
+        }
+        printf(DR_CSV_FORMAT,utc, (long long)tns, out_lla.lat_deg, out_lla.lon_deg, out_lla.alt_m,
+                                    ekf.x.p[0], ekf.x.p[1], ekf.x.p[2], 
+                                    ekf.x.v[0], ekf.x.v[1], ekf.x.v[2],
+                                    yaw, pitch, roll);
+        fflush(stdout);
+
+        msleep(MAIN_LOOP_DELAY_MS);
     }
+
+    close(fd_gnss);
+    return 0;
 
 }
