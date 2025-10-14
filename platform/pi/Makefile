@@ -5,6 +5,9 @@ CROSS_COMPILE ?= arm-linux-gnueabihf-
 SYSROOT ?= $(HOME)/rpi_work/rpi_tools/tools/arm-bcm2708/arm-rpi-4.9.3-linux-gnueabihf/arm-linux-gnueabihf/sysroot
 CC := $(CROSS_COMPILE)gcc
 
+CORE_DIR := $(abspath ../../core)
+CORE_SRCS := $(wildcard $(CORE_DIR)/*.c)
+
 all:
 	$(MAKE) -C $(KDIR) ARCH=arm CROSS_COMPILE=$(CROSS_COMPILE) M=$(PWD) modules
 
@@ -13,8 +16,8 @@ clean:
 	$(RM) test_app/test_mpu6050_iio
 
 # Build user-space app without kernel include paths
-app: test_app/test_neo6m_gnss_serdev.c
-	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -o test_app/test_neo6m_gnss_serdev $<
+app: dr_app.c
+	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o dr_app $< $(CORE_SRCS) -lm
 
 deploy:
 	scp *.ko sijeo@192.168.1.3:/home/sijeo/dr_vehicle/

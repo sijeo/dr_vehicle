@@ -17,7 +17,7 @@
 
 #define GNU_SOURCE
 #include <errno.h>
-#include <fcntl.h>
+#include <fcntl.h> // for O_CLOEXEC
 #include <glob.h>
 #include <math.h>
 #include <stdbool.h>
@@ -38,6 +38,7 @@
 
 #include "dr_app_config.h"
 #include "neo6m_gnss_ioctl.h"
+#include <math.h>
 
 /*----------------Small Helpers ------------------ */
 
@@ -143,10 +144,11 @@ static int read_imu_once(const char *devpath, float gyro_radps[3], float accel_m
     char path[512];
     int raw;
     double scale;
+    int i;
 
     /* Accelerometer X Y Z*/
     const char *acc_nodes[3] = {"in_accel_x", "in_accel_y", "in_accel_z"};
-    for (int i = 0; i < 3; i++) {
+    for (i = 0; i < 3; i++) {
         snprintf(path, sizeof(path), "%s/%s_raw", devpath, acc_nodes[i]);
         if (read_int_from_file(path, &raw))
         {
@@ -162,7 +164,7 @@ static int read_imu_once(const char *devpath, float gyro_radps[3], float accel_m
 
     /* Gyro X Y Z*/
     const char *gyro_nodes[3] = {"in_gyro_x", "in_gyro_y", "in_gyro_z"};
-    for (int i = 0; i < 3; i++) {
+    for (i = 0; i < 3; i++) {
         snprintf(path, sizeof(path), "%s/%s_raw", devpath, gyro_nodes[i]);
         if (read_int_from_file(path, &raw))
         {
@@ -191,7 +193,7 @@ typedef struct {
 
 static const double WGS84_A = 6378137.0;          // Semi-major axis
 static const double WGS84_F = 1.0 / 298.257223563; // Flattening
-static const double WGS84_E2 = (2 * WGS84_F - WGS84_F * WGS84_F); // Eccentricity squared
+#define WGS84_E2 (2.0 * WGS84_F - WGS84_F * WGS84_F) // Eccentricity squared
 
 /**
  * @brief Convert geodetic (lat, lon, alt) LLA to ECEF (x, y, z)
@@ -299,7 +301,7 @@ static geodetic_t enu_to_lla(geodetic_t ref, const ecef_t e0, const float enu[3]
  */
 static int open_gnss(void)
 {
-    int fd = open(NEO6M_CHARDEV, O_RDONLY | O_CLOEXEC);
+    int fd = open(NEO6M_GNSS_CHARDEV_NAME, O_RDONLY | O_CLOEXEC);
     return (fd < 0) ? -errno : fd;
 }
 
@@ -311,7 +313,7 @@ static int get_gnss_fix(int fd, geodetic_t *lla, int *have_fix, int *utc_y, int 
             int *utc_H, int *utc_M, int *utc_S, int *utc_ms, int64_t *tmono_ns, float *spd_mps)
 {
     struct neo6m_gnss_fix f;
-    if (ioctl(fd, NEO6M_IOCTL_GET_FIX, &f)) != 0) {
+    if (ioctl(fd, NEO6M_GNSS_IOC_GET_FIX, &f) != 0) {
         return -errno;
     }
     *have_fix = (f.have_fix) ? 1 : 0; // fix or no fix
@@ -354,13 +356,14 @@ static void imu_ma_push(imu_ma_t *ma, const float g[3], const float a[3])
 static void imu_ma_get(const imu_ma_t *ma, float g_avg[3], float a_avg[3])
 {
     float s[6] = {0};
+    int i, k;
     int N = (ma->n > 0) ? ma->n : 1;
-    for (int i = 0; i < ma->n; i++) {
-        for ( int k = 0; k < 6; k++ ) {
+    for ( i = 0; i < ma->n; i++) {
+        for ( k = 0; k < 6; k++ ) {
             s[k] += ma->buf[i][k];
         }
     }
-    for ( int k = 0; k < 3; k++ ) {
+    for ( k = 0; k < 3; k++ ) {
         g_avg[k] = s[k] / N;
         a_avg[k] = s[k + 3] / N;
     }
@@ -379,19 +382,20 @@ static void imu_ma_get(const imu_ma_t *ma, float g_avg[3], float a_avg[3])
  {
     float g[3], a[3];
     double sum_g[3] = {0}, sum_a[3] = {0};
-    for(int i=0; i < CAL_SAMPLES; ++i)
+    int i, k;
+    for(i=0; i < CAL_SAMPLES; ++i)
     {
         if (read_imu_once(devpath, g, a) != 0) {
             return -EIO;
         }
-        for (int k = 0; k < 3; k++) {
+        for (k = 0; k < 3; k++) {
             sum_g[k] += g[k];
             sum_a[k] += a[k];
         }
         msleep(10); /* ~100Hz; independent of IMU_LOOP_HZ */
 
     }
-    for (int k = 0; k < 3; k++) {
+    for (k = 0; k < 3; k++) {
         bg[k] = (float)(sum_g[k] / CAL_SAMPLES);
         ba[k] = (float)(sum_a[k] / CAL_SAMPLES);
     }
@@ -412,8 +416,8 @@ static void imu_ma_get(const imu_ma_t *ma, float g_avg[3], float a_avg[3])
  int main(void)
  {
     float bg[3] = {0}, ba[3] = {0}; /* gyro bias (rad/s), accel bias (m/s^2) */
-    geodetic_t ref_lla = (geodetic_t){0};
-    ecef_t ref_ecef = (ecef_t){0};
+    geodetic_t ref_lla = (geodetic_t){0, 0, 0};
+    ecef_t ref_ecef = (ecef_t){0, 0, 0};
     geodetic_t cur; 
     int have = 0, y,m,d,H,M,S,ms;
     int64_t tns = 0;
@@ -426,13 +430,13 @@ static void imu_ma_get(const imu_ma_t *ma, float g_avg[3], float a_avg[3])
         .sigma_a = SIGMA_A_MPS2,
         .sigma_bg = SIGMA_BG_RADPS,
         .sigma_ba = SIGMA_BA_MPS2,
-        .P0_pos = P0_POS_STD_M,
-        .P0_vel = P0_VEL_STD_MPS,
-        .P0_ang = P0_ANG_STD_RAD,
-        .P0_ba = P0_BA_STD_MPS2,
-        .P0_bg = P0_BG_STD_RADPS
+        .p0_pos = P0_POS_STD_M,
+        .p0_vel = P0_VEL_STD_MPS,
+        .p0_ang = P0_ANG_STD_RAD,
+        .p0_ba = P0_BA_STD_MPS2,
+        .p0_bg = P0_BG_STD_RADPS
     };
-    dr_nominal_state_t x0 = {0};
+    dr_nominal_state_t x0;
     /* GPS R (position) */
     float Rpos[9] = {GPS_POS_VAR_M2,0,0, 0,GPS_POS_VAR_M2,0, 0,0,GPS_POS_VAR_M2}; /* GPS position measurement noise */
     /* Main Loop @ IMU_LOOP_HZ */
@@ -441,6 +445,7 @@ static void imu_ma_get(const imu_ma_t *ma, float g_avg[3], float a_avg[3])
     float g[3], a[3], g_f[3], a_f[3], g_cal[3], a_cal[3];
     dr_imu_sample_t imu = {.gyro = {g_cal[0], g_cal[1], g_cal[2]},
                            .accel = {a_cal[0], a_cal[1], a_cal[2]}};
+    int k;
     
 
     /* 1) Discover Devices */
@@ -452,7 +457,7 @@ static void imu_ma_get(const imu_ma_t *ma, float g_avg[3], float a_avg[3])
 
     int fd_gnss = open_gnss();
     if (fd_gnss < 0) {
-        fprintf(stderr, "Failed to open GNSS device %s: %s\n", NEO6M_CHARDEV, strerror(-fd_gnss));
+        fprintf(stderr, "Failed to open GNSS device %s: %s\n", NEO6M_GNSS_CHARDEV_NAME, strerror(-fd_gnss));
         return EXIT_FAILURE;
     }
 
@@ -482,7 +487,7 @@ static void imu_ma_get(const imu_ma_t *ma, float g_avg[3], float a_avg[3])
     fprintf(stderr, "Fix: lat=%.7f lon=%.7f alt=%.2f m -> ENU Origin Set \n", ref_lla.lat_deg, ref_lla.lon_deg, ref_lla.alt_m); 
     
     /*4) Initialize EKF */
-    x0.q = dr_quatf_identity();
+    x0.q = dr_quat_identity();
     memcpy(x0.ba, ba, sizeof(ba));
     memcpy(x0.bg, bg, sizeof(bg));
     dr_ekf_init(&ekf, &cfg, &x0);
@@ -497,9 +502,9 @@ static void imu_ma_get(const imu_ma_t *ma, float g_avg[3], float a_avg[3])
         /* IMU Read and Average */
         
         if ( read_imu_once(iio_path, g, a)) { fprintf(stderr, "IMU read error\n"); break;}
-        imu_ma_push(&ma, g, a);
-        imu_ma_get(&ma, g_f, a_f);
-        for( int k = 0; k < 3; k++){ g_cal[k] = g_f[k] - bg[k]; a_cal[k] = a_f[k] - ba[k];}
+        imu_ma_push(&imu_ma, g, a);
+        imu_ma_get(&imu_ma, g_f, a_f);
+        for( k = 0; k < 3; k++){ g_cal[k] = g_f[k] - bg[k]; a_cal[k] = a_f[k] - ba[k];}
 
         /* Predict */
         dr_ekf_predict(&ekf, &imu, dt);
@@ -509,7 +514,7 @@ static void imu_ma_get(const imu_ma_t *ma, float g_avg[3], float a_avg[3])
         rc = get_gnss_fix(fd_gnss, &cur, &have, &y, &m, &d, &H, &M, &S, &ms, &tns, &spd);
         if( rc > 0 && have ){
             /* Convert to ENU */
-            ecef_t e = lla_to_ecef =(cur);
+            ecef_t e = lla_to_ecef(cur);
             dr_gps_pos_t z;
             ecef_delta_to_enu(ref_lla, e, ref_ecef, z.pos);
             (void)dr_ekf_update_gps_pos(&ekf, &z, Rpos);

@@ -33,6 +33,11 @@
  */
 #define NEO6M_DEVICE_PATH "/dev/neo6m0"
 
+/**
+ * @brief Value of PI
+ */
+#define M_PI 3.14159265358979323846
+
 /* ----------------------------------------------------------------
 * IMU sampling and calibration parameters.
 *------------------------------------------------------------------*/
@@ -108,8 +113,9 @@
 /**
  * @brief Default sleep resolution for main loop (ms)
  */
-#define MAIN_LOOP_DELAY_MS   (int(1000.0f/IMU_LOOP_HZ + 0.5f))
+#define MAIN_LOOP_DELAY_MS   ((int)(1000.0f/IMU_LOOP_HZ + 0.5f))
     
 
 
 #endif // DR_APP_CONFIG_H  
+/* End of dr_app_config.h */
