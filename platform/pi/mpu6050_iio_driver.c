@@ -552,11 +552,7 @@ static int mpu6050_probe(struct i2c_client *client)
         goto err_pm_disable;
     }
 
-    ret = mpu6050_hw_init(st);
-    if (ret ) {
-        goto err_pm_disable;
-    }
-
+    
     indio_dev->dev.parent = &client->dev;
     indio_dev->info = &mpu6050_iio_info;
     indio_dev->name = "mpu6050";
@@ -650,7 +646,7 @@ static int mpu6050_runtime_resume(struct device *dev)
 }
 
 static const struct of_device_id mpu6050_of_match[] = {
-    { .compatible = "invensense,mpu6050", },
+    { .compatible = "invensense,mpu6050-custom", },
     { }
 };
 MODULE_DEVICE_TABLE(of, mpu6050_of_match);

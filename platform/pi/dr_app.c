@@ -120,6 +120,7 @@ static int find_mpu6050_iio(char *out_path, size_t cap)
                 if (strcmp(name, MPU6050_IIO_NAME) == 0) {
                     // Found it
                     snprintf(out_path, cap, "%s/%s", base, e->d_name);
+                    printf("Found MPU6050 IIO device at %s\n", out_path);
                     ret = 0;
                     fclose(f);
                     break;
@@ -152,11 +153,13 @@ static int read_imu_once(const char *devpath, float gyro_radps[3], float accel_m
         snprintf(path, sizeof(path), "%s/%s_raw", devpath, acc_nodes[i]);
         if (read_int_from_file(path, &raw))
         {
+            printf("Failed to read accel raw from %s\n", path);
             return -EIO;
         }
         snprintf(path, sizeof(path), "%s/%s_scale", devpath, acc_nodes[i]);
         if (read_double_from_file(path, &scale))
         {
+            printf("Failed to read accel scale from %s\n", path);
             return -EIO;
         }
         accel_mps2[i] = (float)(raw * scale);
@@ -168,11 +171,13 @@ static int read_imu_once(const char *devpath, float gyro_radps[3], float accel_m
         snprintf(path, sizeof(path), "%s/%s_raw", devpath, gyro_nodes[i]);
         if (read_int_from_file(path, &raw))
         {
+            printf("Failed to read gyro raw from %s\n", path);
             return -EIO;
         }
         snprintf(path, sizeof(path), "%s/%s_scale", devpath, gyro_nodes[i]);
         if (read_double_from_file(path, &scale))
         {
+            printf("Failed to read gyro scale from %s\n", path);
             return -EIO;
         }
         gyro_radps[i] = (float)(raw * scale);
@@ -301,7 +306,7 @@ static geodetic_t enu_to_lla(geodetic_t ref, const ecef_t e0, const float enu[3]
  */
 static int open_gnss(void)
 {
-    int fd = open(NEO6M_GNSS_CHARDEV_NAME, O_RDONLY | O_CLOEXEC);
+    int fd = open(NEO6M_DEVICE_PATH, O_RDONLY | O_CLOEXEC);
     return (fd < 0) ? -errno : fd;
 }
 
@@ -386,6 +391,7 @@ static void imu_ma_get(const imu_ma_t *ma, float g_avg[3], float a_avg[3])
     for(i=0; i < CAL_SAMPLES; ++i)
     {
         if (read_imu_once(devpath, g, a) != 0) {
+            printf("Failed to read IMU data in path %s", devpath);
             return -EIO;
         }
         for (k = 0; k < 3; k++) {

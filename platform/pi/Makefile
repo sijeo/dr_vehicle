@@ -23,6 +23,6 @@ deploy:
 	scp *.ko sijeo@192.168.1.3:/home/sijeo/dr_vehicle/
 
 deploy_app:
-	scp test_app/test_neo6m_gnss_serdev sijeo@192.168.1.3:/home/sijeo/dr_vehicle/
+	scp dr_app sijeo@192.168.1.10:/home/sijeo/dr_vehicle/
 
 .PHONY: all clean app

@@ -11,14 +11,14 @@
             #size-cells = <0>;
 
             mpu6050: mpu6050@68 {
-                compatible = "invensense,mpu6050";
+                compatible = "invensense,mpu6050-custom";
                 reg = <0x68>;
                 interrupt-parent = <&gpio>;
                 interrupts = <17 0x8>;          //GPIO17, rising edge (IRQ_TYPE_EDGE_RISING=0x8)
 
                 // Optional defaults (match your driver's DT parsing)
-                invensense,accel-fsr-g = <2>;   //2/4/8/16 g
-                invensense,gyro-fsr-dps = <250>;    // 250/500/1000/2000 dps
+                invensense,accel-fsr-g = <4>;   //2/4/8/16 g
+                invensense,gyro-fsr-dps = <500>;    // 250/500/1000/2000 dps
                 invensense,odr-hz = <200>;          //effective ODR with DLPF = On 
             };
         };

@@ -18,7 +18,7 @@ DR_INLINE dr_vec3f_t dr_v3(float x, float y, float z)
  * @param b second vector
  * @return a + b
  */
-DR_INLINE dr_vec3f_t dr_v3_add(dr_vec3f_t a, dr_vec3f_t b)
+ DR_INLINE dr_vec3f_t dr_v3_add(dr_vec3f_t a, dr_vec3f_t b)
 {
     return dr_v3(a.x + b.x, a.y + b.y, a.z + b.z);
 }
@@ -28,6 +28,7 @@ DR_INLINE dr_vec3f_t dr_v3_add(dr_vec3f_t a, dr_vec3f_t b)
  * @param b second vector
  * @return a - b
  */
+
 DR_INLINE dr_vec3f_t dr_v3_sub(dr_vec3f_t a, dr_vec3f_t b)
 {
     return dr_v3(a.x - b.x, a.y - b.y, a.z - b.z);
@@ -69,6 +70,7 @@ DR_INLINE dr_vec3f_t dr_v3_cross( dr_vec3f_t a, dr_vec3f_t b )
  * @param a input vector
  * @return ||a|| (scalar)
  */
+
 DR_INLINE float dr_v3_norm( dr_vec3f_t a )
 {
     return sqrtf(a.x * a.x + a.y * a.y + a.z * a.z);
@@ -201,7 +203,7 @@ void dr_R_from_q( dr_quatf_t q, float R[9] )
     float xx, yy, zz, xy, xz, yz, wx, wy, wz;
     w = q.w; x = q.x; y = q.y; z = q.z;
     xx = x * x; yy = y * y; zz = z * z;
-    xy = x * y; xz = x * z; yz = y * z
+    xy = x * y; xz = x * z; yz = y * z;
     wx = w * x; wy = w * y; wz = w * z;
     // R = [ (1-2(yy+zz)) 2(xy-wz)   2(xz+wy)
     //       2(xy+wz)     (1-2(xx+zz)) 2(yz-wx)

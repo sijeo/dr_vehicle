@@ -38,6 +38,7 @@ static void dr_ekf_init_covariance(dr_ekf_t* ekf)
  void dr_ekf_init(dr_ekf_t *ekf, const dr_ekf_config_t *cfg, const dr_nominal_state_t *x0)
  {
     memset(ekf, 0, sizeof(dr_ekf_t));
+    ekf->cfg = *cfg;
    if ( x0 ) {
     ekf->x = *x0;
    }
@@ -201,18 +202,18 @@ static void dr_ekf_init_covariance(dr_ekf_t* ekf)
     }
 
     /* Innovation y = z - Hx */
-    y[0] = z->pos[0] - x->p[0];
-    y[1] = z->pos[1] - x->p[1];
-    y[2] = z->pos[2] - x->p[2];
+    y[0] = z->pos[0] - ekf->x.p[0];
+    y[1] = z->pos[1] - ekf->x.p[1];
+    y[2] = z->pos[2] - ekf->x.p[2];
 
     /* Innovation covariance S = HPH' + R */
-    dr_mat_mul(HP, H, ekf->P, 3, DR_STATE_ERR_DIM, 3);
+    dr_mat_mul(HP, H, ekf->P, 3, DR_STATE_ERR_DIM, DR_STATE_ERR_DIM);
     dr_mat_transpose(Ht, H, 3, DR_STATE_ERR_DIM);
     dr_mat_mul(HPHt, HP, Ht, 3, DR_STATE_ERR_DIM, 3);
     for ( i = 0; i < 9; i++ ) {
         S[i] = HPHt[i] + Rpos[i];
     }
-    if( dr_mat_inv3(Sinv, S) != 0 ) {
+    if( dr_mat3_inv(Sinv, S) != 0 ) {
         return -1; // singular innovation covariance
     }
     dr_mat_mul(PHt, ekf->P, Ht, DR_STATE_ERR_DIM, DR_STATE_ERR_DIM , 3);
@@ -241,7 +242,7 @@ static void dr_ekf_init_covariance(dr_ekf_t* ekf)
     dr_mat_mul(tmp, I_KH, ekf->P, DR_STATE_ERR_DIM, DR_STATE_ERR_DIM, DR_STATE_ERR_DIM);
     dr_mat_transpose(I_KH_T, I_KH, DR_STATE_ERR_DIM, DR_STATE_ERR_DIM);
     dr_mat_mul(Pnew, tmp, I_KH_T, DR_STATE_ERR_DIM, DR_STATE_ERR_DIM, DR_STATE_ERR_DIM);
-    dr_mat_mul(KR, K, Rpos, DR_STATE_ERR_DIM, 3, 3);
+    dr_mat_mul(KR, K, (float *)Rpos, DR_STATE_ERR_DIM, 3, 3);
     dr_mat_transpose(KT, K, DR_STATE_ERR_DIM, 3);
     dr_mat_mul(KRT, KR, KT, DR_STATE_ERR_DIM, 3, DR_STATE_ERR_DIM);
     for( i = 0; i < DR_STATE_ERR_DIM * DR_STATE_ERR_DIM; i++ ) {
