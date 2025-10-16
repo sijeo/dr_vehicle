@@ -13,9 +13,9 @@
 //   gcc -O2 -Wall -o mpu6050_test mpu6050_test.c
 //
 // Example:
-//   sudo ./mpu6050_test /dev/mpu6050-0 \
-//        --odr 200 --period-ms 100 \
-//        --cal-ms 3000 --g-lsb 0 0 16384 \
+//   sudo ./mpu6050_test /dev/mpu6050-0 
+//        --odr 200 --period-ms 100 
+//        --cal-ms 3000 --g-lsb 0 0 16384 
 //        --accel-fs 4 --gyro-fs 500 --si --avg > imu.csv
 //
 // Notes:
@@ -37,7 +37,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "mpu6050_ioctl.h"
+#include "../mpu6050_ioctl.h"
 
 static volatile int g_stop = 0;
 static void on_sigint(int sig) { (void)sig; g_stop = 1; }
@@ -81,7 +81,7 @@ static int drain_accumulate(int fd, // average all samples currently queued
         if (r == 0) break;
         *ax += s.ax; *ay += s.ay; *az += s.az;
         *gx += s.gx; *gy += s.gy; *gz += s.gz;
-        *ts_ns = s.ts_ns;        // use timestamp of last sample in batch
+        *ts_ns = s.t_ns;        // use timestamp of last sample in batch
         *temp_last = s.temp;     // and last raw temp
         ++(*count);
         got = 1;
@@ -189,8 +189,27 @@ int main(int argc, char **argv) {
     int gyro_fs  = 500;            // dps
     int print_si = 0;
     int duration_s = -1;
+    int i;
+    struct biases b;
+    const double ALSB = accel_lsb_per_g(accel_fs);
+    const double GLSB = gyro_lsb_per_dps(gyro_fs);
+    const double g = 9.80665;
+    const double d2r = 3.14159265358979323846 / 180.0;
 
-    for (int i = 2; i < argc; ++i) {
+    struct timespec next;
+    time_t start_sec = 0;
+    int timed_out = 0;
+    int printed = 0;
+    // Average all samples available at this tick
+    double ax, ay, az, gx, gy, gz;
+    int64_t ts_ns = 0;
+    int count = 0, temp_last = 0, got = 0;
+    double axc = 0.0, ayc = 0.0, azc = 0.0;
+    double gxc = 0.0, gyc = 0.0, gzc = 0.0;
+    double ax_ms2 = 0.0, ay_ms2 = 0.0, az_ms2 = 0.0;
+    double gx_rads = 0.0, gy_rads = 0.0, gz_rads = 0.0;
+
+    for (i = 2; i < argc; ++i) {
         if (!strcmp(argv[i], "--odr") && i+1 < argc) odr = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--period-ms") && i+1 < argc) period_ms = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--cal-ms") && i+1 < argc) cal_ms = (uint32_t)atoi(argv[++i]);
@@ -219,7 +238,7 @@ int main(int argc, char **argv) {
     // (keeping defaults here, but you can expose MPU6050_IOC_SET_FS if needed)
 
     // Optional calibration
-    struct biases b = {0};
+    memset(&b, 0, sizeof(b));
     if (cal_ms > 0) {
         fprintf(stderr, "Calibrating for %u ms. Keep device still...\n", cal_ms);
         if (calibrate_stationary(fd, cal_ms, g_lsb_x, g_lsb_y, g_lsb_z, &b) == 0) {
@@ -242,24 +261,15 @@ int main(int argc, char **argv) {
     }
     fflush(stdout);
 
-    const double ALSB = accel_lsb_per_g(accel_fs);
-    const double GLSB = gyro_lsb_per_dps(gyro_fs);
-    const double g = 9.80665;
-    const double d2r = 3.14159265358979323846 / 180.0;
-
-    struct timespec next;
+    
     clock_gettime(CLOCK_MONOTONIC, &next);
-    time_t start_sec = next.tv_sec;
+    start_sec = next.tv_sec;
 
     while (!g_stop) {
-        int timed_out = 0;
-        int printed = 0;
+        
 
         if (do_avg) {
-            // Average all samples available at this tick
-            double ax, ay, az, gx, gy, gz;
-            int64_t ts_ns = 0;
-            int count = 0, temp_last = 0;
+            
 
             if (drain_accumulate(fd, &ax, &ay, &az, &gx, &gy, &gz, &ts_ns, &count, &temp_last) < 0) {
                 perror("read");
@@ -269,16 +279,16 @@ int main(int argc, char **argv) {
                 ax /= (double)count; ay /= (double)count; az /= (double)count;
                 gx /= (double)count; gy /= (double)count; gz /= (double)count;
 
-                double axc = ax - b.ax, ayc = ay - b.ay, azc = az - b.az;
-                double gxc = gx - b.gx, gyc = gy - b.gy, gzc = gz - b.gz;
+                axc = ax - b.ax; ayc = ay - b.ay; azc = az - b.az;
+                gxc = gx - b.gx; gyc = gy - b.gy; gzc = gz - b.gz;
 
                 if (print_si) {
-                    double ax_ms2 = (axc / ALSB) * g;
-                    double ay_ms2 = (ayc / ALSB) * g;
-                    double az_ms2 = (azc / ALSB) * g;
-                    double gx_rads = (gxc / GLSB) * d2r;
-                    double gy_rads = (gyc / GLSB) * d2r;
-                    double gz_rads = (gzc / GLSB) * d2r;
+                    ax_ms2 = (axc / ALSB) * g;
+                    ay_ms2 = (ayc / ALSB) * g;
+                    az_ms2 = (azc / ALSB) * g;
+                    gx_rads = (gxc / GLSB) * d2r;
+                    gy_rads = (gyc / GLSB) * d2r;
+                    gz_rads = (gzc / GLSB) * d2r;
 
                     printf("%lld,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
                         (long long)ts_ns,
@@ -296,32 +306,32 @@ int main(int argc, char **argv) {
         } else {
             // Use the latest sample currently available
             struct mpu6050_sample s;
-            int got = drain_latest(fd, &s);
+            got = drain_latest(fd, &s);
             if (got < 0) { perror("read"); break; }
             if (got > 0) {
-                double axc = (double)s.ax - b.ax;
-                double ayc = (double)s.ay - b.ay;
-                double azc = (double)s.az - b.az;
-                double gxc = (double)s.gx - b.gx;
-                double gyc = (double)s.gy - b.gy;
-                double gzc = (double)s.gz - b.gz;
+                axc = (double)s.ax - b.ax;
+                ayc = (double)s.ay - b.ay;
+                azc = (double)s.az - b.az;
+                gxc = (double)s.gx - b.gx;
+                gyc = (double)s.gy - b.gy;
+                gzc = (double)s.gz - b.gz;
 
                 if (print_si) {
-                    double ax_ms2 = (axc / ALSB) * g;
-                    double ay_ms2 = (ayc / ALSB) * g;
-                    double az_ms2 = (azc / ALSB) * g;
-                    double gx_rads = (gxc / GLSB) * d2r;
-                    double gy_rads = (gyc / GLSB) * d2r;
-                    double gz_rads = (gzc / GLSB) * d2r;
+                    ax_ms2 = (axc / ALSB) * g;
+                    ay_ms2 = (ayc / ALSB) * g;
+                    az_ms2 = (azc / ALSB) * g;
+                    gx_rads = (gxc / GLSB) * d2r;
+                    gy_rads = (gyc / GLSB) * d2r;
+                    gz_rads = (gzc / GLSB) * d2r;
 
                     printf("%lld,%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
-                        (long long)s.ts_ns,
+                        (long long)s.t_ns,
                         s.ax, s.ay, s.az, s.gx, s.gy, s.gz, s.temp,
                         axc, ayc, azc, gxc, gyc, gzc,
                         ax_ms2, ay_ms2, az_ms2, gx_rads, gy_rads, gz_rads);
                 } else {
                     printf("%lld,%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
-                        (long long)s.ts_ns,
+                        (long long)s.t_ns,
                         s.ax, s.ay, s.az, s.gx, s.gy, s.gz, s.temp,
                         axc, ayc, azc, gxc, gyc, gzc);
                 }
