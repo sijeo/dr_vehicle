@@ -1,4 +1,4 @@
-obj-m := neo6m_gnss_serdev.o
+obj-m := mpu6050_char.o
 
 KDIR := $(HOME)/rpi_work/kernel_rpi/linux
 CROSS_COMPILE ?= arm-linux-gnueabihf-
@@ -19,8 +19,11 @@ clean:
 app: dr_app.c
 	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o dr_app $< $(CORE_SRCS) -lm
 
+test_app: test_app/test_mpu6050_iio.c
+	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o test_app/test_mpu6050_iio $< $(CORE_SRCS) -lm
+
 deploy:
-	scp *.ko sijeo@192.168.1.3:/home/sijeo/dr_vehicle/
+	scp *.ko sijeo@192.168.1.10:/home/sijeo/dr_vehicle/
 
 deploy_app:
 	scp dr_app sijeo@192.168.1.10:/home/sijeo/dr_vehicle/

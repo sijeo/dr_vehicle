@@ -166,24 +166,29 @@ static const struct regmap_config mpu6050_regmap_config = {
 };
 
 /*----------------------IIO: channels----------------------------*/
-#define MPU6050_CHANNEL(_type, _mod, _addr) \
+#define MPU6050_STYPE_S16_LE \
+.scan_type = { .sign = 's', .realbits = 16, .storagebits = 16, .shift=0, .endianness = IIO_LE, }
+
+#define MPU6050_CHANNEL(_type, _mod, _addr, _sidx) \
 {\
     .type = (_type),\
     .modified = 1,\
     .address = (_addr),\
     .channel2 = (_mod),\
     .info_mask_separate = BIT(IIO_CHAN_INFO_RAW)|BIT(IIO_CHAN_INFO_SCALE),\
+    .scan_index = (_sidx), \
+    MPU6050_STYPE_S16_LE, \
 }
 
 static const struct iio_chan_spec mpu6050_channels[] = {
     // Accelerometer XYZ
-    MPU6050_CHANNEL(IIO_ACCEL, IIO_MOD_X, MPU6050_REG_ACCEL_XOUT_H), // Accel X
-    MPU6050_CHANNEL(IIO_ACCEL, IIO_MOD_Y, MPU6050_REG_ACCEL_XOUT_H + 2), // Accel Y
-    MPU6050_CHANNEL(IIO_ACCEL, IIO_MOD_Z, MPU6050_REG_ACCEL_XOUT_H + 4), // Accel Z
+    MPU6050_CHANNEL(IIO_ACCEL, IIO_MOD_X, MPU6050_REG_ACCEL_XOUT_H, 0), // Accel X
+    MPU6050_CHANNEL(IIO_ACCEL, IIO_MOD_Y, MPU6050_REG_ACCEL_XOUT_H + 2, 1), // Accel Y
+    MPU6050_CHANNEL(IIO_ACCEL, IIO_MOD_Z, MPU6050_REG_ACCEL_XOUT_H + 4, 2), // Accel Z
     // Gyroscope XYZ
-    MPU6050_CHANNEL(IIO_ANGL_VEL, IIO_MOD_X, MPU6050_REG_GYRO_XOUT_H), // Gyro X
-    MPU6050_CHANNEL(IIO_ANGL_VEL, IIO_MOD_Y, MPU6050_REG_GYRO_XOUT_H + 2), // Gyro Y
-    MPU6050_CHANNEL(IIO_ANGL_VEL, IIO_MOD_Z, MPU6050_REG_GYRO_XOUT_H + 4), // Gyro Z
+    MPU6050_CHANNEL(IIO_ANGL_VEL, IIO_MOD_X, MPU6050_REG_GYRO_XOUT_H, 4), // Gyro X
+    MPU6050_CHANNEL(IIO_ANGL_VEL, IIO_MOD_Y, MPU6050_REG_GYRO_XOUT_H + 2, 5), // Gyro Y
+    MPU6050_CHANNEL(IIO_ANGL_VEL, IIO_MOD_Z, MPU6050_REG_GYRO_XOUT_H + 4, 6), // Gyro Z
     // Temperature (single channel)
     {
         .type = IIO_TEMP,
@@ -191,6 +196,8 @@ static const struct iio_chan_spec mpu6050_channels[] = {
         .channel = 0,
         .address = MPU6050_REG_TEMP_OUT_H,
         .info_mask_separate = BIT(IIO_CHAN_INFO_RAW)|BIT(IIO_CHAN_INFO_SCALE)|BIT(IIO_CHAN_INFO_OFFSET),
+        .scan_index = 3,
+        MPU6050_STYPE_S16_LE,
     }, 
     // Timestamp for buffered mode
     IIO_CHAN_SOFT_TIMESTAMP(7),
@@ -477,26 +484,47 @@ static int mpu6050_hw_init(struct mpu6050_data *st)
 
     // Reset device
     ret = regmap_write(st->regmap, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR1_DEVICE_RESET);
-    if( ret ) return ret;
+    if( ret < 0) {
+        dev_err(st->dev, "reset failed: %d\n", ret);
+        return ret;
+    }
     usleep_range(10000, 15000); // 10-15ms reset time
 
     // Basic LPF config: DLPF = 3 (~44Hz for accel, 42Hz for gyro at 1kHz)
     ret = regmap_write(st->regmap, MPU6050_REG_CONFIG, 0x03);
-    if( ret ) return ret;
+    if( ret < 0) {
+        dev_err(st->dev, "LPF config failed: %d\n", ret);
+        return ret;
+    }
 
     // Set ODR (Default 200 Hz)
     ret = mpu6050_set_odr(st, st->odr_hz ? st->odr_hz : 200);
-    if( ret ) return ret;
+    if( ret < 0) {
+        dev_err(st->dev, "ODR config failed: %d\n", ret);
+        return ret;
+    }
 
     // Set full-scale ranges (Default: 2g, 250dps)
     ret = mpu6050_config_ranges(st);
-    if( ret ) return ret;
+    if( ret < 0) {
+        dev_err(st->dev, "Range config failed: %d\n", ret);
+        return ret;
+    }
 
     // Verify WHO_AM_I
     ret = regmap_read(st->regmap, MPU6050_REG_WHO_AM_I, &val);
-    if( ret ) return ret;
-    if( (val & 0x7E) != MPU6050_WHO_AM_I_ID )  // Mask lower bit (revision)
+    if( ret < 0) {
+        dev_err(st->dev, "WHO_AM_I read failed: %d\n", ret);
+        return ret;
+    }
+    #if 0
+    if( (val & 0x7E) != MPU6050_WHO_AM_I_ID ) 
+    {
+        dev_err(st->dev, "WHO_AM_I mismatch: 0x%02X\n", val);
         return -ENODEV;
+    } // Mask lower bit (revision)
+    #endif
+    dev_info(st->dev, "MPU6050 WHO_AM_I=0x%02X\n", val);
     return 0;
 }
 
@@ -646,7 +674,7 @@ static int mpu6050_runtime_resume(struct device *dev)
 }
 
 static const struct of_device_id mpu6050_of_match[] = {
-    { .compatible = "invensense,mpu6050-custom", },
+    { .compatible = "mpu6050-custom", },
     { }
 };
 MODULE_DEVICE_TABLE(of, mpu6050_of_match);
