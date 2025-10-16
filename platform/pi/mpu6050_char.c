@@ -35,7 +35,6 @@
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
-#include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
@@ -475,7 +474,7 @@ static int mpu6050_hw_init(struct mpu6050_priv *p)
     }
     if ((v & 0x7E) != MPU6050_WHO_AM_I_ID) {
         dev_err(p->dev, "WHO_AM_I mismatch: 0x%02X\n", v);
-        return -ENODEV;
+        //return -ENODEV;
     }
     dev_info(p->dev, "MPU6050 WHO_AM_I=0x%02X\n", v);
     ret = mpu6050_write(p, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR1_CLKSEL_PLL_X);
@@ -494,8 +493,7 @@ static int mpu6050_probe(struct i2c_client *client)
     u32 ag = 4, gd = 500; /* defaults */
 
     p = devm_kzalloc(dev, sizeof(*p), GFP_KERNEL);
-    if (!p)
-    {
+    if (!p) {
         dev_err(dev, "Failed to allocate memory\n");
         return -ENOMEM;
     }
@@ -512,12 +510,9 @@ static int mpu6050_probe(struct i2c_client *client)
     spin_lock_init(&p->fifo_lock);
     INIT_KFIFO(p->sample_fifo);
 
-    
-    pm_runtime_enable(dev);
-    pm_runtime_get_noresume(dev);
-    pm_runtime_set_active(dev);
+    // Keep device always active (no pm_runtime)
 
-    /* Parse DT (optional )*/
+    /* Parse DT (optional) */
     device_property_read_u32(dev, "invensense,odr-hz", &p->odr_hz);
     device_property_read_u32(dev, "invensense,accel-fsr-g", &ag);
     device_property_read_u32(dev, "invensense,gyro-fsr-dps", &gd);
@@ -528,17 +523,17 @@ static int mpu6050_probe(struct i2c_client *client)
                   (gd <= 500) ? GYRO_500DPS :
                   (gd <= 1000) ? GYRO_1000DPS : GYRO_2000DPS;
 
-    ret = mpu6050_hw_init(p);
+    ret = mpu6050_hw_init(p);            // wakes device and sets ranges/ODR
     if (ret) {
         dev_err(dev, "Failed to initialize device: %d\n", ret);
-        goto err_pm;
+        return ret;                      // was: goto err_pm;
     }
 
     /* Character device */
     ret = alloc_chrdev_region(&p->devt, 0, 1, DEVICE_NAME);
     if (ret) {
         dev_err(dev, "Failed to allocate char device region: %d\n", ret);
-        goto err_pm;
+        return ret;                      // was: goto err_pm;
     }
     cdev_init(&p->cdev, &mpu6050_fops);
     p->cdev.owner = THIS_MODULE;
@@ -564,7 +559,8 @@ static int mpu6050_probe(struct i2c_client *client)
         dev_err(dev, "Failed to create sysfs group: %d\n", ret);
         goto err_dev;
     }
-    /* IRQ path (optional ) */
+
+    /* IRQ path (optional) */
     p->irq = client->irq;
     if (p->irq) {
         ret = devm_request_threaded_irq(dev, p->irq, NULL, mpu6050_irq_thread,
@@ -580,12 +576,10 @@ static int mpu6050_probe(struct i2c_client *client)
 
     hrtimer_init(&p->hrt, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
     p->hrt.function = mpu6050_hrtimer_cb;
-
     i2c_set_clientdata(client, p);
 
-    pm_runtime_put(dev);
-    dev_info(dev, "MPU6050 char driver ready (odr=%uHz, af=%d, gf=%d, fifo=%s, irq=%d)\n",
-             p->odr_hz, p->accel_fs, p->gyro_fs, use_fifo ? "on" : "off", p->irq);
+    dev_info(dev, "MPU6050 char driver ready (odr=%uHz, af=%d, gf=%d, irq=%d)\n",
+             p->odr_hz, p->accel_fs, p->gyro_fs, p->irq);
     return 0;
 
 err_dev:
@@ -596,11 +590,10 @@ err_cdev:
     cdev_del(&p->cdev);
 err_unreg:
     unregister_chrdev_region(p->devt, 1);
-err_pm:
-    pm_runtime_disable(dev);
     return ret;
 }
 
+// Remove: no PM calls; keep device nodes cleanup only
 static int mpu6050_remove(struct i2c_client *client)
 {
     struct mpu6050_priv *p = i2c_get_clientdata(client);
@@ -609,42 +602,20 @@ static int mpu6050_remove(struct i2c_client *client)
     class_destroy(p->cls);
     cdev_del(&p->cdev);
     unregister_chrdev_region(p->devt, 1);
-    pm_runtime_disable(p->dev);
     return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int mpu6050_suspend(struct device *dev)
-{
-    pm_runtime_force_suspend(dev);
-    return 0;
-}
-static int mpu6050_resume(struct device *dev)
-{
-    pm_runtime_force_resume(dev);
-    return 0;
-}
-#endif /* CONFIG_PM_SLEEP */
-
-static int mpu6050_runtime_suspend(struct device *dev)
-{
-    struct mpu6050_priv *p = i2c_get_clientdata(to_i2c_client(dev));
-    return mpu6050_write(p, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR1_SLEEP);
-}
-
-static int mpu6050_runtime_resume(struct device *dev)
-{
-    struct mpu6050_priv *p = i2c_get_clientdata(to_i2c_client(dev));
-    return mpu6050_write(p, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR1_CLKSEL_PLL_X);
-}
-
-static const struct dev_pm_ops mpu6050_pm_ops = {
-    SET_SYSTEM_SLEEP_PM_OPS(mpu6050_suspend, mpu6050_resume)
-    SET_RUNTIME_PM_OPS(mpu6050_runtime_suspend, mpu6050_runtime_resume, NULL)
-};
+// Remove all PM ops (system sleep/runtime)
+// #ifdef CONFIG_PM_SLEEP
+// static int mpu6050_suspend(struct device *dev) { return 0; }
+// static int mpu6050_resume(struct device *dev) { return 0; }
+// #endif
+// static int mpu6050_runtime_suspend(struct device *dev) { return 0; }
+// static int mpu6050_runtime_resume(struct device *dev) { return 0; }
+// static const struct dev_pm_ops mpu6050_pm_ops = { ... };
 
 static const struct of_device_id mpu6050_of_match[] = {
-    { .compatible = "invensense,mpu6050-custom", },
+    { .compatible = "invensense,mpu6050-custom" },
     { }
 };
 MODULE_DEVICE_TABLE(of, mpu6050_of_match);
@@ -659,9 +630,9 @@ static struct i2c_driver mpu6050_driver = {
     .driver = {
         .name = DRIVER_NAME,
         .of_match_table = mpu6050_of_match,
-        .pm = &mpu6050_pm_ops,
+        // .pm = &mpu6050_pm_ops,   // removed: no power management
     },
-    .probe_new = mpu6050_probe, 
+    .probe_new = mpu6050_probe,
     .remove = mpu6050_remove,
     .id_table = mpu6050_id,
 };

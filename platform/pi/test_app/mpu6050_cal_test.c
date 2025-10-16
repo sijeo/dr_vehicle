@@ -13,9 +13,9 @@
 //   gcc -O2 -Wall -o mpu6050_test mpu6050_test.c
 //
 // Example:
-//   sudo ./mpu6050_test /dev/mpu6050-0 \
-//        --odr 200 --period-ms 100 \
-//        --cal-ms 3000 --g-lsb 0 0 16384 \
+//   sudo ./mpu6050_test /dev/mpu6050-0 
+//        --odr 200 --period-ms 100 
+//        --cal-ms 3000 --g-lsb 0 0 16384 
 //        --accel-fs 4 --gyro-fs 500 --si --avg > imu.csv
 //
 // Notes:
@@ -37,7 +37,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "mpu6050_ioctl.h"
+#include "../mpu6050_ioctl.h"
 
 static volatile int g_stop = 0;
 static void on_sigint(int sig) { (void)sig; g_stop = 1; }
@@ -81,7 +81,7 @@ static int drain_accumulate(int fd, // average all samples currently queued
         if (r == 0) break;
         *ax += s.ax; *ay += s.ay; *az += s.az;
         *gx += s.gx; *gy += s.gy; *gz += s.gz;
-        *ts_ns = s.ts_ns;        // use timestamp of last sample in batch
+        *ts_ns = s.t_ns;        // use timestamp of last sample in batch
         *temp_last = s.temp;     // and last raw temp
         ++(*count);
         got = 1;
@@ -189,8 +189,8 @@ int main(int argc, char **argv) {
     int gyro_fs  = 500;            // dps
     int print_si = 0;
     int duration_s = -1;
-
-    for (int i = 2; i < argc; ++i) {
+    int i;
+    for (i = 2; i < argc; ++i) {
         if (!strcmp(argv[i], "--odr") && i+1 < argc) odr = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--period-ms") && i+1 < argc) period_ms = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--cal-ms") && i+1 < argc) cal_ms = (uint32_t)atoi(argv[++i]);
@@ -219,7 +219,7 @@ int main(int argc, char **argv) {
     // (keeping defaults here, but you can expose MPU6050_IOC_SET_FS if needed)
 
     // Optional calibration
-    struct biases b = {0};
+    struct biases b;
     if (cal_ms > 0) {
         fprintf(stderr, "Calibrating for %u ms. Keep device still...\n", cal_ms);
         if (calibrate_stationary(fd, cal_ms, g_lsb_x, g_lsb_y, g_lsb_z, &b) == 0) {
@@ -315,13 +315,13 @@ int main(int argc, char **argv) {
                     double gz_rads = (gzc / GLSB) * d2r;
 
                     printf("%lld,%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
-                        (long long)s.ts_ns,
+                        (long long)s.t_ns,
                         s.ax, s.ay, s.az, s.gx, s.gy, s.gz, s.temp,
                         axc, ayc, azc, gxc, gyc, gzc,
                         ax_ms2, ay_ms2, az_ms2, gx_rads, gy_rads, gz_rads);
                 } else {
                     printf("%lld,%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
-                        (long long)s.ts_ns,
+                        (long long)s.t_ns,
                         s.ax, s.ay, s.az, s.gx, s.gy, s.gz, s.temp,
                         axc, ayc, azc, gxc, gyc, gzc);
                 }
