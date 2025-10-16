@@ -13,9 +13,9 @@
 //   gcc -O2 -Wall -o mpu6050_test mpu6050_test.c
 //
 // Example:
-//   sudo ./mpu6050_test /dev/mpu6050-0 \
-//        --odr 200 --period-ms 100 \
-//        --cal-ms 3000 --g-lsb 0 0 16384 \
+//   sudo ./mpu6050_test /dev/mpu6050-0 
+//        --odr 200 --period-ms 100 
+//        --cal-ms 3000 --g-lsb 0 0 16384 
 //        --accel-fs 4 --gyro-fs 500 --si --avg > imu.csv
 //
 // Notes:
