@@ -40,6 +40,14 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/wait.h>
+#include <linux/module.h>
+#include <linux/poll.h>
+#include <linux/sysfs.h>
+#include <linux/ktime.h>
+
+#ifndef sysfs_emit
+#define sysfs_emit(buf, fmt, ...) scnprintf((buf), PAGE_SIZE, (fmt), ##__VA_ARGS__)
+#endif
 
 #include "mpu6050_ioctl.h" // User-space API definitions
 
@@ -80,7 +88,7 @@
 
 /* Module parameter: prefer FIFO path */
 static bool use_fifo = true;
-module_param(use_fifo, bool, 0444);
+module_param(use_fifo, bool, 0644);
 MODULE_PARM_DESC(use_fifo, "Use FIFO for data capture (default: true)");
 
 /*--------------regmap---------------*/
@@ -99,8 +107,8 @@ struct mpu6050_priv {
 
     /* configuration cache*/
     u32 odr_hz; /* Output Data Rate in Hz */
-    enum mpu6050_accel_fs accel_fs; /* accel FSR enum */
-    enum mpu6050_gyro_fs gyro_fs; /* gyro FSR enum */
+    mpu6050_accel_fs accel_fs; /* accel FSR enum */
+    mpu6050_gyro_fs gyro_fs; /* gyro FSR enum */
     bool running;                 /* Streaming enabled */
 
     /* Calibration bias/scale */
@@ -135,7 +143,7 @@ static int mpu6050_read( struct mpu6050_priv *p, u8 reg, unsigned int *val)
 {
     return regmap_read(p->regmap, reg, val);
 }
-
+#if 0
 static int mpu6050_read_word( struct mpu6050_priv *p, u8 addr, s16 *out)
 {
     u8 buf[2];
@@ -144,6 +152,7 @@ static int mpu6050_read_word( struct mpu6050_priv *p, u8 addr, s16 *out)
     *out = (s16)((buf[0] << 8) | buf[1]);
     return 0;
 }
+#endif
 
 static int mpu6050_set_ranges(struct mpu6050_priv *p )
 {
@@ -164,7 +173,7 @@ static int mpu6050_set_odr(struct mpu6050_priv *p, u32 hz)
     ret = regmap_write(p->regmap, MPU6050_REG_SMPLRT_DIV, div);
     if (ret) return ret;
     p->odr_hz = base / (1 + div);
-    p->hrt_period = ktime_set(0, NSEC_PER_SEC / (p->odr_hz ? :1);
+    p->hrt_period = ktime_set(0, NSEC_PER_SEC / (p->odr_hz ? p->odr_hz : 1));
     return 0;
 }
 
@@ -186,24 +195,11 @@ static int mpu6050_read_and_push(struct mpu6050_priv *p)
     s.gx = (s16)((buf[8] << 8) | buf[9]);
     s.gy = (s16)((buf[10] << 8) | buf[11]);
     s.gz = (s16)((buf[12] << 8) | buf[13]);
-    s.ts_ns = ktime_get_boottime_ns();
-    /* Apply  simple affine calibration (raw->corrected raw). Scaling to SI is left to userspace. */
-    s.ax_corr = (float)s.ax; 
-    s.ay_corr = (float)s.ay;
-    s.az_corr = (float)s.az;
-    s.gx_corr = (float)s.gx;
-    s.gy_corr = (float)s.gy;
-    s.gz_corr = (float)s.gz;
-    s.ax_corr = (s.ax_corr - p->cal_accel.bias[0]) * p->cal_accel.scale[0];
-    s.ay_corr = (s.ay_corr - p->cal_accel.bias[1]) * p->cal_accel.scale[1];
-    s.az_corr = (s.az_corr - p->cal_accel.bias[2]) * p->cal_accel.scale[2];
-
-    s.gx_corr = (s.gx_corr - p->cal_gyro.bias[0]) * p->cal_gyro.scale[0];
-    s.gy_corr = (s.gy_corr - p->cal_gyro.bias[1]) * p->cal_gyro.scale[1];
-    s.gz_corr = (s.gz_corr - p->cal_gyro.bias[2]) * p->cal_gyro.scale[2]; 
+    s.t_ns = ktime_get_boottime_ns(); 
     
     /* Push to FIFO */
-    if(!kfifo_is_full(&p->sample_fifo)) {
+    spin_lock(&p->fifo_lock);
+    if (!kfifo_is_full(&p->sample_fifo)) {
         kfifo_in(&p->sample_fifo, &s, 1);
         spin_unlock(&p->fifo_lock);
         wake_up_interruptible(&p->wq);
@@ -247,28 +243,23 @@ static long mpu6050_unlocked_ioctl( struct file *filp, unsigned int cmd, unsigne
     int ret = 0;
     unsigned int v;
     struct mpu6050_fs fs ;
-     struct mpu6050_cal_pair cp;
-     struct mpu6050_cal_req req;
-     u64 end_ns, cnt;
-     s64 last_ts;
-     double ax, ay, az, gx, gy, gz;
-     struct mpu6050_sample s;
+    struct mpu6050_cal_pair cp;
     
     switch(cmd) {
-        case MPU_IOC_GET_WHOAMI: {
+        case MPU6050_IOC_GET_WHOAMI: {
             v = 0;
             mpu6050_read(p, MPU6050_REG_WHO_AM_I, &v);
             if (copy_to_user((void __user*)arg, &v, sizeof(v)))
                 return -EFAULT;
             break;
         }
-        case MPU_IOC_GET_ODR: {
+        case MPU6050_IOC_GET_ODR: {
             v = p->odr_hz;
             if (copy_to_user((void __user *)arg, &v, sizeof(v)))
                 return -EFAULT;
             break;
         }
-        case MPU_IOC_SET_ODR: {
+        case MPU6050_IOC_SET_ODR: {
             if (copy_from_user(&v, (void __user *)arg, sizeof(v)))
                 return -EFAULT;
             mutex_lock(&p->io_lock);
@@ -278,7 +269,7 @@ static long mpu6050_unlocked_ioctl( struct file *filp, unsigned int cmd, unsigne
                 return ret;
             break;
         }
-        case MPU_IOC_SET_FS: {
+        case MPU6050_IOC_SET_FS: {
             memset(&fs, 0, sizeof(fs));
             if( copy_from_user(&fs, (void __user *)arg, sizeof(fs)))
                 return -EFAULT;
@@ -291,79 +282,23 @@ static long mpu6050_unlocked_ioctl( struct file *filp, unsigned int cmd, unsigne
                 return ret;
             break;
         }
-        case MPU_IOC_GET_FS: {
+        case MPU6050_IOC_GET_FS: {
             memset(&fs, 0, sizeof(fs));
-            fs = {p->accel_fs, p->gyro_fs};
+            fs.accel = p->accel_fs;
+            fs.gyro  = p->gyro_fs;
             if (copy_to_user((void __user *)arg, &fs, sizeof(fs)))
                 return -EFAULT;
             break;
         }
         case MPU6050_IOC_GET_CAL: {
             memset(&cp, 0, sizeof(cp));
-            cp = { p->cal_accel, p->cal_gyro };
+            cp.accel = p->cal_accel;
+            cp.gyro  = p->cal_gyro;
             if (copy_to_user((void __user *)arg, &cp, sizeof(cp)))
                 return -EFAULT;
             break;
         }
-        case MPU6050_IOC_SET_CAL: {
-            memset(&cp, 0, sizeof(cp));
-            if (copy_from_user(&cp, (void __user *)arg, sizeof(cp)))
-                return -EFAULT;
-            mutex_lock(&p->io_lock);
-            p->cal_accel = cp.accel;
-            p->cal_gyro = cp.gyro;
-            mutex_unlock(&p->io_lock);
-            break;
-        }
-        case MPU6050_IOC_RUN_CAL_STATIONARY: {
-            memset(&req, 0, sizeof(req));
-            memset(&cp, 0, sizeof(cp));
-            if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
-                return -EFAULT;
-                /* Simple in-driver stationary calibration: average N samples while 
-                assumed still gyro bias = mean(gyro), accel bias = mean(accel) - expected_g_body*/
-            {
-                end_ns = ktime_get_boottime_ns() + (u64)req.duration_ms * 1000000ULL;
-                cnt = 0; last_ts = 0;
-                ax = 0; ay = 0; az = 0;
-                gx = 0; gy = 0; gz = 0;
-                /* Ensure streaming is on */
-                p->running = true;
-                if( !p->irq ) hrtimer_start(&p->hrt, p->hrt_period, HRTIMER_MODE_REL);
-                while( ktime_get_boottime_ns() < end_ns ) {
-                    /* Pull fresh sample (busy-wait with timeout)*/
-                    if( wait_event_interruptible_timeout(p->wq, !kfifo_is_empty(&p->sample_fifo), msecs_to_jiffies(100)) <= 0)
-                    continue;
-
-                    spin_lock(&p->fifo_lock);
-                    if( kfifo_out(&p->sample_fifo, &s, 1) == 1) {
-                        spin_unlock(&p->fifo_lock);
-                        if(s.ts_ns == last_ts) continue;
-                        last_ts = s.ts_ns;
-                        cnt++;
-                        ax += s.ax; ay += s.ay; az += s.az;
-                        gx += s.gx; gy += s.gy; gz += s.gz;
-                    } else { spin_unlock(&p->fifo_lock); }
-                }
-                if( cnt == 0 ) return -FS_EA_INODE_FL
-                ax /= cnt; ay /= cnt; az /= cnt; 
-                gx /= cnt; gy /= cnt; gz /= cnt;
-
-                /* Expectation of accel when level:[ 0, 0, +1g] unless user passes vector */
-                out.gyro.bias[0] = gx; out.gyro.bias[1] = gy; out.gyro.bias[2] = gz;
-                out.gyro.scale[0] = out.gyro.scale[1] = out.gryo.scale[2] = 1.0f;
-
-                out.accel.scale[0] = out.accel.scale[1] = out.accel.scale[2] = 1.0f;
-                out.accel.bias[0] = ax - req.expect_g_raw[0];
-                out.accel.bias[1] = ay - req.expect_g_raw[1];
-                out.accel.bias[2] = az - req.expect_g_raw[2];
-
-                p->cal_accel = out.accel;
-                p->cal_gyro = out.gyro;
-                if(copy_to_user((void __user*)arg, &out, sizeof(out))) return -EFAULT;
-            }
-            break;
-        }
+       
         default:
             return -ENOTTY;
     }
@@ -375,7 +310,7 @@ static ssize_t mpu6050_read_file(struct file *f, char __user *buf, size_t len, l
     struct mpu6050_priv *p = f->private_data;
     size_t count = len/sizeof(struct mpu6050_sample);
     size_t done = 0;
-    struct mput6050_sample s;
+    struct mpu6050_sample s;
 
     if( count == 0 ) return -EINVAL;
 
@@ -404,7 +339,7 @@ static ssize_t mpu6050_read_file(struct file *f, char __user *buf, size_t len, l
     return done*sizeof(s);
 }
 
-static __poll_t mpu6050_poll(struct file *f, poll_table *pt)
+static __poll_t mpu6050_poll(struct file *f, struct poll_table_struct *pt)
 {
     struct mpu6050_priv *p = f->private_data;
     __poll_t mask = 0;
@@ -453,7 +388,7 @@ static ssize_t show_odr(struct device *dev, struct device_attribute *a, char *bu
 
 static ssize_t store_odr(struct device *dev, struct device_attribute *a, const char *b, size_t c)
 {
-    struct mpu6050_priv *p = drv_get_drvdata(dev); 
+    struct mpu6050_priv *p = dev_get_drvdata(dev);
     unsigned int v;
     if( kstrtouint(b, 0, &v))
         return -EINVAL;
@@ -473,12 +408,14 @@ static ssize_t show_fs(struct device *dev, struct device_attribute *a, char *buf
 
 static ssize_t store_fs( struct device *dev, struct device_attribute *a, const char *b, size_t c)
 {
+    struct mpu6050_priv *p = dev_get_drvdata(dev);
+    unsigned int af, gf;
     if( sscanf(b, "%u %u", &af, &gf ) != 2)
         return -EINVAL;
     mutex_lock(&p->io_lock);
     p->accel_fs = af;
     p->gyro_fs = gf;
-    mpu6050_set_range(p);
+    mpu6050_set_ranges(p);
     mutex_unlock(&p->io_lock);
     return c;
 }
@@ -554,6 +491,7 @@ static int mpu6050_probe(struct i2c_client *client)
     struct device *dev = &client->dev;
     struct mpu6050_priv *p;
     int ret;
+    u32 ag = 4, gd = 500; /* defaults */
 
     p = devm_kzalloc(dev, sizeof(*p), GFP_KERNEL);
     if (!p)
@@ -574,29 +512,21 @@ static int mpu6050_probe(struct i2c_client *client)
     spin_lock_init(&p->fifo_lock);
     INIT_KFIFO(p->sample_fifo);
 
-    /*default calibration   */
-    memset(&p->cal_accel, 0, sizeof(p->cal_accel));
-    memset(&p->cal_gyro, 0, sizeof(p->cal_gyro));
-    p->cal_accel.scale[0] = p->cal_accel.scale[1] = p->cal_accel.scale[2] = 1.0f;
-    p->cal_gyro.scale[0] = p->cal_gyro.scale[1] = p->cal_gyro.scale[2] = 1.0f;
-
+    
     pm_runtime_enable(dev);
     pm_runtime_get_noresume(dev);
     pm_runtime_set_active(dev);
 
     /* Parse DT (optional )*/
-    device_property_read_u32(dev, "invensens,odr-hz", &p->odr_hz);
-    {
-    ag = 4; gd = 500; 
-    device_property_read_u32(dev, "invensens,accel-fsr-g", &ag);
-    device_property_read_u32(dev, "invensens,gyro-fsr-dps", &gd);
+    device_property_read_u32(dev, "invensense,odr-hz", &p->odr_hz);
+    device_property_read_u32(dev, "invensense,accel-fsr-g", &ag);
+    device_property_read_u32(dev, "invensense,gyro-fsr-dps", &gd);
     p->accel_fs = (ag <= 2) ? ACCEL_2G :
                    (ag <= 4) ? ACCEL_4G :
                    (ag <= 8) ? ACCEL_8G : ACCEL_16G;
     p->gyro_fs = (gd <= 250) ? GYRO_250DPS :
                   (gd <= 500) ? GYRO_500DPS :
                   (gd <= 1000) ? GYRO_1000DPS : GYRO_2000DPS;
-    }
 
     ret = mpu6050_hw_init(p);
     if (ret) {
@@ -605,7 +535,7 @@ static int mpu6050_probe(struct i2c_client *client)
     }
 
     /* Character device */
-    ret = alloc_chrdev_region(&p->devt, 0, 1, MPU6050_CHARDEV_NAME);
+    ret = alloc_chrdev_region(&p->devt, 0, 1, DEVICE_NAME);
     if (ret) {
         dev_err(dev, "Failed to allocate char device region: %d\n", ret);
         goto err_pm;
@@ -617,7 +547,7 @@ static int mpu6050_probe(struct i2c_client *client)
         dev_err(dev, "Failed to add char device: %d\n", ret);
         goto err_unreg;
     }
-    p->cls = class_create(THIS_MODULE, CLASS_NAME);
+    p->cls = class_create(THIS_MODULE, DEVICE_NAME);
     if (IS_ERR(p->cls)) {
         ret = PTR_ERR(p->cls);
         dev_err(dev, "Failed to create class: %d\n", ret);
@@ -671,7 +601,7 @@ err_pm:
     return ret;
 }
 
-static void mpu6050_remove(struct i2c_client *client)
+static int mpu6050_remove(struct i2c_client *client)
 {
     struct mpu6050_priv *p = i2c_get_clientdata(client);
     sysfs_remove_group(&p->chardev->kobj, &mpu6050_attr_group);
@@ -680,6 +610,7 @@ static void mpu6050_remove(struct i2c_client *client)
     cdev_del(&p->cdev);
     unregister_chrdev_region(p->devt, 1);
     pm_runtime_disable(p->dev);
+    return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -698,13 +629,13 @@ static int mpu6050_resume(struct device *dev)
 static int mpu6050_runtime_suspend(struct device *dev)
 {
     struct mpu6050_priv *p = i2c_get_clientdata(to_i2c_client(dev));
-    return mpu6050_write(p->regmap, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR1_SLEEP);
+    return mpu6050_write(p, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR1_SLEEP);
 }
 
 static int mpu6050_runtime_resume(struct device *dev)
 {
     struct mpu6050_priv *p = i2c_get_clientdata(to_i2c_client(dev));
-    return mpu6050_write(p->regmap, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR1_CLKSEL_PLL_X);
+    return mpu6050_write(p, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR1_CLKSEL_PLL_X);
 }
 
 static const struct dev_pm_ops mpu6050_pm_ops = {
@@ -735,6 +666,7 @@ static struct i2c_driver mpu6050_driver = {
     .id_table = mpu6050_id,
 };
 module_i2c_driver(mpu6050_driver);
+
 MODULE_AUTHOR("Sijeo Philip <sijeo80@gmail.com>");
 MODULE_DESCRIPTION("Invensense MPU6050 Character Device Driver");
 MODULE_LICENSE("GPL v2");

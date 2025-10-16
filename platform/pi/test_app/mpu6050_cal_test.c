@@ -1,6 +1,6 @@
 // gcc -O2 -Wall -o mpu6050_read_100ms tools/mpu6050_read_100ms.c
 // Example:
-//   sudo ./mpu6050_read_100ms /dev/mpu6050-0 --odr 200 --period_ms 100 \
+//   sudo ./mpu6050_read_100ms /dev/mpu6050-0 --odr 200 --period_ms 100 
 //        --cal_ms 3000 --g_raw 0 0 16384 --commit_cal
 // Notes:
 //   * This app owns the 100 ms tick. Driver ODR can be higher (e.g., 200 Hz) for low-jitter latest-sample reads.
@@ -15,7 +15,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
-#include "mpu6050_ioctl.h"
+#include "../mpu6050_ioctl.h"
 
 static void sleep_until_next_tick(struct timespec *t, uint32_t period_ms) 
 {
@@ -105,7 +105,7 @@ int main(int argc, char **argv)
     float graw[3] = {0, 0, 0}; // expected stationary gravity in RAW LSB
     int commit_cal = 0;
     int i, fd;
-     struct mpu6050_cal_pair cal = {0};
+     struct mpu6050_cal_pair cal;
      struct timespec next; 
 
     if (argc < 2) {
@@ -170,7 +170,7 @@ int main(int argc, char **argv)
         memset(&s, 0, sizeof(s));
         if (drain_latest(fd, &s)) {
             printf("%lld,%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
-                (long long)s.ts_ns,
+                (long long)s.t_ns,
                 s.ax, s.ay, s.az, s.gx, s.gy, s.gz, s.temp,
                 s.ax_corr, s.ay_corr, s.az_corr, s.gx_corr, s.gy_corr, s.gz_corr);
             fflush(stdout);
