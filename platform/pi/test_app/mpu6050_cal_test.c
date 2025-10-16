@@ -98,18 +98,22 @@ static int calibrate_stationary_userspace(int fd, uint32_t cal_ms, float graw[3]
 
 int main(int argc, char **argv)
 {
+    struct mpu6050_sample s;
+     uint32_t odr = 200;        // driver sampling Hz
+    uint32_t period_ms = 100;  // our app tick
+    uint32_t cal_ms = 0;       // 0 => no calibration
+    float graw[3] = {0, 0, 0}; // expected stationary gravity in RAW LSB
+    int commit_cal = 0;
+    int i, fd;
+     struct mpu6050_cal_pair cal = {0};
+     struct timespec next; 
+
     if (argc < 2) {
         fprintf(stderr, "Usage: %s /dev/mpu6050-0 [--odr N] [--period_ms M] [--cal_ms K] [--g_raw gx gy gz] [--commit_cal]\n", argv[0]);
         return 1;
     }
 
-    uint32_t odr = 200;        // driver sampling Hz
-    uint32_t period_ms = 100;  // our app tick
-    uint32_t cal_ms = 0;       // 0 => no calibration
-    float graw[3] = {0, 0, 0}; // expected stationary gravity in RAW LSB
-    int commit_cal = 0;
-
-    for (int i = 2; i < argc; ++i) {
+    for (i = 2; i < argc; ++i) {
         if (!strcmp(argv[i], "--odr") && i + 1 < argc) {
             odr = (uint32_t)atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--period_ms") && i + 1 < argc) {
@@ -125,7 +129,7 @@ int main(int argc, char **argv)
         }
     }
 
-    int fd = open(argv[1], O_RDONLY | O_NONBLOCK);
+    fd = open(argv[1], O_RDONLY | O_NONBLOCK);
     if (fd < 0) { 
         perror("open"); 
         return 1; 
@@ -138,7 +142,7 @@ int main(int argc, char **argv)
     // Optional: run userspace stationary calibration
     if (cal_ms > 0) {
         fprintf(stderr, "Calibrating for %u ms. Keep device still...\n", cal_ms);
-        struct mpu6050_cal_pair cal = {0};
+       
         
         if (calibrate_stationary_userspace(fd, cal_ms, graw, &cal) == 0) {
             fprintf(stderr, "Cal done. Accel bias = [%.1f %.1f %.1f], Gyro bias = [%.1f %.1f %.1f]\n",
@@ -159,11 +163,11 @@ int main(int argc, char **argv)
 
     printf("ts_ns,ax,ay,az,gx,gy,gz,temp,ax_corr,ay_corr,az_corr,gx_corr,gy_corr,gz_corr\n");
 
-    struct timespec next; 
+    
     clock_gettime(CLOCK_MONOTONIC, &next);
     
     for (;;) {
-        struct mpu6050_sample s;
+        memset(&s, 0, sizeof(s));
         if (drain_latest(fd, &s)) {
             printf("%lld,%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
                 (long long)s.ts_ns,
