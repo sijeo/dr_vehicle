@@ -2,24 +2,23 @@
 
 /**
  * @file mpu6050_char.c
- * @brief Invensense MPU6050 character device interface.(I2C, IRQ/FIFO, poll/select, sysfs, ioctl)
+ * @brief Invensense MPU6050 character device interface.(I2C) - IRQ streaming or on-demand snapshot
  * 
- * This production-grade driver exposes a compact userspace ABI via a character device (e.g. /dev/mpu6050-0)
- * with the following capabilities:
- * - Blocking/non-blocking read() of timestamped samples (accel/gyro/temp) from a in-kernel ring
- * buf boffer fed by the sensor's data-ready interrupt or a high resolution timer. 
- * - poll()/select() and epoll() support for event-driven applications.
- * - sysfs controls for ODR, full-scale ranges, power state, and calibration bias/scale.
- * - ioctl() to query WHO_AM_I, set/get ranges/ODR, get/set calbiration and run a 
- *   stationary calibration routine inside the driver if desired.
+ * This non-IIO driver exposes a compact ABI via /dev/mpu6050-X and supports **two** modes:
  * 
- * Design Notes:
- * - Uses regmap for efficient clustered/bulk I2C access.
- * - Optional FIFO path (configure via use_fifo module parameter or DT property)
- * - Runtime PM used to gate power. IRQ-driven for low jitter; hrtimer fallback if no IRQ.
  * 
- * @warning This driver is intentionally independent of the IIO susbsystem to provide a stable and minimal 
- * ABI for the uerspace application.
+ * 1) ** IRQ Mode (preferred)**: If an INT pin is wired and enabled, the driver
+ *    captures samples on each DATA_RDY interrupt  and pushes them into an in-kernel FIFO.
+ *   read()/poll() operates on that FIFO (low-jitter streaming).
+ * 
+ * 2) **On-demand snapshot mode**: If IRQ is disabled (or no IRQ is present), the driver 
+ *    read() performs a **synchronous I2C burst** of the 14 bytes raw data window and returns
+ *   exactly one sample. No background timers are used. 
+ * 
+ * There is **no hrtimer fallback** in this driver. Sampling occurs only via IRQ or when 
+ * userspace explicitly calls read()
+ * 
+ * Kernel module floating point is not used anywhere; all data are integers.
  */
 
 #include <linux/bitfield.h>
@@ -86,10 +85,11 @@
 #define MPU6050_PWR1_SLEEP         BIT(6)
 
 /* Module parameter: prefer FIFO path */
+#if 0
 static bool use_fifo = true;
 module_param(use_fifo, bool, 0644);
 MODULE_PARM_DESC(use_fifo, "Use FIFO for data capture (default: true)");
-
+#endif
 /*--------------regmap---------------*/
 static const struct regmap_config mpu6050_regmap_config = {
     .reg_bits = 8,
@@ -127,7 +127,7 @@ struct mpu6050_priv {
 
 /* IRQ + Timer */
     int irq;
-    struct hrtimer hrt;
+    bool irq_mode; /* true if using IRQ path */
     ktime_t hrt_period;
     struct mutex io_lock; /* serialize read/write/ioctl */
 };
@@ -142,22 +142,30 @@ static int mpu6050_read( struct mpu6050_priv *p, u8 reg, unsigned int *val)
 {
     return regmap_read(p->regmap, reg, val);
 }
-#if 0
-static int mpu6050_read_word( struct mpu6050_priv *p, u8 addr, s16 *out)
+
+static inline int mpu6050_read_burst(struct mpu6050_priv *p, struct mpu6050_sample *s)
 {
-    u8 buf[2];
-    int ret = regmap_bulk_read(p->regmap, addr, buf, 2);
+    u8 buf[14];
+    int ret;
+
+    ret = regmap_bulk_read(p->regmap, MPU6050_REG_ACCEL_XOUT_H, buf, sizeof(buf));
     if (ret) return ret;
-    *out = (s16)((buf[0] << 8) | buf[1]);
+    s->ax = (s16)((buf[0] << 8) | buf[1]);
+    s->ay = (s16)((buf[2] << 8) | buf[3]);
+    s->az = (s16)((buf[4] << 8) | buf[5]);
+    s->temp = (s16)((buf[6] << 8) | buf[7]);
+    s->gx = (s16)((buf[8] << 8) | buf[9]);
+    s->gy = (s16)((buf[10] << 8) | buf[11]);
+    s->gz = (s16)((buf[12] << 8) | buf[13]);
+    s->t_ns = ktime_get_boottime_ns(); 
     return 0;
 }
-#endif
 
 static int mpu6050_set_ranges(struct mpu6050_priv *p )
 {
     int ret;
-    u8 a = p->accel_fs << 3; /* AFS_SEL bits 4:3 */
-    u8 g = p->gyro_fs << 3;  /* FS_SEL bits 4:3 */
+    u8 a = (u8)(p->accel_fs << 3); /* AFS_SEL bits 4:3 */
+    u8 g = (u8)(p->gyro_fs << 3);  /* FS_SEL bits 4:3 */
     ret = regmap_update_bits(p->regmap, MPU6050_REG_ACCEL_CONFIG, GENMASK(4, 3), a);
     if (ret) return ret;
     ret = regmap_update_bits(p->regmap, MPU6050_REG_GYRO_CONFIG, GENMASK(4, 3), g);
@@ -179,6 +187,7 @@ static int mpu6050_set_odr(struct mpu6050_priv *p, u32 hz)
 /**
  * @brief Read a single raw sensor burst and push a calibrated, timestamped sample into the FIFO
  */
+#if 0
 static int mpu6050_read_and_push(struct mpu6050_priv *p)
 {
     u8 buf[14];
@@ -209,31 +218,51 @@ static int mpu6050_read_and_push(struct mpu6050_priv *p)
     return 0;
 
 }
-
+#endif 
 /*-------------IRQ and Timer -----------------*/
 static irqreturn_t mpu6050_irq_thread(int irq, void *data)
 {
     struct mpu6050_priv *p = data;
     unsigned int st;
-    if (regmap_read(p->regmap, MPU6050_REG_INT_STATUS, &st))
-        return IRQ_NONE; // spurious?
-    if (!(st & MPU6050_INT_DATA_RDY))
+    struct mpu6050_sample s;
+    unsigned long flags;
+    
+    if(!p->irq_mode)
         return IRQ_NONE;
-    mpu6050_read_and_push(p);
-    return IRQ_HANDLED;    
+    
+    if( regmap_read(p->regmap, MPU6050_REG_INT_STATUS, &st))
+        return IRQ_NONE;
+    if( !(st & MPU6050_INT_DATA_RDY))
+        return IRQ_NONE;
+    
+        if( mpu6050_read_burst(p, &s) == 0){
+            spin_lock_irqsave(&p->fifo_lock, flags);
+            if (!kfifo_is_full(&p->sample_fifo)) {
+                kfifo_in(&p->sample_fifo, &s, 1);
+            }
+            spin_unlock_irqrestore(&p->fifo_lock, flags);
+            wake_up_interruptible(&p->wq);
+        }
+    return IRQ_HANDLED;
 }
 
-
-static enum hrtimer_restart mpu6050_hrtimer_cb( struct hrtimer *t)
+static int mpu6050_set_irq_mode(struct mpu6050_priv *p, bool enable)
 {
-    struct mpu6050_priv *p = container_of(t, struct mpu6050_priv, hrt);
-    if (p->running) {
-        mpu6050_read_and_push(p);
-        hrtimer_forward_now(t, p->hrt_period);
-        return HRTIMER_RESTART;
+    int ret = 0;
+    if( enable && p->irq ){
+        /* Enable DATA_RDY interrupt on the sensor */
+        ret = regmap_write(p->regmap, MPU6050_REG_INT_ENABLE, MPU6050_INT_DATA_RDY_EN);
+        if (!ret)
+            p->irq_mode = true;
+    } else {
+        /* Disable interrupts */
+        ret = regmap_write(p->regmap, MPU6050_REG_INT_ENABLE, 0);
+        if (!ret)
+            p->irq_mode = false;
     }
-    return HRTIMER_NORESTART;
+    return ret;
 }
+
 
 /* ---------------------Character Device --------------------- */
 static long mpu6050_unlocked_ioctl( struct file *filp, unsigned int cmd, unsigned long arg)
@@ -289,14 +318,6 @@ static long mpu6050_unlocked_ioctl( struct file *filp, unsigned int cmd, unsigne
                 return -EFAULT;
             break;
         }
-        case MPU6050_IOC_GET_CAL: {
-            memset(&cp, 0, sizeof(cp));
-            cp.accel = p->cal_accel;
-            cp.gyro  = p->cal_gyro;
-            if (copy_to_user((void __user *)arg, &cp, sizeof(cp)))
-                return -EFAULT;
-            break;
-        }
        
         default:
             return -ENOTTY;
@@ -309,20 +330,20 @@ static ssize_t mpu6050_read_file(struct file *f, char __user *buf, size_t len, l
     struct mpu6050_priv *p = f->private_data;
     size_t count = len/sizeof(struct mpu6050_sample);
     size_t done = 0;
-    struct mpu6050_sample s;
+    
 
     if( count == 0 ) return -EINVAL;
 
     while( done < count ){
-        if( kfifo_is_empty(&p->sample_fifo))
-        {
-            if( f->f_flags & O_NONBLOCK )
-            {
-                if (done) break; /* partial */
-                return -EAGAIN;
+        if (p->irq_mode) {
+            struct mpu6050_sample s;
+            if (kfifo_is_empty(&p->sample_fifo)) {
+                if (f->f_flags & O_NONBLOCK) {
+                    return done ? (ssize_t)(done * sizeof(s)) : -EAGAIN;
+                }
+                if (wait_event_interruptible(p->wq, !kfifo_is_empty(&p->sample_fifo))) {
+                return done ? (ssize_t)(done*sizeof(s)) : -ERESTARTSYS;
             }
-            if ( wait_event_interruptible(p->wq, !kfifo_is_empty(&p->sample_fifo)))
-            return -ERESTARTSYS;
         }
         spin_lock(&p->fifo_lock);
         if(!kfifo_out(&p->sample_fifo, &s, 1))
@@ -334,16 +355,35 @@ static ssize_t mpu6050_read_file(struct file *f, char __user *buf, size_t len, l
         if( copy_to_user(buf+done*sizeof(s), &s, sizeof(s)))
         return -EFAULT;
         done++;
+
+        } else {
+            /* On demand snapshot mode */
+            struct mpu6050_sample s; int ret;
+            mutex_lock(&p->io_lock);
+            ret = mpu6050_read_burst(p, &s);
+            mutex_unlock(&p->io_lock);
+            if (ret)
+                return done ? (ssize_t)(done * sizeof(s)) : ret;
+            if (copy_to_user(buf + done * sizeof(s), &s, sizeof(s)))
+                return -EFAULT;
+            done++;
+    
+        }
+        
     }
-    return done*sizeof(s);
+    return (ssize_t)(done * sizeof(struct mpu6050_sample));
 }
 
 static __poll_t mpu6050_poll(struct file *f, struct poll_table_struct *pt)
 {
     struct mpu6050_priv *p = f->private_data;
     __poll_t mask = 0;
-    poll_wait(f, &p->wq, pt);
-    if( !kfifo_is_empty(&p->sample_fifo)) mask |= POLLIN | POLLRDNORM;
+    if( !p->irq_mode ){
+        poll_wait(f, &p->wq, pt);
+        if( !kfifo_is_empty(&p->sample_fifo)) mask |= POLLIN | POLLRDNORM;
+    } else {
+        mask |= POLLIN | POLLRDNORM;
+    }
     return mask;
 }
 
@@ -351,18 +391,11 @@ static int mpu6050_open(struct inode *ino, struct file *f)
 {
     struct mpu6050_priv *p = container_of(ino->i_cdev, struct mpu6050_priv, cdev);
     f->private_data = p;
-    p->running = true;
-    if( !p->irq )
-        hrtimer_start(&p->hrt, p->hrt_period, HRTIMER_MODE_REL);
     return 0;
 }
 
 static int mpu6050_release( struct inode *ino, struct file *f)
 {
-    struct mpu6050_priv *p = f->private_data;
-    p->running = false;
-    if( !p->irq )
-        hrtimer_cancel(&p->hrt);
     return 0;
 }
 
@@ -421,9 +454,29 @@ static ssize_t store_fs( struct device *dev, struct device_attribute *a, const c
 
 static DEVICE_ATTR(fullscale, 0644, show_fs, store_fs);
 
+static ssize_t show_irq_mode(struct device *dev, struct device_attribute *a, char *buf)
+{
+    struct mpu6050_priv *p = dev_get_drvdata(dev);
+    return sysfs_emit(buf, "%u", p->irq_mode ? 1 : 0);
+}
+
+static ssize_t store_irq_mode(struct device *dev, struct device_attribute *a, const char *buf, size_t count)
+{
+    struct mpu6050_priv *p = dev_get_drvdata(dev);
+    unsigned int v;
+    if( kstrtouint(buf, 0, &v))
+        return -EINVAL;
+    mutex_lock(&p->io_lock);
+    mpu6050_set_irq_mode(p, v != 0);
+    mutex_unlock(&p->io_lock);
+    return count;
+}
+static DEVICE_ATTR(irq_mode, 0644, show_irq_mode, store_irq_mode);
+
 static struct attribute *mpu6050_attrs[] = {
-    &dev_attr_odr_hz.attr, 
-    &dev_attr_fullscale.attr, 
+    &dev_attr_odr_hz.attr,
+    &dev_attr_fullscale.attr,
+    &dev_attr_irq_mode.attr,
     NULL,
 };
 
@@ -482,6 +535,9 @@ static int mpu6050_hw_init(struct mpu6050_priv *p)
         dev_err(p->dev, "Failed to wake device: %d\n", ret);
         return ret;
     }
+
+    /* Ensure accel axes enabled */
+    regmap_write(p->regmap, MPU6050_REG_PWR_MGMT_2, 0x00);
     return 0;
 }
 
@@ -526,14 +582,14 @@ static int mpu6050_probe(struct i2c_client *client)
     ret = mpu6050_hw_init(p);            // wakes device and sets ranges/ODR
     if (ret) {
         dev_err(dev, "Failed to initialize device: %d\n", ret);
-        return ret;                      // was: goto err_pm;
+        goto err_pm;
     }
 
     /* Character device */
     ret = alloc_chrdev_region(&p->devt, 0, 1, DEVICE_NAME);
     if (ret) {
         dev_err(dev, "Failed to allocate char device region: %d\n", ret);
-        return ret;                      // was: goto err_pm;
+        goto err_pm;                      // was: goto err_pm;
     }
     cdev_init(&p->cdev, &mpu6050_fops);
     p->cdev.owner = THIS_MODULE;
@@ -554,6 +610,7 @@ static int mpu6050_probe(struct i2c_client *client)
         dev_err(dev, "Failed to create device: %d\n", ret);
         goto err_class;
     }
+    dev_set_drvdata(p->chardev, p);
     ret = sysfs_create_group(&p->chardev->kobj, &mpu6050_attr_group);
     if (ret) {
         dev_err(dev, "Failed to create sysfs group: %d\n", ret);
@@ -568,14 +625,18 @@ static int mpu6050_probe(struct i2c_client *client)
                                         DRIVER_NAME, p);
         if (ret) {
             dev_warn(dev, "Failed to request IRQ %d: %d\n", p->irq, ret);
-            p->irq = 0; /* fallback to timer */
-        } else {
-            regmap_write(p->regmap, MPU6050_REG_INT_ENABLE, MPU6050_INT_DATA_RDY_EN);
+            p->irq = 0;
         }
     }
-
-    hrtimer_init(&p->hrt, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-    p->hrt.function = mpu6050_hrtimer_cb;
+    /* Default mode: enable IRQ mode only if an IRQ exists */
+    p->irq_mode = false;
+    if( p->irq ){
+        ret = mpu6050_set_irq_mode(p, true);
+        if (ret) {
+            dev_warn(dev, "Failed to enable IRQ mode: %d\n", ret);
+        }
+    }
+    
     i2c_set_clientdata(client, p);
 
     dev_info(dev, "MPU6050 char driver ready (odr=%uHz, af=%d, gf=%d, irq=%d)\n",
