@@ -1,2 +1,0 @@
-/home/sijeophilip/dr_vehicle/platform/pi/mpu6050_char.o
-
