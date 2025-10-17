@@ -333,6 +333,7 @@ static ssize_t mpu6050_read_file(struct file *f, char __user *buf, size_t len, l
     
 
     if( count == 0 ) return -EINVAL;
+    dev_info(p->dev, "read request for %zu samples\n", count);
 
     while( done < count ){
         if (p->irq_mode) {
@@ -361,11 +362,15 @@ static ssize_t mpu6050_read_file(struct file *f, char __user *buf, size_t len, l
             struct mpu6050_sample s; int ret;
             mutex_lock(&p->io_lock);
             ret = mpu6050_read_burst(p, &s);
+            
             mutex_unlock(&p->io_lock);
             if (ret)
                 return done ? (ssize_t)(done * sizeof(s)) : ret;
-            if (copy_to_user(buf + done * sizeof(s), &s, sizeof(s)))
+            size_t off = done * sizeof(struct mpu6050_sample);
+            if (copy_to_user((void __user *)(buf + off), &s, sizeof(s)))
                 return -EFAULT;
+            dev_info(p->dev, "snapshot read: ax=%d ay=%d az=%d gx=%d gy=%d gz=%d temp=%d\n",
+                s.ax, s.ay, s.az, s.gx, s.gy, s.gz, s.temp);
             done++;
     
         }
@@ -378,6 +383,7 @@ static __poll_t mpu6050_poll(struct file *f, struct poll_table_struct *pt)
 {
     struct mpu6050_priv *p = f->private_data;
     __poll_t mask = 0;
+    dev_info(p->dev, "poll\n");
     if( !p->irq_mode ){
         poll_wait(f, &p->wq, pt);
         if( !kfifo_is_empty(&p->sample_fifo)) mask |= POLLIN | POLLRDNORM;
@@ -582,14 +588,14 @@ static int mpu6050_probe(struct i2c_client *client)
     ret = mpu6050_hw_init(p);            // wakes device and sets ranges/ODR
     if (ret) {
         dev_err(dev, "Failed to initialize device: %d\n", ret);
-        goto err_pm;
+        return ret;
     }
 
     /* Character device */
     ret = alloc_chrdev_region(&p->devt, 0, 1, DEVICE_NAME);
     if (ret) {
         dev_err(dev, "Failed to allocate char device region: %d\n", ret);
-        goto err_pm;                      // was: goto err_pm;
+        return ret;                      // was: goto err_pm;
     }
     cdev_init(&p->cdev, &mpu6050_fops);
     p->cdev.owner = THIS_MODULE;

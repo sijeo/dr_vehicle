@@ -65,6 +65,7 @@ static int drain_latest(int fd, struct mpu6050_sample *out) {
         if (r == 0) break;
         *out = s; got = 1;
     }
+    printf("got %d sample from accumulator\n", got);
     return got;
 }
 
@@ -85,7 +86,9 @@ static int drain_accumulate(int fd, // average all samples currently queued
         *temp_last = s.temp;     // and last raw temp
         ++(*count);
         got = 1;
+       
     }
+    printf("got %d sample from accumulator\n", *count);
     return got ? 1 : 0;
 }
 
