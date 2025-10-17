@@ -11,7 +11,7 @@
 #include <string.h>
 #include <errno.h>
 #include <time.h>
-#include "mpu6050_ioctl.h"   // must match your driver’s UAPI
+#include "../mpu6050_ioctl.h"   // must match your driver’s UAPI
 
 static volatile int stop = 0;
 static void handle_sigint(int sig) { (void)sig; stop = 1; }

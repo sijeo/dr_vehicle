@@ -95,10 +95,10 @@ static const struct regmap_config mpu6050_regmap_config = {
     .reg_bits = 8,
     .val_bits = 8,
     .max_register = 0x7F,
-    .cache_type = REGCACHE_RBTREE,
+    .cache_type = REGCACHE_NONE,
 };
 
-/*--------------- Drivate private state ----------------*/
+/*--------------- Driver private state ----------------*/
 struct mpu6050_priv {
     struct device *dev;
     struct i2c_client *client;
