@@ -9,9 +9,9 @@
 //   gcc -O2 -Wall -o mpu6050_reader_simple mpu6050_reader_simple.c
 //
 // Example:
-//   sudo ./mpu6050_reader_simple /dev/mpu6050-0 \
-//       --period-ms 100 \
-//       --cal-ms 3000 --g-lsb 0 0 8192 \
+//   sudo ./mpu6050_reader_simple /dev/mpu6050-0 
+//       --period-ms 100 
+//       --cal-ms 3000 --g-lsb 0 0 8192 
 //       --accel-fs 4 --gyro-fs 500 --si --whoami
 
 #define _GNU_SOURCE
@@ -26,11 +26,11 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "mpu6050_ioctl.h"  // from your driver tree
+#include "../mpu6050_ioctl.h"  // from your driver tree
 
 // If your UAPI uses 't_ns' instead of 'ts_ns', compile with -DSAMPLE_TS_FIELD=t_ns
 #ifndef SAMPLE_TS_FIELD
-#define SAMPLE_TS_FIELD ts_ns
+#define SAMPLE_TS_FIELD t_ns
 #endif
 
 #define SAMPLE_TS(s) ((long long)((s).SAMPLE_TS_FIELD))
@@ -127,8 +127,8 @@ int main(int argc, char **argv) {
     double g_lsb_x=0, g_lsb_y=0, g_lsb_z=0;
     int accel_fs = 4, gyro_fs = 500;
     int print_si = 0, do_whoami = 0;
-
-    for (int i=2; i<argc; ++i) {
+    int i;
+    for (i=2; i<argc; ++i) {
         if (!strcmp(argv[i], "--period-ms") && i+1<argc) period_ms = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--duration")   && i+1<argc) duration_s = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--cal-ms")     && i+1<argc) cal_ms     = (unsigned)atoi(argv[++i]);
@@ -155,7 +155,7 @@ int main(int argc, char **argv) {
     }
 
     // Optional calibration (userspace only; no driver changes)
-    struct biases bias = {0};
+    struct biases bias;
     if (cal_ms > 0) {
         fprintf(stderr, "Calibrating for %u ms. Keep device still...\n", cal_ms);
         if (calibrate_stationary(fd, cal_ms, g_lsb_x, g_lsb_y, g_lsb_z, &bias) == 0) {
@@ -167,12 +167,16 @@ int main(int argc, char **argv) {
     }
 
     // CSV header
+    // Aligned header (fixed-width columns)
     if (print_si) {
-        printf("ts_ns,ax,ay,az,gx,gy,gz,temp,"
-               "ax_corr,ay_corr,az_corr,gx_corr,gy_corr,gz_corr,"
-               "ax_ms2,ay_ms2,az_ms2,gx_rads,gy_rads,gz_rads\n");
+        printf("%18s %7s %7s %7s %7s %7s %7s %6s %10s %10s %10s %10s %10s %10s %10s %10s %10s %10s %10s %10s\n",
+               "ts_ns","ax","ay","az","gx","gy","gz","temp",
+               "ax_corr","ay_corr","az_corr","gx_corr","gy_corr","gz_corr",
+               "ax_mps2","ay_mps2","az_mps2","gx_radS","gy_radS","gz_radS");
     } else {
-        printf("ts_ns,ax,ay,az,gx,gy,gz,temp,ax_corr,ay_corr,az_corr,gx_corr,gy_corr,gz_corr\n");
+        printf("%18s %7s %7s %7s %7s %7s %7s %6s %10s %10s %10s %10s %10s %10s\n",
+               "ts_ns","ax","ay","az","gx","gy","gz","temp",
+               "ax_corr","ay_corr","az_corr","gx_corr","gy_corr","gz_corr");
     }
     fflush(stdout);
 
@@ -206,12 +210,12 @@ int main(int argc, char **argv) {
                 double gy_rs  = (gyc / GLSB) * d2r;
                 double gz_rs  = (gzc / GLSB) * d2r;
 
-                printf("%lld,%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+                printf("%18lld %7d %7d %7d %7d %7d %7d %6d %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f\n",
                        SAMPLE_TS(s), s.ax, s.ay, s.az, s.gx, s.gy, s.gz, s.temp,
                        axc, ayc, azc, gxc, gyc, gzc,
                        ax_ms2, ay_ms2, az_ms2, gx_rs, gy_rs, gz_rs);
             } else {
-                printf("%lld,%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+                printf("%18lld %7d %7d %7d %7d %7d %7d %6d %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f\n",
                        SAMPLE_TS(s), s.ax, s.ay, s.az, s.gx, s.gy, s.gz, s.temp,
                        axc, ayc, azc, gxc, gyc, gzc);
             }
