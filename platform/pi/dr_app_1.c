@@ -75,8 +75,8 @@ static int open_mpu6050(void){
  * @param gyro_radps [out] gyro in rad/s
  * @param accel_mps2 [out] accel in m/s^2
  */
-static void mpu6050_raw_to_si(const struct mpu6050_fs* fs, const struct mpu6050_sample* s,float* gyro_radps[3],
-    float* accel_mps2[3])
+static void mpu6050_raw_to_si(const struct mpu6050_fs* fs, const struct mpu6050_sample* s,float gyro_radps[3],
+    float accel_mps2[3])
 {
     /* LSB per full scale: 32768 counts span +-FS */
     const float g_range = (fs->accel == ACCEL_2G) ? 2.0f :
@@ -284,7 +284,7 @@ static int calibrate_stationary(int fd, const struct mpu6050_fs* fs, float bg[3]
             return ret;
         }
         float g[3], a[3];
-        mpu6050_raw_to_si(fs, &s, &g, &a);
+        mpu6050_raw_to_si(fs, &s, g, a);
         sumg[0] += g[0]; sumg[1] += g[1]; sumg[2] += g[2];
         suma[0] += a[0]; suma[1] += a[1]; suma[2] += a[2];
         msleep(10); /* ~100Hz independent of the loop */
@@ -305,7 +305,7 @@ static int calibrate_stationary(int fd, const struct mpu6050_fs* fs, float bg[3]
  */
 static void quat_to_euler_deg(dr_quatf_t q, float* yaw_deg, float* pitch_deg, float* roll_deg){
     float R[9]; 
-    dr_R_from_quatf(q, R);
+    dr_R_from_q(q, R);
     *roll_deg = (float)atan2f(R[5], R[8]) * (180.0f / (float)M_PI);
     *pitch_deg = (float)asinf(-R[2]) * (180.0f / (float)M_PI);
     *yaw_deg = (float)atan2f(R[1], R[0]) * (180.0f / (float)M_PI);
@@ -350,8 +350,10 @@ int main (void) {
 
     printf("Calibration complete.\n");
     /* 3) Wait for first GNSS fix (ENU origin) */
-    geodetic_t ref = {0};
-    ecef_t ref_ecef = {0};
+    geodetic_t ref;
+    ecef_t ref_ecef;
+    memset(&ref, 0, sizeof(ref));
+    memset(&ref_ecef, 0, sizeof(ref_ecef));
     fprintf(stderr, "Waiting for first GNSS fix...\n");
     while (1) {
         int have_fix = 0;
@@ -417,13 +419,13 @@ int main (void) {
     /* Main loop @ 100 ms*/
     const float dt = 1.0f / IMU_LOOP_HZ;
     for(;;) {
-        struct mpu6050_sample s;
-        if ( mpu6050_read_once(fd_imu, &s) != 0 ) {
+        struct mpu6050_sample sample;
+        if ( mpu6050_read_once(fd_imu, &sample) != 0 ) {
             fprintf(stderr, "Failed to read MPU6050 sample: %s\n", strerror(errno));
             break;
         }
         float g[3], a[3];
-        mpu6050_raw_to_si(&fs, &s, &g, &a);
+        mpu6050_raw_to_si(&fs, &sample, g, a);
         imu_ma_push(&imu_ma, g, a);
         float g_avg[3], a_avg[3];
         imu_ma_get(&imu_ma, g_avg, a_avg);
@@ -481,7 +483,7 @@ int main (void) {
         /* SD Card logging */
         time_t now = time(NULL);
         if ( f_sd != NULL && now != last_sd_time ) {
-            fprintf(f_sd, "%ld,%.8f,%.8f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f\n",(long)now,
+            fprintf(f_sd, "%ld,%.8f,%.8f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f\n",(long)now,
                 lla.lat_deg,
                 lla.lon_deg,
                 lla.alt_m,

@@ -18,7 +18,7 @@ clean:
 	$(RM) dr_app
 
 # Build user-space app without kernel include paths
-app: dr_app.c
+app: dr_app_1.c
 	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o dr_app $< $(CORE_SRCS) -lm
 
 driver_test: test_app/mpu6050_cal_test.c
