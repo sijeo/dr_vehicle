@@ -409,7 +409,7 @@ int main (void) {
     fflush(stdout);
 
     /* SD Card CSV once per second */
-    const char *sd_csv = "/home/pi/dr_vehicle_log.csv";
+    const char *sd_csv = "/home/sijeo/dr_vehicle_log.csv";
     FILE* f_sd = fopen(sd_csv, "a");
     if ( f_sd == NULL ) {
         fprintf(stderr, "Failed to open SD card log file %s: %s\n", sd_csv, strerror(errno));
