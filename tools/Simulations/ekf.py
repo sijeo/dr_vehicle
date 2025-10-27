@@ -40,7 +40,7 @@ def quat_from_rotvec(rv: np.ndarray) -> np.ndarray:
     Returns:
         A quaternion [qw, qx, qy, qz] representing the same rotation in the form [w, x, y, z].
     """
-    rv = np.asarray(rv, dtype=np.float)
+    rv = np.asarray(rv, dtype=np.float64)
     angle = np.linalg.norm(rv)
     if angle < 1e-8:
         return np.array([1.0, 0.5*rv[0], 0.5*rv[1], 0.5*rv[2]])
@@ -82,8 +82,8 @@ def quat_rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:
         v_rot: The rotated 3D vector in world frame.
         """
     # Convert vector to numpy arrays
-    q = np.asarray(q, dtype=np.float)
-    v = np.asarray(v, dtype=np.float)
+    q = np.asarray(q, dtype=np.float64)
+    v = np.asarray(v, dtype=np.float64)
     # Quaternion representation of vector
     v_q = np.array([0.0, v[0], v[1], v[2]])
     # Conjugate of quaternion q
@@ -172,8 +172,8 @@ class EKF15State:
             accel_meas: Measured linear acceleration from accelerometer (m/s^2), shape(3,).
             dt: Time step for propogation (s).
         """
-        gyro_meas = np.asarray(gyro_meas, dtype=np.float)
-        accel_meas = np.asarray(accel_meas, dtype=np.float)
+        gyro_meas = np.asarray(gyro_meas, dtype=np.float64)
+        accel_meas = np.asarray(accel_meas, dtype=np.float64)
         # Remove current biase estimates
         omega_b = gyro_meas - self.bg
         f_b = accel_meas - self.ba
@@ -247,7 +247,7 @@ class EKF15State:
         Args:
             gps_pos: Measured GNSS position in world frame (m), shape(3,).
         """
-        gps_pos = np.asarray(gps_pos, dtype=np.float)
+        gps_pos = np.asarray(gps_pos, dtype=np.float64)
         # Measurement Model extracts position from nominal state.
         H = np.zeros((3, 15))
         H[:, 0:3] = np.eye(3)
@@ -276,4 +276,3 @@ class EKF15State:
         I_KH = np.eye(15) - K @ H
         self.P = I_KH @ self.P @ I_KH.T + K @ R @ K.T
 
-        

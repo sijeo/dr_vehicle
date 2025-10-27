@@ -22,11 +22,11 @@ import argparse
 import time
 import numpy as np
 
-from .ekf import EKFConfig, EKF15State
-from .motion_model import VehicleState, yaw_to_quaternion
-from .sensor_simulator import SensorSimulator
-from .controls import KeyboardController
-from .plotter import Plotter
+from ekf import EKFConfig, EKF15State
+from motion_model import VehicleState, yaw_to_quaternion
+from sensor_simulator import SensorSimulator
+from controls import KeyboardController
+from plotter import Plotter
 
 def quaternion_to_yaw(q: np.ndarray) -> float:
     """Convert a quaternion into a yaw angle (radians).
@@ -143,4 +143,3 @@ if __name__ == "__main__":
     main()
 
 
-    

@@ -21,8 +21,8 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
-from .motion_model import yaw_to_quaternion
-from .ekf import quat_rotate
+from motion_model import yaw_to_quaternion
+from ekf import quat_rotate
 
 @dataclass
 class SensorSimulator:
