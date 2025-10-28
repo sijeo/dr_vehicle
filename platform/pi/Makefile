@@ -19,7 +19,7 @@ clean:
 
 # Build user-space app without kernel include paths
 app: dr_app_1.c
-	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o dr_app $< $(CORE_SRCS) -lm
+	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o dr_app_1 $< $(CORE_SRCS) -lm
 
 driver_test: test_app/mpu6050_cal_test.c
 	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o test_app/mpu6050_cal_test $< $(CORE_SRCS) -lm
@@ -28,7 +28,7 @@ deploy:
 	scp *.ko sijeo@192.168.1.8:/home/sijeo/dr_vehicle/
 
 deploy_app:
-	scp dr_app sijeo@192.168.1.8:/home/sijeo/dr_vehicle/
+	scp dr_app_1 sijeo@192.168.1.8:/home/sijeo/dr_vehicle/
 
 deploy_test:
 	scp test_app/mpu6050_cal_test sijeo@192.168.1.8:/home/sijeo/dr_vehicle/
