@@ -15,7 +15,7 @@ all:
 clean:
 	$(MAKE) -C $(KDIR) ARCH=arm CROSS_COMPILE=$(CROSS_COMPILE) M=$(PWD) clean
 	$(RM) test_app/mpu6050_cal_test
-	$(RM) dr_app
+	$(RM) dr_app_1
 
 # Build user-space app without kernel include paths
 app: dr_app_1.c
