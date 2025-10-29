@@ -2,6 +2,9 @@
 #-----------------------------------------------------------------------
 # Dead Reckoning System Loader Script
 # Loads kernel modules and Launches the DR application
+# Usage: 
+#   chmod +x load_dr_stack.sh
+#   sudo ./load_dr_stack.sh
 #-----------------------------------------------------------------------
 
 set -e # Exit immediately on unhandled error
