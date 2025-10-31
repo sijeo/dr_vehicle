@@ -414,6 +414,14 @@ int main (void) {
     if ( f_sd == NULL ) {
         fprintf(stderr, "Failed to open SD card log file %s: %s\n", sd_csv, strerror(errno));
     }
+
+    /* NEW: GNSS raw log */
+    const char *gnss_csv = "/home/sijeo/gnss_log.csv";
+    FILE* f_gnss = fopen(gnss_csv, "a");
+    if ( f_gnss == NULL ) {
+        fprintf(stderr, "Failed to open GNSS log file %s: %s\n", gnss_csv, strerror(errno));
+    }
+    else {fprintf(f_gnss, "utc,mono_ns,lat_deg,lon_deg,alt_m,spd_mps,have_fix\n"); fflush(f_gnss); }
     time_t last_sd_time = 0;
 
     /* Main loop @ 100 ms*/
@@ -442,6 +450,18 @@ int main (void) {
         int have_fix = 0; int Y, M, d, H, m, s, ms; int64_t tns; double lat = 0, lon = 0, alt = 0; float spd = 0;
         int ret = get_gnss_fix(fd_gnss, &have_fix, &Y, &M, &d, &H, &m, &s, &ms, &tns,
             &lat, &lon, &alt, &spd);
+        if (fd_gnss)
+        {
+            char utc[40] = "0000-00-00T00:00:00.000Z";
+            if (have_fix) {
+                snprintf(utc, sizeof(utc), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
+                    Y, M, d, H, m, s, ms);
+            }
+            fprintf(f_gnss, "%s,%lld,%.8f,%.8f,%.3f,%.3f,%d\n",
+                utc, (long long)tns, lat, lon, alt, spd, have_fix);
+            fflush(f_gnss);
+        }
+
         if ( ret > 0 && have_fix ){
             ecef_t e = lla_ecef( (geodetic_t){ .lat_deg = lat, .lon_deg = lon, .alt_m = alt } );
             dr_gps_pos_t z;
@@ -483,7 +503,7 @@ int main (void) {
         /* SD Card logging */
         time_t now = time(NULL);
         if ( f_sd != NULL && now != last_sd_time ) {
-            fprintf(f_sd, "%ld,%.8f,%.8f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f\n",(long)now,
+            fprintf(f_sd, "%ld,%.f,%.8f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f\n",(long)now,
                 lla.lat_deg,
                 lla.lon_deg,
                 lla.alt_m,
@@ -502,6 +522,9 @@ int main (void) {
     }
     if(f_sd != NULL) {
         fclose(f_sd);
+    }
+    if(f_gnss != NULL) {
+        fclose(f_gnss);
     }
     close(fd_imu);
     close(fd_gnss);
