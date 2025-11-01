@@ -327,7 +327,7 @@ int main (void) {
     strftime(time_str, sizeof(time_str), "%Y-%m-%d_%H-%M-%S", tm_now);
 
     /*Directory for Logs*/
-    system("mkdir -p /home/sijeo");
+    system("mkdir -p /home/sijeo/logs");
 
     /* Compose Unique file names*/
     char sd_path[128], gnss_path[128];
@@ -446,7 +446,7 @@ int main (void) {
     time_t last_sd_time = 0;
 
     /* Hold-last-fix logic */
-    static geodetic_t last_fix = {0};
+    static geodetic_t last_fix = {.lat_deg=0.0, .lon_deg=0.0, .alt_m=0.0 };
     bool have_last_fix = false;
     float R_nominal[9] = {
         GPS_POS_VAR_M2, 0.0f, 0.0f,
@@ -494,13 +494,13 @@ int main (void) {
             ecef_t e = lla_ecef(last_fix);
             dr_gps_pos_t z;
             ecef_delta_to_enu(ref, e, ref_ecef, z.pos);
-            dr_ekf_gps_pos_update(&ekf, &z, R_nominal);
+            dr_ekf_update_gps_pos(&ekf, &z, R_nominal);
         } else if (have_last_fix) {
             /* No new fix; reuse last known fix with loose covariance */
             ecef_t e = lla_ecef(last_fix);
             dr_gps_pos_t z;
             ecef_delta_to_enu(ref, e, ref_ecef, z.pos);
-            dr_ekf_gps_pos_update(&ekf, &z, R_loose);
+            dr_ekf_update_gps_pos(&ekf, &z, R_loose);
         }
         
         if (fd_gnss)

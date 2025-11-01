@@ -25,7 +25,7 @@ fail() {
 	if [ ${#LOADED_MODULES[@]} -gt 0 ]; then
 		echo "$LOGTAG Rolling back previously loaded modules..." >&2
 		for (( idx=${#LOADED_MODULES[@]}-1; idx>=0; idx--)); do
-			mod="${#LOADED_MODULES[idx]}"
+			mod="${LOADED_MODULES[idx]}"
 			echo "$LOGTAG Removing module: $mod" >&2
 			/sbin/rmmod "$mod" 2>/dev/null || echo "$LOGTAG WARN: could not remove $mod" >&2
 		done
