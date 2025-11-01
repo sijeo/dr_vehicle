@@ -57,7 +57,7 @@
 /**
  * @brief Number of IMU samples to collect for stationary calibration.
  */
-#define CAL_SAMPLES        300 /** < 300 samples @ 10 Hz = 30 seconds ~3 Seconds at 100 Hz */
+#define CAL_SAMPLES        1000 /** < 1000 samples @ 10 Hz = 100 seconds ~10 Seconds at 100 Hz */
 
 /**
  * @brief Standard gravity in m/s^2.

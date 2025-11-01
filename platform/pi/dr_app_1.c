@@ -8,11 +8,19 @@
  * 1) Load/open devices: /dev/mpu6050-* (IRQ FIFO or on-demand) and /dev/neo6m0
  * 2) Calibrate IMU when stationary (estimate gyro/accel biases)
  * 3) Wait for the first GNSS fix; set ENU origin form that LLA.
- * 4) Each 100ms: read one IMU sample, correct using calibration, run EKF prediction.
- * 5) When a fresh GNSS fix is available: read and run EKF update. 
- * 6) Emit CSV over stdout each loop; also appen 1Hz CSV to SD card file .
- * If GNSS has no fix, the predicted state is used for output/logging.
+ * 4) Each 100ms:
+ *   a) Read MPU6050 sample; convert to SI units; apply calibration (bias removal)
+ *  b) Poll GNSS:
+ *     i) If have-fix, convert LLA to ENU and do EKF GPS position update
+ *     ii) If no-fix, reuse last valid fix with looser covariance (reduced weight)
+ *  c) Output fused LLD position, velocity, and orientation (YPR) to stdout (USB serial)
+ *    d) Log to SD card once per second.
+ * 5) Log raw GNSS fixes to seperate /home/sijeo/gnss_log.csv file.
  * 
+ * The "reuse-last-fix" logic ensures stable output even when GNSS signal
+ * is temporarily lost: the EKF keeps running and gently constrainted by the last
+ * known GPS position but weighted towards IMU prediction.
+ *
  * Build:
  * gcc -o dr_app_1 dr_app_1.c -lm
  * 
@@ -313,6 +321,21 @@ static void quat_to_euler_deg(dr_quatf_t q, float* yaw_deg, float* pitch_deg, fl
 
 /* ----------------------- Main Application -----------------------*/
 int main (void) {
+    time_t t_now = time(NULL);
+    struct tm *tm_now = localtime(&t_now);
+    char time_str[64];
+    strftime(time_str, sizeof(time_str), "%Y-%m-%d_%H-%M-%S", tm_now);
+
+    /*Directory for Logs*/
+    system("mkdir -p /home/sijeo");
+
+    /* Compose Unique file names*/
+    char sd_path[128], gnss_path[128];
+    snprintf(sd_path, sizeof(sd_path), "/home/sijeo/dr_vehicle_%s.csv", time_str);
+    snprintf(gnss_path, sizeof(gnss_path), "/home/sijeo/dr_gnss_%s.csv", time_str);
+    printf("SD log file: %s\n", sd_path);
+    printf("GNSS log file: %s\n", gnss_path);
+
     /* 1) Open devices */
     int fd_imu = open_mpu6050();
     if (fd_imu < 0) {
@@ -409,20 +432,32 @@ int main (void) {
     fflush(stdout);
 
     /* SD Card CSV once per second */
-    const char *sd_csv = "/home/sijeo/dr_vehicle_log.csv";
-    FILE* f_sd = fopen(sd_csv, "a");
+    FILE* f_sd = fopen(sd_path, "w");
     if ( f_sd == NULL ) {
-        fprintf(stderr, "Failed to open SD card log file %s: %s\n", sd_csv, strerror(errno));
+        fprintf(stderr, "Failed to open SD card log file %s: %s\n", sd_path, strerror(errno));
     }
 
     /* NEW: GNSS raw log */
-    const char *gnss_csv = "/home/sijeo/gnss_log.csv";
-    FILE* f_gnss = fopen(gnss_csv, "a");
+    FILE* f_gnss = fopen(gnss_path, "w");
     if ( f_gnss == NULL ) {
-        fprintf(stderr, "Failed to open GNSS log file %s: %s\n", gnss_csv, strerror(errno));
+        fprintf(stderr, "Failed to open GNSS log file %s: %s\n", gnss_path, strerror(errno));
     }
     else {fprintf(f_gnss, "utc,mono_ns,lat_deg,lon_deg,alt_m,spd_mps,have_fix\n"); fflush(f_gnss); }
     time_t last_sd_time = 0;
+
+    /* Hold-last-fix logic */
+    static geodetic_t last_fix = {0};
+    bool have_last_fix = false;
+    float R_nominal[9] = {
+        GPS_POS_VAR_M2, 0.0f, 0.0f,
+        0.0f, GPS_POS_VAR_M2, 0.0f,
+        0.0f, 0.0f, GPS_POS_VAR_M2
+    };
+    float R_loose[9] = {
+        GPS_POS_VAR_M2 * 100.0f, 0.0f, 0.0f,
+        0.0f, GPS_POS_VAR_M2 * 100.0f, 0.0f,
+        0.0f, 0.0f, GPS_POS_VAR_M2 * 100.0f
+    };
 
     /* Main loop @ 100 ms*/
     const float dt = 1.0f / IMU_LOOP_HZ;
@@ -450,6 +485,24 @@ int main (void) {
         int have_fix = 0; int Y, M, d, H, m, s, ms; int64_t tns; double lat = 0, lon = 0, alt = 0; float spd = 0;
         int ret = get_gnss_fix(fd_gnss, &have_fix, &Y, &M, &d, &H, &m, &s, &ms, &tns,
             &lat, &lon, &alt, &spd);
+
+        if ( ret > 0 && have_fix ){
+            /* Got a valid fix */
+            last_fix = (geodetic_t){ .lat_deg = lat, .lon_deg = lon, .alt_m = alt };
+            have_last_fix = true;
+
+            ecef_t e = lla_ecef(last_fix);
+            dr_gps_pos_t z;
+            ecef_delta_to_enu(ref, e, ref_ecef, z.pos);
+            dr_ekf_gps_pos_update(&ekf, &z, R_nominal);
+        } else if (have_last_fix) {
+            /* No new fix; reuse last known fix with loose covariance */
+            ecef_t e = lla_ecef(last_fix);
+            dr_gps_pos_t z;
+            ecef_delta_to_enu(ref, e, ref_ecef, z.pos);
+            dr_ekf_gps_pos_update(&ekf, &z, R_loose);
+        }
+        
         if (fd_gnss)
         {
             char utc[40] = "0000-00-00T00:00:00.000Z";
@@ -462,16 +515,7 @@ int main (void) {
             fflush(f_gnss);
         }
 
-        if ( ret > 0 && have_fix ){
-            ecef_t e = lla_ecef( (geodetic_t){ .lat_deg = lat, .lon_deg = lon, .alt_m = alt } );
-            dr_gps_pos_t z;
-            ecef_delta_to_enu(ref, e, ref_ecef, z.pos);
-            (void)dr_ekf_update_gps_pos(&ekf, &z, (float[9]){
-                GPS_POS_VAR_M2, 0.0f, 0.0f,
-                0.0f, GPS_POS_VAR_M2, 0.0f,
-                0.0f, 0.0f, GPS_POS_VAR_M2
-            });
-        }
+        
 
         /* Output: Current nominal state (predicted if no fix)*/
         float yaw_deg, pitch_deg, roll_deg;
@@ -503,6 +547,7 @@ int main (void) {
         /* SD Card logging */
         time_t now = time(NULL);
         if ( f_sd != NULL && now != last_sd_time ) {
+            last_sd_time = now;
             fprintf(f_sd, "%ld,%.f,%.8f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f\n",(long)now,
                 lla.lat_deg,
                 lla.lon_deg,
