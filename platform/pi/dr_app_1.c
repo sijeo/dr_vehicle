@@ -331,8 +331,8 @@ int main (void) {
 
     /* Compose Unique file names*/
     char sd_path[128], gnss_path[128];
-    snprintf(sd_path, sizeof(sd_path), "/home/sijeo/dr_vehicle_%s.csv", time_str);
-    snprintf(gnss_path, sizeof(gnss_path), "/home/sijeo/dr_gnss_%s.csv", time_str);
+    snprintf(sd_path, sizeof(sd_path), "/home/sijeo/logs/dr_vehicle_%s.csv", time_str);
+    snprintf(gnss_path, sizeof(gnss_path), "/home/sijeo/logs/dr_gnss_%s.csv", time_str);
     printf("SD log file: %s\n", sd_path);
     printf("GNSS log file: %s\n", gnss_path);
 
