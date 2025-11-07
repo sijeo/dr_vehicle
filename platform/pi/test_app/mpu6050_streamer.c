@@ -20,7 +20,7 @@
 #include <arpa/inet.h>
 
 #include "../mpu6050_ioctl.h"
-#include "../../core/dr_math.h"
+#include "../core/dr_math.h"
 
 // Default parameters
 #ifndef M_PI
@@ -149,13 +149,13 @@ static dr_quatf_t attitude_update(dr_quatf_t q, const float gyro[3], const float
     // expected gravity in body from current attitude R^T * [ 0, 0, 1 ]world
     dr_vec3f_t g_world = (dr_vec3f_t){ .x = 0.0f, .y = 0.0f, .z = -1.0f };
     // rotate world -> body = {q^-1} * g * q
-    dr_vec3f_t qc = (dr_quatf_t){ .w = qg.w, .x = -qg.x, .y = -qg.y, .z = -qg.z };
+    dr_quatf_t qc = (dr_quatf_t){ .w = qg.w, .x = -qg.x, .y = -qg.y, .z = -qg.z };
     dr_vec3f_t g_b = dr_q_rotate(qc, (dr_vec3f_t){ .x = g_world.x, .y = g_world.y, .z = g_world.z });
 
     // error = a_b x g_b (axis bringing g_b to a_b); small angle correction
     dr_vec3f_t err = dr_v3_cross(g_b, a_b);
     // apply small corrective rotation
-    dr_vec3f_t dtheta = dr_v3_scale(err, accel_gain);
+    dr_vec3f_t dtheta = dr_v3_scale(accel_gain, err);
     dr_quatf_t qcorr = dr_q_from_rotvec(dtheta);
     dr_quatf_t q_new = dr_q_mult(qg, qcorr);
     return dr_q_normalize(q_new);
@@ -260,7 +260,7 @@ int main(int argc, char* argv[])
     // Moving average and attitude state.
     ma_t ma;
     ma_init(&ma, (int)c.avg);
-    dr_quatf_t q = dr_q_identity();
+    dr_quatf_t q = dr_quat_identity();
     int server = tcp_listen(c.port);
     if ( server < 0 ) {
         fprintf(stderr, "Failed to start TCP server: %s\n", strerror(-server));
@@ -294,6 +294,7 @@ int main(int argc, char* argv[])
             // Moving average
             ma_push(&ma, g0, a0);
             float g[3], a[3];
+            ma_get(&ma, g, a);
 
             int64_t t_now = mono_ns();
             float dt = (t_now - t_prev) * 1e-9f;
