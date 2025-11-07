@@ -306,11 +306,12 @@ int main(int argc, char* argv[])
             euler_deg_from_q(q, &yaw_deg, &pitch_deg, &roll_deg);
             // Send data to client
             char line[512];
+            memset(line, 0, sizeof(line));
             int n = snprintf(line, sizeof(line),
                              "{\"t_ns\":%lld,\"q\":[%.7f,%.7f,%.7f,%.7f],\"euler_deg\":[%.2f,%.2f,%.2f]}\n",
                              (long long)t_now, q.w, q.x, q.y, q.z,
                              yaw_deg, pitch_deg, roll_deg);
-
+            printf("%s", line);
             if ( send( client, line, (size_t)n, 0) < 0 ) {
                 fprintf(stderr, "Client disconnected: %s\n", strerror(errno));
                 break;
