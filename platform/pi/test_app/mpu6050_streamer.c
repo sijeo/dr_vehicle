@@ -142,7 +142,7 @@ static void ma_get(const ma_t* ma, float g[3], float a[3]){
 static dr_quatf_t attitude_update(dr_quatf_t q, const float gyro[3], const float accel[3], float dt, float accel_gain)
 {
     //1. Integrate gyro
-    dr_quatf_t qg; dr_q_integrate_gyro(q, (dr_vec3f_t){ .x = gyro[0], .y = gyro[1], .z = gyro[2] }, dt);
+    dr_quatf_t qg = dr_q_integrate_gyro(q, (dr_vec3f_t){ .x = gyro[0], .y = gyro[1], .z = gyro[2] }, dt);
 
     //2. Accel tilt correction (assume accel = gravity in body; normalize)
     dr_vec3f_t a_b = dr_v3_normalize((dr_vec3f_t){ .x = accel[0], .y = accel[1], .z = accel[2] });
@@ -301,7 +301,8 @@ int main(int argc, char* argv[])
             if ( dt < 1e-5f ) dt = 1/c.rate_hz;
             t_prev = t_now;
 
-            q = attitude_update(q, g0, a0, dt, c.accel_gain);
+            q = attitude_update(q, g, a, dt, c.accel_gain);
+            //printf("q=[%.4f,%.4f,%.4f,%.4f]\n",q.w, q.x, q.y, q.z);
             float yaw_deg, pitch_deg, roll_deg;
             euler_deg_from_q(q, &yaw_deg, &pitch_deg, &roll_deg);
             // Send data to client
@@ -311,7 +312,7 @@ int main(int argc, char* argv[])
                              "{\"t_ns\":%lld,\"q\":[%.7f,%.7f,%.7f,%.7f],\"euler_deg\":[%.2f,%.2f,%.2f]}\n",
                              (long long)t_now, q.w, q.x, q.y, q.z,
                              yaw_deg, pitch_deg, roll_deg);
-            printf("%s", line);
+            //printf("%s", line);
             if ( send( client, line, (size_t)n, 0) < 0 ) {
                 fprintf(stderr, "Client disconnected: %s\n", strerror(errno));
                 break;
