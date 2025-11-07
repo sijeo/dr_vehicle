@@ -192,10 +192,10 @@ class Viewer(QtWidgets.QMainWindow):
         self.view.addItem(mesh)
 
         # Readouts
-        self.lbEuler = QtWidgets.QLabel("Yaw=- Pitch=- Roll=-")
+        self.lblEuler = QtWidgets.QLabel("Yaw=- Pitch=- Roll=-")
         self.lblTime = QtWidgets.QLabel("t_ns=-")
         info = QtWidgets.QHBoxLayout()
-        info.addWidget(self.lbEuler)
+        info.addWidget(self.lblEuler)
         info.addStretch(1)
         info.addWidget(self.lblTime)
         grid.addLayout(info, 3, 0, 1, 2)
@@ -276,7 +276,7 @@ class Viewer(QtWidgets.QMainWindow):
             R = quat_to_R(w, x, y, z)
             self.last_R = R
             yaw, pitch, roll = pkt.get("euler_deg", [0, 0, 0])
-
+            print( yaw, pitch, roll )
             self.lblEuler.setText(f"Yaw={yaw:6.2f}° Pitch={pitch:6.2f}° Roll={roll:6.2f}°")
             self.lblTime.setText(f"t_ns={pkt.get('t_ns', '-')}")
         except Exception as e:
