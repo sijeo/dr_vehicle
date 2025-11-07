@@ -287,3 +287,17 @@ doxygen -g  # creates Doxyfile
 #   EXTRACT_ALL            = YES
 doxygen
 ```
+
+
+'''code
+sudo systemctl stop dr_stack.service
+sudo systemctl disable dr_stack.service
+sudo journalctl -u dr_stack.service -f
+
+sudo systemctl daemon-reload
+sudo systemctl enable dr_stack.service
+sudo systemctl start dr_stack.service
+
+sudo journalctl -u dr_stack.service -f
+
+'''
