@@ -305,13 +305,26 @@ int main(int argc, char* argv[])
             //printf("q=[%.4f,%.4f,%.4f,%.4f]\n",q.w, q.x, q.y, q.z);
             float yaw_deg, pitch_deg, roll_deg;
             euler_deg_from_q(q, &yaw_deg, &pitch_deg, &roll_deg);
+            static e_init = 0;
+            static float f_yaw = 0, f_pitch = 0, f_roll = 0;
+            float alpha_e = 0.2f;
+            if ( !e_init ) {
+                f_yaw = yaw_deg; f_pitch = pitch_deg; f_roll = roll_deg;
+                e_init = 1;
+            } else {
+
+                f_yaw = alpha_e * yaw_deg + (1.0f - alpha_e) * f_yaw;
+                f_pitch = alpha_e * pitch_deg + (1.0f - alpha_e) * f_pitch;
+                f_roll = alpha_e * roll_deg + (1.0f - alpha_e) * f_roll;
+            }
+
             // Send data to client
             char line[512];
             memset(line, 0, sizeof(line));
             int n = snprintf(line, sizeof(line),
                              "{\"t_ns\":%lld,\"q\":[%.7f,%.7f,%.7f,%.7f],\"euler_deg\":[%.2f,%.2f,%.2f]}\n",
                              (long long)t_now, q.w, q.x, q.y, q.z,
-                             yaw_deg, pitch_deg, roll_deg);
+                             f_yaw, f_pitch, f_roll);
             //printf("%s", line);
             if ( send( client, line, (size_t)n, 0) < 0 ) {
                 fprintf(stderr, "Client disconnected: %s\n", strerror(errno));
