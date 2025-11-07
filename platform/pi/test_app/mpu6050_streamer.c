@@ -305,7 +305,7 @@ int main(int argc, char* argv[])
             //printf("q=[%.4f,%.4f,%.4f,%.4f]\n",q.w, q.x, q.y, q.z);
             float yaw_deg, pitch_deg, roll_deg;
             euler_deg_from_q(q, &yaw_deg, &pitch_deg, &roll_deg);
-            static e_init = 0;
+            static int e_init = 0;
             static float f_yaw = 0, f_pitch = 0, f_roll = 0;
             float alpha_e = 0.2f;
             if ( !e_init ) {
