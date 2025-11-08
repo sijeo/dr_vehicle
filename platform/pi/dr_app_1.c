@@ -503,19 +503,7 @@ int main (void) {
             dr_ekf_update_gps_pos(&ekf, &z, R_loose);
         }
         
-        if (fd_gnss)
-        {
-            char utc[40] = "0000-00-00T00:00:00.000Z";
-            if (have_fix) {
-                snprintf(utc, sizeof(utc), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
-                    Y, M, d, H, m, s, ms);
-            }
-            fprintf(f_gnss, "%s,%lld,%.8f,%.8f,%.3f,%.3f,%d\n",
-                utc, (long long)tns, lat, lon, alt, spd, have_fix);
-            fflush(f_gnss);
-        }
-
-        
+               
 
         /* Output: Current nominal state (predicted if no fix)*/
         float yaw_deg, pitch_deg, roll_deg;
@@ -560,8 +548,20 @@ int main (void) {
                 roll_deg
             );
             fflush(f_sd);
-        }
-
+            if (fd_gnss)
+            {
+                char utc[40] = "0000-00-00T00:00:00.000Z";
+             if (have_fix) {
+                snprintf(utc, sizeof(utc), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
+                    Y, M, d, H, m, s, ms);
+                }
+             fprintf(f_gnss, "%s,%lld,%.8f,%.8f,%.3f,%.3f,%d\n",
+                utc, (long long)tns, lat, lon, alt, spd, have_fix);
+            fflush(f_gnss);
+         }
+     }
+        
+       
         msleep((unsigned)(1000.0f / IMU_LOOP_HZ + 0.5f)); /* ~100ms */
 
     }
