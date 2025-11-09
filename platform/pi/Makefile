@@ -21,15 +21,15 @@ clean:
 app: dr_app_1.c
 	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o dr_app_1 $< $(CORE_SRCS) -lm
 
-driver_test: test_app/mpu6050_streamer.c
-	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o test_app/mpu6050_streamer $< $(CORE_SRCS) -lm
+driver_test: test_app/mpu6050_lateral_streamer.c
+	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o test_app/mpu6050_lateral_streamer $< $(CORE_SRCS) -lm
 
 deploy:
-	scp *.ko sijeo@10.207.170.7:/home/sijeo/dr_vehicle/
+	scp *.ko sijeo@10.255.80.7:/home/sijeo/dr_vehicle/
 
 deploy_app:
-	scp dr_app_1 sijeo@10.207.170.7:/home/sijeo/dr_vehicle/
+	scp dr_app_1 sijeo@10.255.80.7:/home/sijeo/dr_vehicle/
 
 deploy_test:
-	scp test_app/mpu6050_streamer sijeo@10.207.170.7:/home/sijeo/dr_vehicle/
+	scp test_app/mpu6050_lateral_streamer sijeo@10.255.80.7:/home/sijeo/dr_vehicle/
 .PHONY: all clean app driver_test deploy deploy_app
