@@ -224,8 +224,9 @@ class LateralViewer(QtWidgets.QMainWindow):
     @QtCore.pyqtSlot(dict)
     def onPacket(self, pkt):
         try:
-            pos = np.array(pkt.get("pos_m",[0.0,0.0,0.0]), dtype=np.float32)
+            pos = np.array(pkt.get("pos_m",[0.0,0.0,0.0]), dtype=float)
             self.last_pos = pos
+            print(pos)
             self.lblPos.setText(f"X={pos[0]:.3f} m Y={pos[1]:.3f} m Z={pos[2]:.3f} m")
         except Exception as e:
             pass
