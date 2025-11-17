@@ -270,7 +270,11 @@ class IMUCalibApp:
             return
         if self.sock is None:
             messagebox.showerror("Error", "Not connected to server")
-            return  
+            return
+
+        self.streaming = True
+        self.log("Starting calibrated data stream...")
+        self.stream_loop()  
         
     def stop_stream(self):
         """ Stop streaming """
