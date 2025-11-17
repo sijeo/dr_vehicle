@@ -45,7 +45,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-#define IMU_DEV_PATH "/dev/mpu6050_char"
+#define IMU_DEV_PATH "/dev/mpu6050-0"
 
 typedef struct {
     int16_t ax, ay, az;
@@ -169,6 +169,7 @@ static void handle_client(int client_fd, int imu_fd) {
     char buffer[256];
 
     while(1) {
+        memset(buffer, 0, sizeof(buffer));
         ssize_t n = recv(client_fd, buffer, sizeof(buffer)-1, 0);
         if ( n <= 0 ) {
             /* Client disconnected or error */
@@ -176,12 +177,13 @@ static void handle_client(int client_fd, int imu_fd) {
                 break;
             }
             buffer[n] = '\0';
+            printf("Received command: %s", buffer);
 
             /* Very simple line based command parsing; expect one command per recv */
             int N = 0;
             int stream_on = 0;
 
-            if ( sscanf(buffer, "SAMPLE %d", &N) == 1 && N > 0 ) {
+            if ( sscanf(buffer, "SAMPLE %d\n", &N) == 1 && N > 0 ) {
                 /* Average N samples and send one line of floats */
                 double ax, ay, az, gx, gy, gz;
                 if ( capture_average(imu_fd, N, &ax, &ay, &az, &gx, &gy, &gz) == 0 ) {
