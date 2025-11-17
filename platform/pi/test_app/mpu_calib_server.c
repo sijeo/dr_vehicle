@@ -77,7 +77,7 @@ static int read_imu_sample(int imu_fd, imu_sample_t *sample) {
         perror("Read IMU");
         return -1;
     }
-    if ( ret != sizeof(imu_sample_t)
+    if ( ret != sizeof(imu_sample_t) )
     {
         fprintf(stderr, "Incomplete read from IMU device\n");
         return -1;
