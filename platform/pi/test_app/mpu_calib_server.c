@@ -45,6 +45,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
+#include "../mpu6050_ioctl.h"  // from your driver tree
+
 #define IMU_DEV_PATH "/dev/mpu6050-0"
 
 typedef struct {
@@ -70,20 +72,13 @@ static int open_imu_device() {
  * READ IMU SAMPLE (blocking read of struct )
  * 
  */
-static int read_imu_sample(int imu_fd, imu_sample_t *sample) {
-    ssize_t ret = read(imu_fd, sample, sizeof(imu_sample_t));
-    if ( ret < 0 )
-    {
-        perror("Read IMU");
-        return -1;
-    }
-    if ( ret != sizeof(imu_sample_t) )
-    {
-        fprintf(stderr, "Incomplete read from IMU device\n");
-        return -1;
-    }
-    return 0;
+static int read_sample(int fd, struct mpu6050_sample *s){
+    ssize_t r=read(fd,s,sizeof(*s));
+    if(r==(ssize_t)sizeof(*s)) return 0;
+    return (r<0)?-errno:-EIO;
 }
+
+
 
 /**
  * Capture N samples, returns averages in double
@@ -93,18 +88,17 @@ static int capture_average(int imu_fd, int N, double *ax, double *ay, double *az
     int i;
     long sum_ax = 0, sum_ay = 0, sum_az = 0;
     long sum_gx = 0, sum_gy = 0, sum_gz = 0;
+    struct mpu6050_sample s;
 
-    for (i = 0; i < N; i++) {
-        imu_sample_t sample;
-        if ( read_imu_sample(imu_fd, &sample) != 0 ) {
-            return -1;
+    for(i=0;i<N;i++){
+        if(read_sample(imu_fd,&s)==0){
+            sum_ax += s.ax;
+            sum_ay += s.ay;
+            sum_az += s.az;
+            sum_gx += s.gx;
+            sum_gy += s.gy;
+            sum_gz += s.gz;
         }
-        sum_ax += sample.ax;
-        sum_ay += sample.ay;
-        sum_az += sample.az;
-        sum_gx += sample.gx;
-        sum_gy += sample.gy;
-        sum_gz += sample.gz;
 
         /* Sleep 10ms between samples ( adjust to  your ODR if needed )*/
         usleep(10000);
@@ -133,8 +127,8 @@ static int capture_average(int imu_fd, int N, double *ax, double *ay, double *az
 
     fprintf(stderr, "Entering the Stream Mode (Continuous Samples)...\n");
     while(1) {
-        imu_sample_t sample;
-        if ( read_imu_sample(imu_fd, &sample) != 0 ) {
+        struct mpu6050_sample sample;
+        if ( read_sample(imu_fd, &sample) != 0 ) {
             fprintf(stderr, "Error reading IMU sample in stream mode\n");
             break;
         }
@@ -148,7 +142,7 @@ static int capture_average(int imu_fd, int N, double *ax, double *ay, double *az
             fprintf(stderr, "Error formatting output line\n");
             break;
         }
-
+        printf("%s", out); // For debugging; can be removed
         ssize_t n = send(client_fd, out, len, 0);
         if ( n <= 0 ) {
             fprintf(stderr, "STREAM: Client disconnected or send error\n");
@@ -185,6 +179,7 @@ static void handle_client(int client_fd, int imu_fd) {
 
             if ( sscanf(buffer, "SAMPLE %d\n", &N) == 1 && N > 0 ) {
                 /* Average N samples and send one line of floats */
+                printf("Capturing %d samples for averaging...\n", N);
                 double ax, ay, az, gx, gy, gz;
                 if ( capture_average(imu_fd, N, &ax, &ay, &az, &gx, &gy, &gz) == 0 ) {
                     char out[256];
@@ -194,6 +189,7 @@ static void handle_client(int client_fd, int imu_fd) {
                         send(client_fd, out, len, 0);
                     }
                 } else {
+                    printf("Error capturing average samples\n");
                     const char *err_msg = "ERR IMU\n";
                     send(client_fd, err_msg, strlen(err_msg), 0);
                 }
