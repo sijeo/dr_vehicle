@@ -58,12 +58,34 @@ static int read_sample(int fd, struct mpu6050_sample *s){
     if(r==(ssize_t)sizeof(*s)) return 0;
     return (r<0)?-errno:-EIO;
 }
-static void raw_to_si(const struct mpu6050_fs *fs,const struct mpu6050_sample *s,float a[3]){
-    const float g_range=(fs->accel==ACCEL_2G)?2.0f:(fs->accel==ACCEL_4G)?4.0f:(fs->accel==ACCEL_8G)?8.0f:16.0f;
-    const float a_per_lsb=(g_range*9.80665f)/32768.0f;
-    a[0]=s->ax*a_per_lsb; a[1]=s->ay*a_per_lsb; a[2]=s->az*a_per_lsb;
-}
 
+
+static void raw_to_si(const struct mpu6050_fs* fs, const struct mpu6050_sample* s,float gyro_radps[3], float accel_mps2[3]) 
+{
+    const float g_range = (fs->accel == ACCEL_2G) ? 16384.0f :
+                          (fs->accel == ACCEL_4G) ? 8192.0f :
+                          (fs->accel == ACCEL_8G) ? 4096.0f : 2048.0f;
+    const float dps_range = (fs->gyro == GYRO_250DPS) ? 131.0f :
+                            (fs->gyro == GYRO_500DPS) ? 65.5f :
+                            (fs->gyro == GYRO_1000DPS) ? 32.8f : 16.4f;
+
+    s->ax = s->ax/g_range;
+    s->ay = s->ay/g_range;
+    s->az = s->az/g_range;
+    s->gx = s->gx/dps_range;
+    s->gy = s->gy/dps_range;
+    s->gz = s->gz/dps_range;
+    
+    
+    const float a_lsb_to_mps2 = (g_range * 9.860665f) / 32768.0f; // m/s^2 per LSB
+    const float g_lsb_to_rad = ((dps_range * (float)M_PI / 180.0f) / 32768.0f); // rad/s per LSB
+    accel_mps2[0] = s->ax * a_lsb_to_mps2;
+    accel_mps2[1] = s->ay * a_lsb_to_mps2;
+    accel_mps2[2] = s->az * a_lsb_to_mps2;
+    gyro_radps[0] = s->gx * g_lsb_to_rad;
+    gyro_radps[1] = s->gy * g_lsb_to_rad;
+    gyro_radps[2] = s->gz * g_lsb_to_rad;
+}
 // -----------------------------------------------------------
 // config
 // -----------------------------------------------------------
