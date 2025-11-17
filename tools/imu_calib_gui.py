@@ -29,7 +29,7 @@ class IMUCalibApp:
         
 
         # Storage for 6 orientations means
-        self.orientations = ["+X Up", "-X Up", "+Y Up", "-Y Up", "+Z Up", "-Z Up"]
+        self.orientations = ["+X_Up", "-X_Up", "+Y_Up", "-Y_Up", "+Z_Up", "-Z_Up"]
         self.raw_means = {o : None for o in self.orientations}
         self.gyro_bias = None
 
@@ -92,8 +92,7 @@ class IMUCalibApp:
         host = self.host_var.get()
         port = self.port_var.get()
         try:
-            self.sock = socket.create_connection((host, port), timeout=5.0)
-            self.sock.settimeout(5.0)
+            self.sock = socket.create_connection((host, port))
             self.status_var.set(f"Connected to {host}:{port}")
             self.log(f"Connected to {host}:{port}")
         except Exception as e:
@@ -120,7 +119,7 @@ class IMUCalibApp:
             if line.startswith("ERR"):
                 self.log(f"Error from server: {line}")
                 return None
-            
+            self.log(f"Received line: {line}")
             vals = list(map(float, line.split()))
             if len(vals) != 6:
                 self.log(f"Bad data from server: {line}")
@@ -222,14 +221,14 @@ class IMUCalibApp:
         b = np.array([p[9], p[10], p[11]])
 
         # Invert A to get C and offset vector o
-        C = np.linalg.inv(A)
-        o = -C @ b
+        self.C = np.linalg.inv(A)
+        self.o = -self.C @ b
 
         self.log("=== Calibration Results ===")
         self.log(f"A (raw = A * a_true + b):\n{A}")
         self.log(f"b (raw bias): {b}")
-        self.log(f"C (a_true = C * (raw + o)):\n{C}")
-        self.log(f"o (offset in m/s^2): {o}")
+        self.log(f"C (a_true = C * (raw + o)):\n{self.C}")
+        self.log(f"o (offset in m/s^2): {self.o}")
 
         if self.gyro_bias is not None:
             self.log(f"Gyro Bias (raw counts): {self.gyro_bias}")
@@ -239,12 +238,11 @@ class IMUCalibApp:
         # Emit C/o in C code format
         self.log("\n---C code snippet (accel calibration)---")
         self.log("/* Multiply this 3x3 matrix X by raw counts, then add o to get m/s^2 */")
-        for row in C:
+        for row in self.C:
             self.log("     {%.9ff, %.9ff, %.9ff}," % tuple(row))
         self.log("};")
 
-        self.log("static const float accel_o[3] = { %.9ff, %.9ff, %.9ff };" % tuple(o))
-
+        self.log("static const float accel_o[3] = { %.9ff, %.9ff, %.9ff };" % tuple(self.o))
         if self.gyro_bias is not None:
             gb = self.gyro_bias
             self.log("\n/* Gyro bias in raw counts (substract below scaling to rad/s)")
@@ -254,8 +252,8 @@ class IMUCalibApp:
         calib_data = {
             "A": A.tolist(),
             "b": b.tolist(),
-            "C": C.tolist(),
-            "o": o.tolist(),
+            "C": self.C.tolist(),
+            "o": self.o.tolist(),
             "gyro_bias": self.gyro_bias.tolist() if self.gyro_bias is not None else None,
             "gyro_scale": self.gyro_scale_var.get()
         }
