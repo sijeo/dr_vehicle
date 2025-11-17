@@ -30,7 +30,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include "mpu6050_ioctl.h"
+#include "../mpu6050_ioctl.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -97,7 +97,8 @@ typedef struct {
 
 static void parse_args(int argc,char**argv,cfg_t*c){
     c->port=9010; c->rate_hz=100; c->calib_s=5;
-    for(int i=1;i<argc;i++){
+    int i;
+    for(i=1;i<argc;i++){
         if(!strcmp(argv[i],"--port")&&i+1<argc) c->port=atoi(argv[++i]);
         else if(!strcmp(argv[i],"--rate_hz")&&i+1<argc) c->rate_hz=atoi(argv[++i]);
         else if(!strcmp(argv[i],"--calib_s")&&i+1<argc) c->calib_s=atoi(argv[++i]);
@@ -110,6 +111,7 @@ static void parse_args(int argc,char**argv,cfg_t*c){
 int main(int argc,char**argv){
     cfg_t C; parse_args(argc,argv,&C);
     int fd=open_mpu6050();
+    int i, k;
     if(fd<0){fprintf(stderr,"open failed: %s\n",strerror(-fd));return 1;}
 
     struct mpu6050_fs fs={0};
@@ -121,10 +123,10 @@ int main(int argc,char**argv){
     double suma[3]={0};
     struct mpu6050_sample s;
     int N=C.calib_s*C.rate_hz;
-    for(int i=0;i<N;i++){
+    for(i=0;i<N;i++){
         if(read_sample(fd,&s)==0){
             float a[3]; raw_to_si(&fs,&s,a);
-            for(int k=0;k<3;k++) suma[k]+=a[k];
+            for(k=0;k<3;k++) suma[k]+=a[k];
         }
         msleep(1000/C.rate_hz);
     }
@@ -158,6 +160,7 @@ int main(int argc,char**argv){
         int still_cnt=0;
 
         for(;;){
+            int i, j, k;
             if(read_sample(fd,&s)!=0){msleep(1);continue;}
             float a_raw[3]; raw_to_si(&fs,&s,a_raw);
 
@@ -167,15 +170,15 @@ int main(int argc,char**argv){
             // simple 1st-order IIR low-pass
             const float alpha=0.1f;
             if(!lp_init){memcpy(a_lp,a,sizeof(a_lp));lp_init=true;}
-            else for(int i=0;i<3;i++) a_lp[i]+=alpha*(a[i]-a_lp[i]);
+            else for(i=0;i<3;i++) a_lp[i]+=alpha*(a[i]-a_lp[i]);
 
             // moving average
-            for(int k=0;k<3;k++){ ma_buf[k][ma_idx]=a_lp[k]; }
+            for(k=0;k<3;k++){ ma_buf[k][ma_idx]=a_lp[k]; }
             ma_idx=(ma_idx+1)%MA_WIN;
             if(ma_fill<MA_WIN) ma_fill++;
             float a_ma[3]={0};
-            for(int k=0;k<3;k++){
-                for(int j=0;j<ma_fill;j++) a_ma[k]+=ma_buf[k][j];
+            for(k=0;k<3;k++){
+                for(j=0;j<ma_fill;j++) a_ma[k]+=ma_buf[k][j];
                 a_ma[k]/=(float)ma_fill;
             }
 
@@ -192,7 +195,7 @@ int main(int argc,char**argv){
             // adaptive bias correction
             const float k_bias=0.001f;
             if(still){
-                for(int i=0;i<3;i++)
+                for(i=0;i<3;i++)
                     ba[i]=(1.0f-k_bias)*ba[i]+k_bias*a_raw[i];
             }
 
@@ -205,18 +208,18 @@ int main(int argc,char**argv){
             }
 
             // integrate to velocity
-            for(int i=0;i<3;i++) vel[i]+=a_ma[i]*dt;
+            for(i=0;i<3;i++) vel[i]+=a_ma[i]*dt;
 
             // soft velocity decay to remove drift
             const float vel_decay=0.005f;
-            for(int i=0;i<3;i++) vel[i]*=(1.0f-vel_decay);
+            for(i=0;i<3;i++) vel[i]*=(1.0f-vel_decay);
 
             // integrate to position
-            for(int i=0;i<3;i++) pos[i]+=vel[i]*dt;
+            for(i=0;i<3;i++) pos[i]+=vel[i]*dt;
 
             // clamp range
             const float maxr=5.0f;
-            for(int i=0;i<3;i++){if(pos[i]>maxr)pos[i]=maxr;if(pos[i]<-maxr)pos[i]=-maxr;}
+            for(i=0;i<3;i++){if(pos[i]>maxr)pos[i]=maxr;if(pos[i]<-maxr)pos[i]=-maxr;}
 
             // send JSON packet
             char line[256];
