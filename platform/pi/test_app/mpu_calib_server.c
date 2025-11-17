@@ -197,7 +197,7 @@ static void handle_client(int client_fd, int imu_fd) {
                     const char *err_msg = "ERR IMU\n";
                     send(client_fd, err_msg, strlen(err_msg), 0);
                 }
-            } else if ( sscanf(buffer, "STREAM %d", &stream_on) == 1 && stream_on == 1 ) {
+            } else if ( sscanf(buffer, "STREAM %d\n", &stream_on) == 1 && stream_on == 1 ) {
                 /**
                  * STREAM 1:
                  * - Enter continuous streaming mode
