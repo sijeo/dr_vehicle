@@ -1,245 +1,275 @@
 /**
- * @file mpu6050_lateral_streamer.c
- * @brief IMU lateral motion streamer using only accelerometer data (no gyro, no quaternion).
- *
- * Build:
- *   gcc -O2 -Wall -Wextra -o mpu6050_lateral_streamer mpu6050_lateral_streamer.c -lm
- *
- * Description:
- *   - Calibrates accelerometer bias (assuming stillness).
- *   - Applies low-pass filtering and moving-average smoothing.
- *   - Integrates acceleration to velocity and position.
- *   - Uses ZUPT (zero-velocity update) to stop drift when still.
- *   - Streams data as JSON lines over TCP for viewer.
+ * mpu6050_lateral_streamer.c
+ * 
+ * - Uses mpu6050_char driver (/dev/mpu6050-0)
+ * - Applies  LS calibration (C, o, gyro_bias, gyro_scale) from imu_calib_gui.py
+ * - Estimates linear acceleration (gravity removed)
+ * - Integrates to velocity and position
+ * - Applies ZUPT + velocity decay so motion stops when IMU stops
+ * - Streams JSON over TCP to imu_lateral_streamer.py
+ * - Streams JSON over TCP to imu_lateral_streamer.py
+ * { "t_ns": ..., "pos_m": [...], "vel_mps": [...], "lin_acc_mps2": [...] }
+ * 
  */
 
-#define _GNU_SOURCE
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <string.h>
-#include <unistd.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <glob.h>
-#include <math.h>
-#include <time.h>
-#include <sys/ioctl.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+ #define _GNU_SOURCE
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <stdint.h>
+ #include <string.h>
+ #include <math.h>
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <unistd.h>
+ #include <time.h>
+ #include <sys/socket.h>
+ #include <sys/types.h>
+ #include <sys/ioctl.h>
+ #include <arpa/inet.h>
+ #include <netinet/in.h>
 
-#include "../mpu6050_ioctl.h"
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
-// -----------------------------------------------------------
-// helpers
-// -----------------------------------------------------------
-static void msleep(unsigned ms){
-    struct timespec ts={.tv_sec=ms/1000,.tv_nsec=(long)(ms%1000)*1000000L};
-    nanosleep(&ts,NULL);
-}
-static int64_t mono_ns(void){
-    struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts);
-    return (int64_t)ts.tv_sec*1000000000LL + ts.tv_nsec;
-}
-static int open_mpu6050(void){
-    glob_t g;
-    if(glob("/dev/mpu6050-*",0,NULL,&g)!=0||g.gl_pathc==0){globfree(&g);return -ENOENT;}
-    int fd=open(g.gl_pathv[0],O_RDONLY|O_CLOEXEC);
-    int err=(fd<0)?-errno:0; globfree(&g); return (fd<0)?err:fd;
-}
-static int read_sample(int fd, struct mpu6050_sample *s){
-    ssize_t r=read(fd,s,sizeof(*s));
-    if(r==(ssize_t)sizeof(*s)) return 0;
-    return (r<0)?-errno:-EIO;
-}
+ #include "../mpu6050_ioctl.h"
+ #include "../core/dr_math.h"
+ #include "../core/dr_types.h"
 
 
-static void raw_to_si(const struct mpu6050_fs* fs, const struct mpu6050_sample* s,float gyro_radps[3], float accel_mps2[3]) 
+ #define IMU_DEV_PATH        "/dev/mpu6050-0"
+ #define SERVER_PORT         9010
+ #define SAMPLE_HZ         100
+
+ #define G_CONST           9.80665f
+ #define DEG2RAD           (3.14159265f / 180.0f)
+
+ #define GYRO_SCALE_LSB_PER_DPS   65.5f   /* for +/- 500 dps full scale */
+
+ /* -----------Paste form the imu_calibration.json here ---------------*/
+ 
+ static const float C[3][3] = {
+     { 0.0005963711958255211f,  1.158486442783522e-05f, 2.0885245451422986e-06f},
+     {-1.0070047127218174e-05f,   0.000602066470161879f, 9.559588107960574e-06f},
+     { -1.2489036924665308e-05f,  1.0884932229524887e-05f,  0.0005925365798407456f}
+ };
+
+ static const float accel_o[3] = {-0.24456310935638237f, -0.12142627167583814f, 0.7449054548921515f };
+
+ /* Gyro bias in raw counts */
+    static const float gyro_bias[3] = {  -143.799f, 48.377f, 850.153f };
+
+/* -------------------ZUPT / DECAY TUNING ----------------------*/
+
+    #define ACC_ZUPT_THRESH   0.05f    /* m/s^2 */
+    #define GYRO_ZUPT_THRESH  (1.5f * DEG2RAD)   /* rad/s */
+
+    #define ZUPT_COUNT_REQUIRED   10 /* Consecutive samples and qualified */
+    #define VEL_DECAY_NEAR_ZERO   0.90f
+    #define VEL_EPSILON           1e-3f
+
+/* --------------------------------------------------------------*/
+
+static uint64_t monotonic_time_ns()
 {
-    const float g_range = (fs->accel == ACCEL_2G) ? 16384.0f :
-                          (fs->accel == ACCEL_4G) ? 8192.0f :
-                          (fs->accel == ACCEL_8G) ? 4096.0f : 2048.0f;
-    const float dps_range = (fs->gyro == GYRO_250DPS) ? 131.0f :
-                            (fs->gyro == GYRO_500DPS) ? 65.5f :
-                            (fs->gyro == GYRO_1000DPS) ? 32.8f : 16.4f;
-
-    s->ax = s->ax/g_range;
-    s->ay = s->ay/g_range;
-    s->az = s->az/g_range;
-    s->gx = s->gx/dps_range;
-    s->gy = s->gy/dps_range;
-    s->gz = s->gz/dps_range;
-    
-    
-    const float a_lsb_to_mps2 = (g_range * 9.860665f) / 32768.0f; // m/s^2 per LSB
-    const float g_lsb_to_rad = ((dps_range * (float)M_PI / 180.0f) / 32768.0f); // rad/s per LSB
-    accel_mps2[0] = s->ax * a_lsb_to_mps2;
-    accel_mps2[1] = s->ay * a_lsb_to_mps2;
-    accel_mps2[2] = s->az * a_lsb_to_mps2;
-    gyro_radps[0] = s->gx * g_lsb_to_rad;
-    gyro_radps[1] = s->gy * g_lsb_to_rad;
-    gyro_radps[2] = s->gz * g_lsb_to_rad;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
-// -----------------------------------------------------------
-// config
-// -----------------------------------------------------------
-typedef struct {
-    int port;
-    int rate_hz;
-    int calib_s;
-} cfg_t;
 
-static void parse_args(int argc,char**argv,cfg_t*c){
-    c->port=9010; c->rate_hz=100; c->calib_s=5;
+static float vec3_norm(const float v[3])
+{
+    return sqrtf(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+}
+
+static void vec3_add( float out[3], const float a[3], const float b[3] )
+{
+    out[0] = a[0] + b[0];
+    out[1] = a[1] + b[1];
+    out[2] = a[2] + b[2];
+}
+
+static void vec3_scale( float out[3], const float v[3], float s )
+{
+    out[0] = v[0] * s;
+    out[1] = v[1] * s;
+    out[2] = v[2] * s;
+}
+
+/* quaternion from two unit vectors (v_from -> v_to )*/
+static dr_quatf_t q_from_two_unit_vecs( dr_vec3f_t v_from, dr_vec3f_t v_to )
+{
+    dr_vec3f_t c = {
+        v_from.y * v_to.z - v_from.z * v_to.y,
+        v_from.z * v_to.x - v_from.x * v_to.z,
+        v_from.x * v_to.y - v_from.y * v_to.x
+    };
+    float d = v_from.x * v_to.x + v_from.y * v_to.y + v_to.z;
+    dr_quatf_t q = {1.0f + d, c.x, c.y, c.z };
+    return dr_q_normalize(q);
+}
+
+/* Euler (deg) from quaternion, ZYX order: yaw(Z)-pitch(Y)-roll(X) */
+static void euler_deg_from_q( dr_quatf_t q, float *yaw, float *pitch, float *roll)
+{
+    float R[9];
+    dr_R_from_q(q, R); /* row-major 3x3 */
+
+    float r = atan2f( R[5], R[8] ); /* roll */
+    float p = asinf( -R[2] );        /* pitch */
+    float y = atan2f( R[1], R[0] ); /* yaw */
+
+    *roll = r * (180.0f)/3.14159265f ;
+    *pitch = p * (180.0f)/3.14159265f ;
+    *yaw = y * (180.0f)/3.14159265f ;
+}
+
+/* Apply LS calibration to accel raw counts -> m/s^2*/
+static void apply_accel_calib( int16_t ax, int16_t ay, int16_t az, float accel_mps2[3] )
+{
     int i;
-    for(i=1;i<argc;i++){
-        if(!strcmp(argv[i],"--port")&&i+1<argc) c->port=atoi(argv[++i]);
-        else if(!strcmp(argv[i],"--rate_hz")&&i+1<argc) c->rate_hz=atoi(argv[++i]);
-        else if(!strcmp(argv[i],"--calib_s")&&i+1<argc) c->calib_s=atoi(argv[++i]);
+    float r[3] = {
+        (float)ax,
+        (float)ay,
+        (float)az
+    };
+
+    for( i = 0; i < 3; i++ )
+    {
+        accel_mps2[i] = C[i][0] * r[0] + C[i][1] * r[1] + C[i][2] * r[2] + accel_o[i];
     }
+
+
 }
 
-// -----------------------------------------------------------
-// main
-// -----------------------------------------------------------
-int main(int argc,char**argv){
-    cfg_t C; parse_args(argc,argv,&C);
-    int fd=open_mpu6050();
-    int i, k;
-    if(fd<0){fprintf(stderr,"open failed: %s\n",strerror(-fd));return 1;}
+/* Apply gyro bias + scale -> rad/s */
+static void apply_gyro_calib( int16_t gx, int16_t gy, int16_t gz, float gyro_rads[3] )
+{
+    float gx_corr = (float)gx - gyro_bias[0];
+    float gy_corr = (float)gy - gyro_bias[1];
+    float gz_corr = (float)gz - gyro_bias[2];
 
-    struct mpu6050_fs fs={0};
-    if(ioctl(fd,MPU6050_IOC_GET_FS,&fs)!=0){
-        fprintf(stderr,"GET_FS failed: %s\n",strerror(errno));return 1;
+    float gx_dps = gx_corr / GYRO_SCALE_LSB_PER_DPS;
+    float gy_dps = gy_corr / GYRO_SCALE_LSB_PER_DPS;
+    float gz_dps = gz_corr / GYRO_SCALE_LSB_PER_DPS;
+
+    gyro_rads[0] = gx_dps * DEG2RAD;
+    gyro_rads[1] = gy_dps * DEG2RAD;
+    gyro_rads[2] = gz_dps * DEG2RAD;
+}
+
+/**
+ * Estimate gravity vector in IMU frame from a few seconds of still 
+ * calibrated accel samples
+ * 
+ */
+static void estimate_gravity_vector( int imu_fd, float g_body[3] )
+{
+    const int N = 500;
+    float g_sum[3] = {0};
+    struct mpu6050_sample sample;
+    int i;
+
+    fprintf(stderr, "[CAL] Estimating gravity vector... Keep IMU still.\n");
+
+    for( i = 0; i < N; i++ )
+    {
+        if( read( imu_fd, &sample, sizeof(sample) ) != sizeof(sample) )
+        {
+            perror("Failed to read mpu6050 sample for gravity estimation");
+            exit(EXIT_FAILURE);
+        }
+
+        float accel_mps2[3];
+        apply_accel_calib( sample.ax, sample.ay, sample.az, accel_mps2 );
+
+        g_sum[0] += accel_mps2[0];
+        g_sum[1] += accel_mps2[1];
+        g_sum[2] += accel_mps2[2];
+        usleep(1000000 / SAMPLE_HZ);
     }
 
-    fprintf(stderr,"[INFO] Calibrating accelerometer for %d s ... keep IMU still\n",C.calib_s);
-    double suma[3]={0};
+    g_body[0] = g_sum[0] / (float)N;
+    g_body[1] = g_sum[1] / (float)N;
+    g_body[2] = g_sum[2] / (float)N;
+
+    fprintf(stderr, "[CAL] Estimated gravity vector (m/s^2): [%.4f, %.4f, %.4f] (norm=%.4f)\n",
+        g_body[0], g_body[1], g_body[2], vec3_norm(g_body) );
+}
+
+/* Complementary attitude update: integrate gyro, correct with accel tilt */
+
+static dr_quatf_t attitude_update( dr_quatf_t q, const float gyro_rad[3], const float accel_mps2[3], float dt, float accel_gain )
+{
+    /* Integrate gyro */
+    dr_quatf_t qg = dr_q_integrate_gyro( q, (dr_vec3f_t){ gyro_rad[0], gyro_rad[1], gyro_rad[2] }, dt);
+
+    /* 2) Accel tilt correction only if accel mangitude ~ 1g */
+    float ax = accel_mps2[0], ay = accel_mps2[1], az = accel_mps2[2];
+    float anorm = sqrtf(ax*ax + ay*ay + az*az);
+    if ( anorm < 1e-4f ) {
+        return dr_q_normalize(qg);
+    }
+    
+    /* normailize accel -> approximate gravity direction (body frame ) */
+    dr_vec3f_t a_unit = { ax/anorm, ay/anorm, az/anorm };
+
+    /* World gravity is [0, 0, -1 ]*/
+    dr_vec3f_t g_world = {0.0f , 0.0f, -1.0f};
+
+    /* predicted gravity in body frame: q^{-1} * g_world * q */
+    dr_quatf_t qi = (dr_quatf_t){qg.w, -qg.x, -qg.y, -qg.z };
+    dr_vec3f_t g_b = dr_q_rotate(qi, g_world);
+
+    /* error axis = g_b x a_unit */
+    dr_vec3f_t err = {
+        g_b.y * a_unit.z - g_b.z * a_unit.y,
+        g_b.z * a_unit.x - g_b.x * a_unit.z,
+        g_b.x * a_unit.y - g_b.y * a_unit.x
+    };
+
+    dr_vec3f_t dtheta = { accel_gain * err.x,
+        accel_gain * err.y,
+        accel_gain * err.z
+    };
+
+    dr_quatf_t qcorr = dr_q_from_rotvec(dtheta);
+    dr_quatf_t q_new = dr_q_mult( qg, qcorr);
+    return dr_q_normalize(q_new);
+}
+
+
+/* Estimate initial orientation from average accel (gravity )*/
+
+static dr_quatf_t estimate_initial_orientation( int fd )
+{
+    const int N = 500;
+    float sum[3] = {0};
     struct mpu6050_sample s;
-    int N=C.calib_s*C.rate_hz;
-    for(i=0;i<N;i++){
-        if(read_sample(fd,&s)==0){
-            float a[3]; raw_to_si(&fs,&s,a);
-            for(k=0;k<3;k++) suma[k]+=a[k];
+    int i;
+
+    fprintf(stderr, "[CAL] Estimating initial orientation from accel (keep still )... \n");
+    for( i = 0; i < N; i++ ){
+        if ( read(fd, &s, sizeof(s)) != sizeof(s))
+        {
+            perror("read");
+            break;
         }
-        msleep(1000/C.rate_hz);
-    }
+        float a[3];
+        apply_accel_calib(s.ax, s.ay, s.az, a);
+        sum[0] += a[0];
+        sum[1] += a[1];
+        sum[2] += a[2];
+        usleep((useconds_t)(1e6f / SAMPLE_HZ));
+    } 
+    float mean[3] = {sum[0]/N, sum[1]/N, sum[2]/N};
+    float n = vec3_norm(mean);
+    dr_vec3f_t g_body = { mean[0]/n, mean[1]/n, mean[2]/n };
+    dr_vec3f_t g_world = { 0.0f, 0.0f, -1.0f };
 
-    float ba[3]={suma[0]/N,suma[1]/N,suma[2]/N};
-    fprintf(stderr,"[CAL] Accel bias: [%.6f %.6f %.6f] m/s²\n",ba[0],ba[1],ba[2]);
+    fprintf(stderr, "[CAL] Mean accel: [%.4f, %.4f, %.4f] m/s^2, |a|=%.4f\n", mean[0], mean[1], mean[2], n);
 
-    // TCP server
-    int srv=socket(AF_INET,SOCK_STREAM,0);
-    int yes=1; setsockopt(srv,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes));
-    struct sockaddr_in addr={0};
-    addr.sin_family=AF_INET; addr.sin_addr.s_addr=INADDR_ANY; addr.sin_port=htons(C.port);
-    bind(srv,(struct sockaddr*)&addr,sizeof(addr));
-    listen(srv,1);
-    fprintf(stderr,"[INFO] Starting TCP server on port %d\n",C.port);
+    dr_quatf_t q0 = q_from_two_unit_vecs(g_body, g_world);
+    return q0;
+}
 
-    // smoothing buffers
-    const int MA_WIN=10;
-    float ma_buf[3][MA_WIN]; int ma_idx=0; int ma_fill=0;
-
-    for(;;){
-        struct sockaddr_in ca; socklen_t calen=sizeof(ca);
-        int cs=accept(srv,(struct sockaddr*)&ca,&calen);
-        if(cs<0){perror("accept");continue;}
-        fprintf(stderr,"[INFO] Client connected: %s\n",inet_ntoa(ca.sin_addr));
-
-        float vel[3]={0},pos[3]={0};
-        float a_lp[3]={0};
-        bool lp_init=false;
-        int64_t t_prev=mono_ns();
-        int still_cnt=0;
-
-        for(;;){
-            int i, j, k;
-            if(read_sample(fd,&s)!=0){msleep(1);continue;}
-            float a_raw[3]; raw_to_si(&fs,&s,a_raw);
-
-            // bias correction
-            float a[3]={a_raw[0]-ba[0],a_raw[1]-ba[1],a_raw[2]-ba[2]};
-
-            // simple 1st-order IIR low-pass
-            const float alpha=0.1f;
-            if(!lp_init){memcpy(a_lp,a,sizeof(a_lp));lp_init=true;}
-            else for(i=0;i<3;i++) a_lp[i]+=alpha*(a[i]-a_lp[i]);
-
-            // moving average
-            for(k=0;k<3;k++){ ma_buf[k][ma_idx]=a_lp[k]; }
-            ma_idx=(ma_idx+1)%MA_WIN;
-            if(ma_fill<MA_WIN) ma_fill++;
-            float a_ma[3]={0};
-            for(k=0;k<3;k++){
-                for(j=0;j<ma_fill;j++) a_ma[k]+=ma_buf[k][j];
-                a_ma[k]/=(float)ma_fill;
-            }
-
-            // time step
-            int64_t t_now=mono_ns();
-            float dt=(float)((t_now-t_prev)/1e9);
-            if(dt<1e-4f) dt=1.0f/C.rate_hz;
-            t_prev=t_now;
-
-            // compute magnitude for stillness detection
-            float amag=sqrtf(a_ma[0]*a_ma[0]+a_ma[1]*a_ma[1]+a_ma[2]*a_ma[2]);
-            bool still=fabsf(amag)<0.05f; // adjust threshold (m/s²)
-
-            // adaptive bias correction
-            const float k_bias=0.001f;
-            if(still){
-                for(i=0;i<3;i++)
-                    ba[i]=(1.0f-k_bias)*ba[i]+k_bias*a_raw[i];
-            }
-
-            // Zero Velocity Update (ZUPT)
-            static const int STILL_CONFIRM=5;
-            if(still){ still_cnt++; } else { still_cnt=0; }
-            if(still_cnt>STILL_CONFIRM){
-                vel[0]=vel[1]=vel[2]=0;
-                continue; // skip integration completely while still
-            }
-
-            // integrate to velocity
-            for(i=0;i<3;i++) vel[i]+=a_ma[i]*dt;
-
-            // soft velocity decay to remove drift
-            const float vel_decay=0.005f;
-            for(i=0;i<3;i++) vel[i]*=(1.0f-vel_decay);
-
-            // integrate to position
-            for(i=0;i<3;i++) pos[i]+=vel[i]*dt;
-
-            // clamp range
-            const float maxr=5.0f;
-            for(i=0;i<3;i++){if(pos[i]>maxr)pos[i]=maxr;if(pos[i]<-maxr)pos[i]=-maxr;}
-
-            // send JSON packet
-            char line[256];
-            int n=snprintf(line,sizeof(line),
-                "{\"t_ns\":%lld,\"pos_m\":[%.4f,%.4f,%.4f],"
-                "\"vel_mps\":[%.4f,%.4f,%.4f],\"lin_acc_mps2\":[%.4f,%.4f,%.4f]}\n",
-                (long long)t_now,pos[0],pos[1],pos[2],
-                vel[0],vel[1],vel[2],
-                a_ma[0],a_ma[1],a_ma[2]);
-
-            if(send(cs,line,n,MSG_NOSIGNAL)<=0){
-                fprintf(stderr,"[INFO] Client disconnected\n");
-                break;
-            }
-
-            msleep(1000/C.rate_hz);
-        }
-        close(cs);
-    }
-    close(srv);
-    close(fd);
-    return 0;
+int main( void )
+{
+    
 }
