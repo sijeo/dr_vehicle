@@ -271,5 +271,193 @@ static dr_quatf_t estimate_initial_orientation( int fd )
 
 int main( void )
 {
-    
+    /* Open IMU */
+    int imu_fd = open( IMU_DEV_PATH, O_RDONLY );
+    if ( imu_fd < 0 )
+    {
+        perror("Failed to open IMU device");
+        return 1;
+    }
+
+    /* Open TCP Server */
+    int sock_listen =  socket(AF_INET, SOCK_STREAM, 0);
+    if ( sock_listen < 0 )
+    {
+        perror("socket");
+        close( imu_fd );
+        return 1;
+    }
+
+    int opt = 1;
+    setsockopt( sock_listen, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt) );
+
+    struct sockaddr_in server_addr;
+    memset (&server_addr, 0, sizeof(server_addr) );
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons( SERVER_PORT );
+
+    if ( bind( sock_listen, (struct sockaddr *)&server_addr, sizeof(server_addr) ) < 0 )
+    {
+        perror("bind");
+        close( imu_fd );
+        close( sock_listen );
+        return 1;
+    }
+
+    if ( listen( sock_listen, 1 ) < 0 )
+    {
+        perror("listen");
+        close( imu_fd );
+        close( sock_listen );
+        return 1;
+    }
+
+    fprintf(stderr, "[INFO] Waiting for Viewer on port %d...\n", SERVER_PORT );
+
+    /* Initial orientation from IMU */
+    dr_quatf_t q0 = estimate_initial_orientation( imu_fd );
+
+    struct sockaddr_in client_addr;
+    socklen_t client_addr_len = sizeof(client_addr);
+    int sock_client = accept( sock_listen, (struct sockaddr *)&client_addr, &client_addr_len );
+
+    if ( sock_client < 0 )
+    {
+        perror("accept");
+        close( imu_fd );
+        close( sock_listen );
+        return 1;
+    }
+
+    fprintf(stderr, "[INFO] Client Connected.\n");
+
+    /* State */
+    dr_quatf_t q = q0;
+    float pos[3] = {0};
+    float vel[3] = {0};
+    uint64_t t_prev_ns = monotonic_time_ns();
+    int zupt_counter = 0;
+
+
+    while(1)
+    {
+        struct mpu6050_sample sample;
+        ssize_t r = read( imu_fd, &sample, sizeof(sample) );
+        if ( r != sizeof(sample) )
+        {
+            perror("Failed to read mpu6050 sample");
+            break;
+        }
+
+        uint64_t t_ns = monotonic_time_ns();
+        float dt = (float)(t_ns - t_prev_ns) * 1e-9f;
+        if( dt <= 0.0f || dt > 0.1f )
+        {
+            dt = 1.0f / (float)SAMPLE_HZ;
+        }
+        t_prev_ns = t_ns;
+
+        /* Calibrated accel and gyro */
+        float acc[3];
+        float gyro[3];
+        apply_accel_calib( sample.ax, sample.ay, sample.az, acc );
+        apply_gyro_calib( sample.gx, sample.gy, sample.gz, gyro );
+
+        /* Attitude : Complementary Filter */
+        float acc_norm = vec3_norm( acc );
+        float accel_gain = 0.0f;
+        if( acc_norm > 0.7f * G_CONST && acc_norm < 1.3f * G_CONST )
+        {
+            accel_gain = 0.02f; /* Tune : 0.005 - 0.05 */
+        }
+        q = attitude_update( q, gyro, acc, dt, accel_gain );
+
+        /* Rotation Matrix: body -> world   */
+        float R[9];
+        dr_R_from_q( q, R ); /* row-major 3x3 */
+
+        /* Linear Acceleration: a_world - g_world */
+        float ax_b = acc[0];
+        float ay_b = acc[1];
+        float az_b = acc[2];
+        float ax_w = R[0]*ax_b + R[1]*ay_b + R[2]*az_b;
+        float ay_w = R[3]*ax_b + R[4]*ay_b + R[5]*az_b;
+        float az_w = R[6]*ax_b + R[7]*ay_b + R[8]*az_b;
+
+        float lin_acc[3];
+        lin_acc[0] = ax_w;
+        lin_acc[1] = ay_w;
+        lin_acc[2] = az_w + G_CONST; /* world gravity is [0,0,-G_CONST]*/
+
+        /* ZUPT detection */
+        float lin_norm = vec3_norm( lin_acc );  
+        float gyro_norm = vec3_norm( gyro );
+        bool zupt = (lin_norm < ACC_ZUPT_THRESH ) && ( gyro_norm < GYRO_ZUPT_THRESH );
+
+        if( zupt )
+        {
+            if ( ++zupt_counter >= ZUPT_COUNT_REQUIRED )
+            {
+                /* Apply ZUPT */
+                vel[0] = 0.0f;
+                vel[1] = 0.0f;
+                vel[2] = 0.0f;
+            }
+        }else {
+            zupt_counter = 0;
+        }
+
+        /* Integrate to velocity and position */
+        if( !zupt )
+        {
+            vel[0] += lin_acc[0] * dt;
+            vel[1] += lin_acc[1] * dt;
+            vel[2] += lin_acc[2] * dt;
+        }
+
+        /* Velocity decay near zero to bleed drift */
+        for( int i = 0; i < 3; i++ )
+        {
+            if( fabsf( lin_acc[i] ) < ACC_ZUPT_THRESH )
+            {
+                vel[i] *= VEL_DECAY_NEAR_ZERO;
+                if( fabsf( vel[i] ) < VEL_EPSILON )
+                {
+                    vel[i] = 0.0f;
+                }
+            }
+        }
+
+        /* Orientation as Euler (deg) */
+        float yaw, pitch, roll;
+        euler_deg_from_q( q, &yaw, &pitch, &roll );
+
+        /* JSON packet */
+        char buf[512];
+        int n = snprintf( buf, sizeof(buf),
+            "{ \"t_ns\": %llu, \"pos_m\": [%.4f, %.4f, %.4f], \"vel_mps\": [%.4f, %.4f, %.4f], "
+            "\"lin_acc_mps2\": [%.4f, %.4f, %.4f], \"euler_deg\": [%.2f, %.2f, %.2f] ,\"q\": [%.6f, %.6f, %.6f, %.6f] }\n",
+            (unsigned long long)t_ns, pos[0], pos[1], pos[2], vel[0], vel[1], vel[2], lin_acc[0], lin_acc[1], lin_acc[2],
+            yaw, pitch, roll, q.w, q.x, q.y, q.z);
+
+        if (n < 0) {
+            perror("snprintf");
+            break;
+        }
+
+        /* Send to client */
+        if ( send(sock_client, buf, (size_t)n, MSG_NOSIGNAL) < 0 )
+        {
+            perror("send");
+            break;
+        }
+
+        usleep( (useconds_t)(1e6f / SAMPLE_HZ) );
+
+    }
+    close( sock_client );
+    close( sock_listen );
+    close( imu_fd );
+    return 0;
 }
