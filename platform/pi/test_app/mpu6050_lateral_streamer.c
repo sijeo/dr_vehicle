@@ -156,16 +156,15 @@ static void apply_accel_calib( int16_t ax, int16_t ay, int16_t az, float accel_m
 static void apply_gyro_calib( const struct mpu6050_sample *s, float gyro_rads[3] )
 {
     float r[3] = {
-        (float)s->gx,
-        (float)s->gy,
-        (float)s->gz
+        (float)s->gx - GYRO_B[0],
+        (float)s->gy - GYRO_B[1],
+        (float)s->gz - GYRO_B[2]
     };
+    
     float gyro_dps[3];
-    int i;
-    for( i = 0; i < 3; i++ )
-    {
-        gyro_dps[i] = GYRO_A[i][0] * r[0] + GYRO_A[i][1] * r[1] + GYRO_A[i][2] * r[2] + GYRO_B[i];
-    }
+    gyro_dps[0] = r[0] / GYRO_SCALE_LSB_PER_DPS;
+    gyro_dps[1] = r[1] / GYRO_SCALE_LSB_PER_DPS;
+    gyro_dps[2] = r[2] / GYRO_SCALE_LSB_PER_DPS;
 
     /* Convert to rad/s */
     gyro_rads[0] = gyro_dps[0] * DEG2RAD;
@@ -520,7 +519,7 @@ int main( void )
             }
 
             usleep( (useconds_t)(1e6f / SAMPLE_HZ) );
-            
+
 
     }
     close( sock_client );
