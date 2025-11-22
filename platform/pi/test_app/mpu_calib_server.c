@@ -49,11 +49,6 @@
 
 #define IMU_DEV_PATH "/dev/mpu6050-0"
 
-typedef struct {
-    int16_t ax, ay, az;
-    int16_t gx, gy, gz;
-} imu_sample_t;
-
 
 /**
  * OPEN IMU DEVICE
