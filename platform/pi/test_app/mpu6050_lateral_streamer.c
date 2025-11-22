@@ -64,6 +64,7 @@
     #define ZUPT_COUNT_REQUIRED   10 /* Consecutive samples and qualified */
     #define VEL_DECAY_NEAR_ZERO   0.90f
     #define VEL_EPSILON           1e-3f
+    #define POS_CLAMP_MAX         5.0f  /* m */
 
 /* --------------------------------------------------------------*/
 
