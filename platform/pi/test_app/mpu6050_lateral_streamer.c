@@ -429,6 +429,19 @@ int main( void )
             }
         }
 
+        /* Position Integration */
+        for (i = 0; i < 3; i++ )
+        {
+            pos[i] += vel[i] * dt;
+            if( pos[i] > POS_CLAMP_MAX )
+            {
+                pos[i] = POS_CLAMP_MAX;
+            } else if( pos[i] < -POS_CLAMP_MAX )
+            {
+                pos[i] = -POS_CLAMP_MAX;
+            }
+        }
+
         /* Orientation as Euler (deg) */
         float yaw, pitch, roll;
         euler_deg_from_q( q, &yaw, &pitch, &roll );

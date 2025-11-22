@@ -18,47 +18,47 @@ class NetThread(QtCore.QObject):
         self.port = port
         self._stop = False
 
-        def stop(self):
-            self._stop = True
-        
-        @QtCore.pyqtSlot()
-        def run(self):
+    def stop(self):
+        self._stop = True
+
+    @QtCore.pyqtSlot()
+    def run(self):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(5.0)
+            s.connect((self.host, self.port))
+            s.settimeout(1.0)
+            self.connected.emit()
+        except Exception as e:
+            self.disconnected.emit(f"Connection error: {e}")
+            return
+        buf = b""
+        try:
+            while not self._stop:
+                try:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        raise ConnectionError(" peer closed ")
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            pkt = json.loads(line.decode("utf-8"))
+                            self.gotPacket.emit(pkt)
+                        except Exception as e:
+                            print("JSON Parse Error:", e, "line = ", line)
+                except socket.timeout:
+                    continue
+        except Exception as e:
+            self.disconnected.emit(str(e))
+        finally:
             try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(5.0)
-                s.connect((self.host, self.port))
-                s.settimeout(1.0)
-                self.connected.emit()
-            except Exception as e:
-                self.disconnected.emit(f"Connection error: {e}")
-                return
-            buf = b""
-            try:
-                while not self._stop:
-                    try:
-                        chunk = s.recv(4096)
-                        if not chunk:
-                            raise ConnectionError(" peer closed ")
-                        buf += chunk
-                        while b"\n" in buf:
-                            line, buf = buf.split(b"\n", 1)
-                            line = line.strip()
-                            if not line:
-                                continue
-                            try:
-                                pkt = json.loads(line.decode("utf-8"))
-                                self.gotPacket.emit(pkt)
-                            except Exception as e:
-                                print("JSON Parse Error:",e, "line = ", line)
-                    except socket.timeout:
-                                continue
-            except Exception as e:
-                 self.disconnected.emit(str(e))
-            finally:
-                 try:
-                      socket.close()
-                 except:
-                      pass
+                s.close()
+            except:
+                pass
                  
 
 class LateralViewer(QtWidgets.QMainWindow):
@@ -223,10 +223,12 @@ class LateralViewer(QtWidgets.QMainWindow):
      @QtCore.pyqtSlot(dict)
      def onGotPacket(self, pkt):
           try:
+               print("Received packet:", pkt)
                pos = np.array(pkt.get("pos_m", [0.0, 0.0, 0.0]), dtype=np.float32)
                euler = np.array(pkt.get("euler_deg", [0.0, 0.0, 0.0]), dtype=np.float32)
                self.last_pos = pos
                self.last_euler = euler
+               #print(f"Packet: pos={pos.tolist()} euler={euler.tolist()}")
 
                self.lblPos.setText(
                     f"pos: X={pos[0]:.3f} Y={pos[1]:.3f} Z={pos[2]:.3f} (m)" )
