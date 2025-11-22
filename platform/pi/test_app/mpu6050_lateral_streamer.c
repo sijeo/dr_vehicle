@@ -51,12 +51,12 @@
  /* -----------Paste form the imu_calibration.json here ---------------*/
  
  static const float ACCEL_C[3][3] = {
-     { 0.0005961972665110525f, -3.3994858694753906e-06f, -3.142231005362935e-05f},
-     {-1.8945179220887655e-05f, 0.0006019028574102943f, -1.7336208684040234e-05f},
-     { -2.3401281900608534e-05f, -7.32518405425386e-06f, -0.0005912131487684689f}
+     { 0.0005974689581563919f, -2.1784230772321652e-05f, -1.9852839827949404e-05f},
+     {2.113679992812185e-05f, 0.000601753660132094f, 4.030792290731603e-06f},
+     { -5.738490874353012e-05f, 1.8537029515667165e-05f, -0.000589837309400134f}
  };
 
- static const float ACCEL_O[3] = {-0.20401249607212701f, -0.135733929694587f, -1.084172271336748f};
+ static const float ACCEL_O[3] = {-0.13442628523983455, -0.24311073373939637, -1.1185218336206082};
 
  static const float GYRO_A[3][3] = {    
      { 1674.061172775616f, 8.369116874774079f, -89.21986611126125f},
@@ -65,11 +65,11 @@
  };   
 
  /* Gyro bias in raw counts */
-    static const float GYRO_B[3] = { 245.93566666666536f, 180.08633333333228f, -1845.775333333301f };
+    static const float GYRO_B[3] = { -168.302, 78.101, 812.751};
 
 /* -------------------ZUPT / DECAY TUNING ----------------------*/
 
-    #define ACC_ZUPT_THRESH   0.05f    /* m/s^2 */
+    #define ACC_ZUPT_THRESH   0.2f    /* m/s^2 */
     #define GYRO_ZUPT_THRESH  (1.5f * DEG2RAD)   /* rad/s */
 
     #define ZUPT_COUNT_REQUIRED   10 /* Consecutive samples and qualified */
@@ -155,18 +155,17 @@ static void apply_accel_calib( int16_t ax, int16_t ay, int16_t az, float accel_m
 /* Apply gyro bias + scale -> rad/s */
 static void apply_gyro_calib( const struct mpu6050_sample *s, float gyro_rads[3] )
 {
-    int i;
+    
     float r[3] = {
-        (float)s->gx,
-        (float)s->gy,
-        (float)s->gz
+        (float)s->gx - GYRO_B[0],
+        (float)s->gy - GYRO_B[1],
+        (float)s->gz - GYRO_B[2]
     };
     float gyro_dps[3];
-    int i;
-    for( i = 0; i < 3; i++ )
-    {
-        gyro_dps[i] = GYRO_A[i][0] * r[0] + GYRO_A[i][1] * r[1] + GYRO_A[i][2] * r[2] + GYRO_B[i];
-    }
+    gyro_dps[0] = r[0] / GYRO_SCALE_LSB_PER_DPS;
+    gyro_dps[1] = r[1] / GYRO_SCALE_LSB_PER_DPS;
+    gyro_dps[2] = r[2] / GYRO_SCALE_LSB_PER_DPS;
+
 
     /* Convert to rad/s */
     gyro_rads[0] = gyro_dps[0] * DEG2RAD;
@@ -315,13 +314,13 @@ int main( void )
     memset(&cfg, 0, sizeof(cfg));
     cfg.gravity[0] = 0.0f;
     cfg.gravity[1] = 0.0f;
-    cfg.gravity[2] = G_CONST;
+    cfg.gravity[2] = -G_CONST;
 
     /* Noise densities /RW (tune as needed )*/
     cfg.sigma_g = 0.02f;        /* rad/s/rtHz */
-    cfg.sigma_a = 0.1f;         /* m/s^2/rtHz */
-    cfg.sigma_bg = 0.0005f;     /* rad/s^2/rtHz */
-    cfg.sigma_ba = 0.005f;     /* m/s^3/rtHz */
+    cfg.sigma_a = 0.01f;         /* m/s^2/rtHz */
+    cfg.sigma_bg = 0.005f;     /* rad/s^2/rtHz */
+    cfg.sigma_ba = 0.02f;     /* m/s^3/rtHz */
 
     /* Initial uncertainties */
     cfg.p0_pos = 0.1f;        /* m */
@@ -456,7 +455,7 @@ int main( void )
         float lin_acc[3];
         lin_acc[0] = ax_w - cfg.gravity[0];
         lin_acc[1] = ay_w - cfg.gravity[1];
-        lin_acc[2] = az_w - cfg.gravity[2];
+        lin_acc[2] = az_w + cfg.gravity[2];
 
         
         /* ZUPT check */
