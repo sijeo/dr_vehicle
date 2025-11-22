@@ -1,15 +1,19 @@
 /**
  * mpu6050_lateral_streamer.c
+ * @brief lateral translation and orientation streamer using EKF fusion
+ * (accel + gyro ) with LS Calibration (A, b, C, o).
  * 
- * - Uses mpu6050_char driver (/dev/mpu6050-0)
- * - Applies  LS calibration (C, o, gyro_bias, gyro_scale) from imu_calib_gui.py
- * - Estimates linear acceleration (gravity removed)
- * - Integrates to velocity and position
- * - Applies ZUPT + velocity decay so motion stops when IMU stops
- * - Streams JSON over TCP to imu_lateral_streamer.py
- * - Streams JSON over TCP to imu_lateral_streamer.py
- * { "t_ns": ..., "pos_m": [...], "vel_mps": [...], "lin_acc_mps2": [...] }
- * 
+ * RunTime:
+ * - Opens /dev/mpu6050-0 (mpu6050_iio_driver must be loaded and device created).
+ * - Uses LS Calibration matrices (A, b, C, o) from the imu_calibration.json.
+ * - Uses 15-state EKF to fuse accel and gyro:
+ *  States: position(3), velocity(3), attitude quaternion(4), gyro bias(3), accel bias(3)
+ * - On each sample, it:
+ *    does ekf predict
+ *    computes linear acceleration from EKF velocities
+ *    applies ZUPT + velocity decay
+ *    streams JSON to imu_lateral_viewer.py over TCP 
+ *
  */
 
  #define _GNU_SOURCE
@@ -32,6 +36,7 @@
  #include "../mpu6050_ioctl.h"
  #include "../core/dr_math.h"
  #include "../core/dr_types.h"
+ #include "../core/dr_ekf.h"
 
 
  #define IMU_DEV_PATH        "/dev/mpu6050-0"
@@ -45,16 +50,22 @@
 
  /* -----------Paste form the imu_calibration.json here ---------------*/
  
- static const float C[3][3] = {
-     { 0.0005963711958255211f,  1.158486442783522e-05f, 2.0885245451422986e-06f},
-     {-1.0070047127218174e-05f,   0.000602066470161879f, 9.559588107960574e-06f},
-     { -1.2489036924665308e-05f,  1.0884932229524887e-05f,  0.0005925365798407456f}
+ static const float ACCEL_C[3][3] = {
+     { 0.0005961972665110525f, -3.3994858694753906e-06f, -3.142231005362935e-05f},
+     {-1.8945179220887655e-05f, 0.0006019028574102943f, -1.7336208684040234e-05f},
+     { -2.3401281900608534e-05f, -7.32518405425386e-06f, -0.0005912131487684689f}
  };
 
- static const float accel_o[3] = {-0.24456310935638237f, -0.12142627167583814f, 0.7449054548921515f };
+ static const float ACCEL_O[3] = {-0.20401249607212701f, -0.135733929694587f, -1.084172271336748f};
+
+ static const float GYRO_A[3][3] = {    
+     { 1674.061172775616f, 8.369116874774079f, -89.21986611126125f},
+     { 50.7652460320293f, 1661.0587713439343f,-51.40552584215798f},
+     { -66.89134413892583f, -20.911932209265842f, -1687.268945052593f}
+ };   
 
  /* Gyro bias in raw counts */
-    static const float gyro_bias[3] = {  -143.799f, 48.377f, 850.153f };
+    static const float GYRO_B[3] = { 245.93566666666536f, 180.08633333333228f, -1845.775333333301f };
 
 /* -------------------ZUPT / DECAY TUNING ----------------------*/
 
@@ -135,26 +146,31 @@ static void apply_accel_calib( int16_t ax, int16_t ay, int16_t az, float accel_m
 
     for( i = 0; i < 3; i++ )
     {
-        accel_mps2[i] = C[i][0] * r[0] + C[i][1] * r[1] + C[i][2] * r[2] + accel_o[i];
+        accel_mps2[i] = ACCEL_C[i][0] * r[0] + ACCEL_C[i][1] * r[1] + ACCEL_C[i][2] * r[2] + ACCEL_O[i];
     }
 
 
 }
 
 /* Apply gyro bias + scale -> rad/s */
-static void apply_gyro_calib( int16_t gx, int16_t gy, int16_t gz, float gyro_rads[3] )
+static void apply_gyro_calib( const struct mpu6050_sample *s, float gyro_rads[3] )
 {
-    float gx_corr = (float)gx - gyro_bias[0];
-    float gy_corr = (float)gy - gyro_bias[1];
-    float gz_corr = (float)gz - gyro_bias[2];
+    float r[3] = {
+        (float)s->gx,
+        (float)s->gy,
+        (float)s->gz
+    };
+    float gyro_dps[3];
+    int i;
+    for( i = 0; i < 3; i++ )
+    {
+        gyro_dps[i] = GYRO_A[i][0] * r[0] + GYRO_A[i][1] * r[1] + GYRO_A[i][2] * r[2] + GYRO_B[i];
+    }
 
-    float gx_dps = gx_corr / GYRO_SCALE_LSB_PER_DPS;
-    float gy_dps = gy_corr / GYRO_SCALE_LSB_PER_DPS;
-    float gz_dps = gz_corr / GYRO_SCALE_LSB_PER_DPS;
-
-    gyro_rads[0] = gx_dps * DEG2RAD;
-    gyro_rads[1] = gy_dps * DEG2RAD;
-    gyro_rads[2] = gz_dps * DEG2RAD;
+    /* Convert to rad/s */
+    gyro_rads[0] = gyro_dps[0] * DEG2RAD;
+    gyro_rads[1] = gyro_dps[1] * DEG2RAD;
+    gyro_rads[2] = gyro_dps[2] * DEG2RAD;
 }
 
 /**
@@ -243,7 +259,7 @@ static dr_quatf_t attitude_update( dr_quatf_t q, const float gyro_rad[3], const 
 
 /* Estimate initial orientation from average accel (gravity )*/
 
-static dr_quatf_t estimate_initial_orientation( int fd )
+static dr_quatf_t estimate_initial_orientation( int fd , const dr_ekf_config_t *cfg)
 {
     const int N = 500;
     float sum[3] = {0};
@@ -265,13 +281,18 @@ static dr_quatf_t estimate_initial_orientation( int fd )
         usleep((useconds_t)(1e6f / SAMPLE_HZ));
     } 
     float mean[3] = {sum[0]/N, sum[1]/N, sum[2]/N};
-    float n = vec3_norm(mean);
-    dr_vec3f_t g_body = { mean[0]/n, mean[1]/n, mean[2]/n };
-    dr_vec3f_t g_world = { 0.0f, 0.0f, -1.0f };
+    dr_vec3f_t f_body =  dr_v3( mean[0], mean[1], mean[2] ); /* Specific force in body frame */
+    dr_vec3f_t f_body_u = dr_v3_normalize( f_body );
 
-    fprintf(stderr, "[CAL] Mean accel: [%.4f, %.4f, %.4f] m/s^2, |a|=%.4f\n", mean[0], mean[1], mean[2], n);
+    /* At rest, specific force direction = - gravity direction */
+    dr_vec3f_t g_world = dr_v3( cfg->gravity[0], cfg->gravity[1], cfg->gravity[2] );\
+    dr_vec3f_t f_world = dr_v3( -g_world.x, -g_world.y, -g_world.z );
+    dr_vec3f_t f_world_u = dr_v3_normalize( f_world );
+    
+    dr_quatf_t q0 = q_from_two_unit_vecs( f_body_u, f_world_u );
 
-    dr_quatf_t q0 = q_from_two_unit_vecs(g_body, g_world);
+    fprintf(stderr, "[CAL] Mean accel (m/s^2): [%.4f, %.4f, %.4f], norm=%.4f\n",
+        mean[0], mean[1], mean[2], vec3_norm(mean) );
     return q0;
 }
 
@@ -285,6 +306,51 @@ int main( void )
         perror("Failed to open IMU device");
         return 1;
     }
+
+    /* ---------------- Setup EKF Config ---------------- */
+    dr_ekf_t ekf;
+    memset( &ekf, 0, sizeof(ekf) );
+
+    dr_ekf_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.gravity[0] = 0.0f;
+    cfg.gravity[1] = 0.0f;
+    cfg.gravity[2] = G_CONST;
+
+    /* Noise densities /RW (tune as needed )*/
+    cfg.sigma_g = 0.02f;        /* rad/s/rtHz */
+    cfg.sigma_a = 0.1f;         /* m/s^2/rtHz */
+    cfg.sigma_bg = 0.0005f;     /* rad/s^2/rtHz */
+    cfg.sigma_ba = 0.005f;     /* m/s^3/rtHz */
+
+    /* Initial uncertainties */
+    cfg.p0_pos = 0.1f;        /* m */
+    cfg.p0_vel = 0.1f;        /* m/s */
+    cfg.p0_ang = 5.0f * DEG2RAD;   /* rad */
+    cfg.p0_ba = 0.5f;         /* m/s^2 */
+    cfg.p0_bg = 0.05f;        /* rad/s */
+
+    /* Estimate Initial orientation from accel (gravity )*/
+    dr_nominal_state_t x0;
+    memset( &x0, 0, sizeof(x0) );
+    x0.p[0] = 0.0f;
+    x0.p[1] = 0.0f;
+    x0.p[2] = 0.0f;
+    x0.v[0] = 0.0f;
+    x0.v[1] = 0.0f;
+    x0.v[2] = 0.0f;
+    x0.ba[0] = 0.0f;
+    x0.ba[1] = 0.0f;
+    x0.ba[2] = 0.0f;
+    x0.bg[0] = 0.0f;
+    x0.bg[1] = 0.0f;
+    x0.bg[2] = 0.0f;
+    x0.q = estimate_initial_orientation( imu_fd , &cfg);
+
+    dr_ekf_init( &ekf, &cfg, &x0 );
+
+
+
 
     /* Open TCP Server */
     int sock_listen =  socket(AF_INET, SOCK_STREAM, 0);
@@ -322,9 +388,6 @@ int main( void )
 
     fprintf(stderr, "[INFO] Waiting for Viewer on port %d...\n", SERVER_PORT );
 
-    /* Initial orientation from IMU */
-    dr_quatf_t q0 = estimate_initial_orientation( imu_fd );
-
     struct sockaddr_in client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
     int sock_client = accept( sock_listen, (struct sockaddr *)&client_addr, &client_addr_len );
@@ -339,141 +402,125 @@ int main( void )
 
     fprintf(stderr, "[INFO] Client Connected.\n");
 
-    /* State */
-    dr_quatf_t q = q0;
-    float pos[3] = {0};
-    float vel[3] = {0};
-    uint64_t t_prev_ns = monotonic_time_ns();
+    /* Main Streaming Loop */
+    uint64_t t_prev = monotonic_time_ns();
     int zupt_counter = 0;
-
 
     while(1)
     {
-        struct mpu6050_sample sample;
-        ssize_t r = read( imu_fd, &sample, sizeof(sample) );
-        if ( r != sizeof(sample) )
-        {
-            perror("Failed to read mpu6050 sample");
+       struct mpu6050_sample sample;
+       if ( read( imu_fd, &sample, sizeof(sample) ) != sizeof(sample))
+       {
+          if( errno == EINTR )
+              continue;
+            perror("read");
             break;
-        }
+       }
 
-        uint64_t t_ns = monotonic_time_ns();
-        float dt = (float)(t_ns - t_prev_ns) * 1e-9f;
-        if( dt <= 0.0f || dt > 0.1f )
-        {
-            dt = 1.0f / (float)SAMPLE_HZ;
-        }
-        t_prev_ns = t_ns;
+       uint64_t t_now = monotonic_time_ns();
+       float dt = (float)(t_now - t_prev) * 1e-9f;
+       if( dt <= 0.0f || dt > 1.0f )
+              dt = 1.0f / SAMPLE_HZ;    
+              
+         t_prev = t_now;
 
-        /* Calibrated accel and gyro */
-        float acc[3];
-        float gyro[3];
-        apply_accel_calib( sample.ax, sample.ay, sample.az, acc );
-        apply_gyro_calib( sample.gx, sample.gy, sample.gz, gyro );
+         /* Apply calibration */
+         float acc[3], gyro[3];
+         apply_accel_calib( sample.ax, sample.ay, sample.az, acc );
+         apply_gyro_calib( &sample, gyro );
 
-        /* Attitude : Complementary Filter */
-        float acc_norm = vec3_norm( acc );
-        float accel_gain = 0.0f;
-        if( acc_norm > 0.7f * G_CONST && acc_norm < 1.3f * G_CONST )
-        {
-            accel_gain = 0.02f; /* Tune : 0.005 - 0.05 */
-        }
-        q = attitude_update( q, gyro, acc, dt, accel_gain );
+         dr_imu_sample_t imu_s;
+         imu_s.accel[0] = acc[0];
+         imu_s.accel[1] = acc[1];
+         imu_s.accel[2] = acc[2];
+         imu_s.gyro[0] = gyro[0];
+         imu_s.gyro[1] = gyro[1];
+         imu_s.gyro[2] = gyro[2];
 
-        /* Rotation Matrix: body -> world   */
-        float R[9];
-        dr_R_from_q( q, R ); /* row-major 3x3 */
+         /* Save previous velocity to derive linear accel later */
+         float v_prev[3] = {
+             ekf.x.v[0],
+             ekf.x.v[1],
+             ekf.x.v[2]
+         };
 
-        /* Linear Acceleration: a_world - g_world */
-        float ax_b = acc[0];
-        float ay_b = acc[1];
-        float az_b = acc[2];
-        float ax_w = R[0]*ax_b + R[1]*ay_b + R[2]*az_b;
-        float ay_w = R[3]*ax_b + R[4]*ay_b + R[5]*az_b;
-        float az_w = R[6]*ax_b + R[7]*ay_b + R[8]*az_b;
+            /* EKF Predict */
+            dr_ekf_predict( &ekf, &imu_s, dt );
 
+        /* Estimate linear acceleration in world frame from delta-v  */
         float lin_acc[3];
-        lin_acc[0] = ax_w;
-        lin_acc[1] = ay_w;
-        lin_acc[2] = az_w + G_CONST; /* world gravity is [0,0,-G_CONST]*/
+        lin_acc[0] = (ekf.x.v[0] - v_prev[0]) / dt;
+        lin_acc[1] = (ekf.x.v[1] - v_prev[1]) / dt;
+        lin_acc[2] = (ekf.x.v[2] - v_prev[2]) / dt;
 
-        /* ZUPT detection */
-        float lin_norm = vec3_norm( lin_acc );  
+        /* ZUPT check */
+        float lin_norm = vec3_norm( lin_acc );
         float gyro_norm = vec3_norm( gyro );
+
         bool zupt = (lin_norm < ACC_ZUPT_THRESH ) && ( gyro_norm < GYRO_ZUPT_THRESH );
 
         if( zupt )
         {
-            if ( ++zupt_counter >= ZUPT_COUNT_REQUIRED )
-            {
-                /* Apply ZUPT */
-                vel[0] = 0.0f;
-                vel[1] = 0.0f;
-                vel[2] = 0.0f;
+            if( ++zupt_counter >= ZUPT_COUNT_REQUIRED ) {
+                /* Apply ZUPT: zero velocity */
+                ekf.x.v[0] = 0.0f;
+                ekf.x.v[1] = 0.0f;
+                ekf.x.v[2] = 0.0f;
+                zupt_counter = ZUPT_COUNT_REQUIRED; /* cap */
             }
-        }else {
-            zupt_counter = 0;
+            
+        } else {
+                /* Not enough consecutive samples yet */
+                zupt_counter = 0;
         }
 
-        /* Integrate to velocity and position */
-        if( !zupt )
-        {
-            vel[0] += lin_acc[0] * dt;
-            vel[1] += lin_acc[1] * dt;
-            vel[2] += lin_acc[2] * dt;
-        }
-
-        /* Velocity decay near zero to bleed drift */
-        for( i = 0; i < 3; i++ )
-        {
-            if( fabsf( lin_acc[i] ) < ACC_ZUPT_THRESH )
-            {
-                vel[i] *= VEL_DECAY_NEAR_ZERO;
-                if( fabsf( vel[i] ) < VEL_EPSILON )
-                {
-                    vel[i] = 0.0f;
-                }
+        /* Velocity decay near zero to reduce drift */
+        for ( i = 0; i < 3; i++ ){
+            if (fabsf(lin_acc[i]) < ACC_ZUPT_THRESH ) {
+                ekf.x.v[i] *= VEL_DECAY_NEAR_ZERO;
+                if ( fabsf( ekf.x_est.v[i] ) < VEL_EPSILON )
+                    ekf.x.v[i] = 0.0f;
             }
+
+        }
+        /* Position integration is already done in EKF predict 
+        * but we can clamp for visualization 
+        */
+        for ( i = 0; i < 3; i++ ){
+            if ( ekf.x.p[i] > POS_CLAMP_MAX )
+                ekf.x.p[i] = POS_CLAMP_MAX;
+            else if ( ekf.x.p[i] < -POS_CLAMP_MAX )
+                ekf.x.p[i] = -POS_CLAMP_MAX;
         }
 
-        /* Position Integration */
-        for (i = 0; i < 3; i++ )
-        {
-            pos[i] += vel[i] * dt;
-            if( pos[i] > POS_CLAMP_MAX )
-            {
-                pos[i] = POS_CLAMP_MAX;
-            } else if( pos[i] < -POS_CLAMP_MAX )
-            {
-                pos[i] = -POS_CLAMP_MAX;
-            }
-        }
-
-        /* Orientation as Euler (deg) */
         float yaw, pitch, roll;
-        euler_deg_from_q( q, &yaw, &pitch, &roll );
-
-        /* JSON packet */
+        euler_deg_from_q( ekf.x.q, &yaw, &pitch, &roll );
+        /* Send JSON packet */
         char buf[512];
-        int n = snprintf( buf, sizeof(buf),
-            "{ \"t_ns\": %llu, \"pos_m\": [%.4f, %.4f, %.4f], \"vel_mps\": [%.4f, %.4f, %.4f], "
-            "\"lin_acc_mps2\": [%.4f, %.4f, %.4f], \"euler_deg\": [%.2f, %.2f, %.2f] ,\"q\": [%.6f, %.6f, %.6f, %.6f] }\n",
-            (unsigned long long)t_ns, pos[0], pos[1], pos[2], vel[0], vel[1], vel[2], lin_acc[0], lin_acc[1], lin_acc[2],
-            yaw, pitch, roll, q.w, q.x, q.y, q.z);
+        int n  = snprintf( buf, sizeof(buf),
+            "{ \"t_ns\": %llu, \"pos_m\": [%.4f, %.4f, %.4f], \"vel_mps\": [%.4f, %.4f, %.4f],"
+            "\"lin_acc_mps2\": [%.4f, %.4f, %.4f], \"euler_deg\": [%.2f, %.2f, %.2f] , \"q\": [%.6f, %.6f, %.6f, %.6f] }\n", 
+            (unsigned long long)t_now, ekf.x.p[0], ekf.x.p[1], ekf.x.p[2], 
+            ekf.x.v[0], ekf.x.v[1], ekf.x.v[2],
+            lin_acc[0], lin_acc[1], lin_acc[2],
+            yaw, pitch, roll,
+            ekf.x.q.w, ekf.x.q.x, ekf.x.q.y, ekf.x.q.z );
 
-        if (n < 0) {
-            perror("snprintf");
-            break;
-        }
+            if (n > 0 )
+            {
+                perror("snprintf");
+                break;
+            }
 
-        /* Send to client */
-        if ( send(sock_client, buf, (size_t)n, MSG_NOSIGNAL) < 0 )
-        {
-            perror("send");
-            break;
-        }
+            ssize_t sw = send( sock_client, buf, (size_t)n, MSG_NOSIGNAL );
+            if ( sw < 0 )
+            {
+                perror("send");
+                break;
+            }
 
-        usleep( (useconds_t)(1e6f / SAMPLE_HZ) );
+            usleep( (useconds_t)(1e6f / SAMPLE_HZ) );
+            
 
     }
     close( sock_client );
