@@ -155,22 +155,21 @@ static void apply_accel_calib( int16_t ax, int16_t ay, int16_t az, float accel_m
 /* Apply gyro bias + scale -> rad/s */
 static void apply_gyro_calib( const struct mpu6050_sample *s, float gyro_rads[3] )
 {
-    float r[3] = {
-        (float)s->gx,
-        (float)s->gy,
-        (float)s->gz
-    };
-    float gyro_dps[3];
     int i;
-    for( i = 0; i < 3; i++ )
-    {
-        gyro_dps[i] = GYRO_A[i][0] * r[0] + GYRO_A[i][1] * r[1] + GYRO_A[i][2] * r[2] + GYRO_B[i];
-    }
+    float r[3] = {
+        (float)(s->gx - GYRO_B[0]),
+        (float)(s->gy - GYRO_B[1]),
+        (float)(s->gz - GYRO_B[2])
+    };
 
-    /* Convert to rad/s */
-    gyro_rads[0] = gyro_dps[0] * DEG2RAD;
-    gyro_rads[1] = gyro_dps[1] * DEG2RAD;
-    gyro_rads[2] = gyro_dps[2] * DEG2RAD;
+    float gyro_dps[3];
+    gyro_dps[0] = r[0]/GYRO_SCALE_LSB_PER_DPS;
+    gyro_dps[1] = r[1]/GYRO_SCALE_LSB_PER_DPS;
+    gyro_dps[2] = r[2]/GYRO_SCALE_LSB_PER_DPS;
+
+    gyro_rads[0] = gyro_dps[0] * (3.14159265f / 180.0f);
+    gyro_rads[1] = gyro_dps[1] * (3.14159265f / 180.0f);
+    gyro_rads[2] = gyro_dps[2] * (3.14159265f / 180.0f);
 }
 
 /**
@@ -212,7 +211,6 @@ static void estimate_gravity_vector( int imu_fd, float g_body[3] )
     fprintf(stderr, "[CAL] Estimated gravity vector (m/s^2): [%.4f, %.4f, %.4f] (norm=%.4f)\n",
         g_body[0], g_body[1], g_body[2], vec3_norm(g_body) );
 }
-#endif
 
 
 /* Complementary attitude update: integrate gyro, correct with accel tilt */
@@ -255,7 +253,7 @@ static dr_quatf_t attitude_update( dr_quatf_t q, const float gyro_rad[3], const 
     dr_quatf_t q_new = dr_q_mult( qg, qcorr);
     return dr_q_normalize(q_new);
 }
-
+#endif 
 
 /* Estimate initial orientation from average accel (gravity )*/
 
@@ -437,22 +435,28 @@ int main( void )
          imu_s.gyro[1] = gyro[1];
          imu_s.gyro[2] = gyro[2];
 
-         /* Save previous velocity to derive linear accel later */
-         float v_prev[3] = {
-             ekf.x.v[0],
-             ekf.x.v[1],
-             ekf.x.v[2]
-         };
+        
+        /* EKF Predict */
+        dr_ekf_predict( &ekf, &imu_s, dt );
 
-            /* EKF Predict */
-            dr_ekf_predict( &ekf, &imu_s, dt );
+        /* LInear acceleration from accel + orientation (not dv/dt )*/
+        float R[9];
+        dr_R_from_q( ekf.x.q, R ); /* row-major 3x3 */
 
-        /* Estimate linear acceleration in world frame from delta-v  */
+        float ax_b = acc[0];
+        float ay_b = acc[1];
+        float az_b = acc[2];
+
+        float ax_w = R[0]*ax_b + R[1]*ay_b + R[2]*az_b;
+        float ay_w = R[3]*ax_b + R[4]*ay_b + R[5]*az_b;
+        float az_w = R[6]*ax_b + R[7]*ay_b + R[8]*az_b;
+
         float lin_acc[3];
-        lin_acc[0] = (ekf.x.v[0] - v_prev[0]) / dt;
-        lin_acc[1] = (ekf.x.v[1] - v_prev[1]) / dt;
-        lin_acc[2] = (ekf.x.v[2] - v_prev[2]) / dt;
+        lin_acc[0] = ax_w - cfg.gravity[0];
+        lin_acc[1] = ay_w - cfg.gravity[1];
+        lin_acc[2] = az_w - cfg.gravity[2];
 
+        
         /* ZUPT check */
         float lin_norm = vec3_norm( lin_acc );
         float gyro_norm = vec3_norm( gyro );
@@ -478,7 +482,7 @@ int main( void )
         for ( i = 0; i < 3; i++ ){
             if (fabsf(lin_acc[i]) < ACC_ZUPT_THRESH ) {
                 ekf.x.v[i] *= VEL_DECAY_NEAR_ZERO;
-                if ( fabsf( ekf.x_est.v[i] ) < VEL_EPSILON )
+                if ( fabsf( ekf.x.v[i] ) < VEL_EPSILON )
                     ekf.x.v[i] = 0.0f;
             }
 
@@ -506,7 +510,7 @@ int main( void )
             yaw, pitch, roll,
             ekf.x.q.w, ekf.x.q.x, ekf.x.q.y, ekf.x.q.z );
 
-            if (n > 0 )
+            if (n < 0 )
             {
                 perror("snprintf");
                 break;
