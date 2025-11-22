@@ -22,6 +22,7 @@
  #include <fcntl.h>
  #include <unistd.h>
  #include <time.h>
+ #include <stdbool.h>
  #include <sys/socket.h>
  #include <sys/types.h>
  #include <sys/ioctl.h>
@@ -77,7 +78,7 @@ static float vec3_norm(const float v[3])
 {
     return sqrtf(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
 }
-
+#if 0
 static void vec3_add( float out[3], const float a[3], const float b[3] )
 {
     out[0] = a[0] + b[0];
@@ -91,6 +92,7 @@ static void vec3_scale( float out[3], const float v[3], float s )
     out[1] = v[1] * s;
     out[2] = v[2] * s;
 }
+#endif
 
 /* quaternion from two unit vectors (v_from -> v_to )*/
 static dr_quatf_t q_from_two_unit_vecs( dr_vec3f_t v_from, dr_vec3f_t v_to )
@@ -159,6 +161,7 @@ static void apply_gyro_calib( int16_t gx, int16_t gy, int16_t gz, float gyro_rad
  * calibrated accel samples
  * 
  */
+#if 0
 static void estimate_gravity_vector( int imu_fd, float g_body[3] )
 {
     const int N = 500;
@@ -192,6 +195,8 @@ static void estimate_gravity_vector( int imu_fd, float g_body[3] )
     fprintf(stderr, "[CAL] Estimated gravity vector (m/s^2): [%.4f, %.4f, %.4f] (norm=%.4f)\n",
         g_body[0], g_body[1], g_body[2], vec3_norm(g_body) );
 }
+#endif
+
 
 /* Complementary attitude update: integrate gyro, correct with accel tilt */
 
@@ -271,6 +276,7 @@ static dr_quatf_t estimate_initial_orientation( int fd )
 
 int main( void )
 {
+    int i;
     /* Open IMU */
     int imu_fd = open( IMU_DEV_PATH, O_RDONLY );
     if ( imu_fd < 0 )
@@ -417,7 +423,7 @@ int main( void )
         }
 
         /* Velocity decay near zero to bleed drift */
-        for( int i = 0; i < 3; i++ )
+        for( i = 0; i < 3; i++ )
         {
             if( fabsf( lin_acc[i] ) < ACC_ZUPT_THRESH )
             {
