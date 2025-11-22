@@ -157,19 +157,21 @@ static void apply_gyro_calib( const struct mpu6050_sample *s, float gyro_rads[3]
 {
     int i;
     float r[3] = {
-        (float)(s->gx - GYRO_B[0]),
-        (float)(s->gy - GYRO_B[1]),
-        (float)(s->gz - GYRO_B[2])
+        (float)s->gx,
+        (float)s->gy,
+        (float)s->gz
     };
-
     float gyro_dps[3];
-    gyro_dps[0] = r[0]/GYRO_SCALE_LSB_PER_DPS;
-    gyro_dps[1] = r[1]/GYRO_SCALE_LSB_PER_DPS;
-    gyro_dps[2] = r[2]/GYRO_SCALE_LSB_PER_DPS;
+    int i;
+    for( i = 0; i < 3; i++ )
+    {
+        gyro_dps[i] = GYRO_A[i][0] * r[0] + GYRO_A[i][1] * r[1] + GYRO_A[i][2] * r[2] + GYRO_B[i];
+    }
 
-    gyro_rads[0] = gyro_dps[0] * (3.14159265f / 180.0f);
-    gyro_rads[1] = gyro_dps[1] * (3.14159265f / 180.0f);
-    gyro_rads[2] = gyro_dps[2] * (3.14159265f / 180.0f);
+    /* Convert to rad/s */
+    gyro_rads[0] = gyro_dps[0] * DEG2RAD;
+    gyro_rads[1] = gyro_dps[1] * DEG2RAD;
+    gyro_rads[2] = gyro_dps[2] * DEG2RAD;
 }
 
 /**
@@ -524,7 +526,7 @@ int main( void )
             }
 
             usleep( (useconds_t)(1e6f / SAMPLE_HZ) );
-            
+
 
     }
     close( sock_client );
