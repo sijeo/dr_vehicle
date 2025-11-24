@@ -3,11 +3,17 @@
 # This connects to PI Calibration sever, guides you
 # through 6 orientations, Computes A, b, then C and o
 
+from doctest import master
 import socket
 import tkinter as tk
 from tkinter import messagebox
 import numpy as np
 import json
+import time
+
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
 
 G = 9.80665  # Gravity constant
 DEG2RAD = np.pi / 180.0
@@ -22,7 +28,7 @@ class IMUCalibApp:
         self.host_var = tk.StringVar(value='192.168.1.100')
         self.port_var = tk.IntVar(value=5005)
         self.samples_var = tk.IntVar(value=2000)
-        self.gyro_scale_var = tk.DoubleVar(value=131.0)  # LSB per rad/s for gyro at +/- 250 dps
+        self.gyro_scale_var = tk.DoubleVar(value=65.5)  # LSB per rad/s for gyro at +/- 250 dps
 
         self.sock = None
         self.streaming = False
@@ -35,6 +41,28 @@ class IMUCalibApp:
 
         self.C = None
         self.o = None
+
+        # For yaw/pitch/roll integration
+        self.yaw = 0.0
+        self.pitch = 0.0
+        self.roll = 0.0
+        self.last_stream_time = None
+
+        # History for plotting (time series)
+        self.max_points = 500  # max points to keep in history
+        self.acc_hist = {
+            't': [],
+            'ax': [],
+            'ay': [],
+            'az': []
+        }
+
+        self.ang_hist = {
+            't': [],
+            'yaw': [],
+            'pitch': [],
+            'roll': []
+        }
 
 
         # GUI Elements
@@ -51,7 +79,7 @@ class IMUCalibApp:
         # Gyro Scale factor field
         tk.Label(master, text="Gyro Scale (LSB/rad/s):").grid(row=row, column=0, sticky='e')
         tk.Entry(master, textvariable=self.gyro_scale_var, width=10).grid(row=row, column=1, sticky='w')
-        tk.Label(master, text="(default 131.0 for +/-250 dps)").grid(row=row, column=2, columnspan=5, sticky='w')
+        tk.Label(master, text="(default 65.5 for +/-500 dps)").grid(row=row, column=2, columnspan=5, sticky='w')
         row += 1
 
         self.status_var = tk.StringVar(value="Not connected")
@@ -79,9 +107,51 @@ class IMUCalibApp:
         tk.Button(master, text="Stop Stream", command=self.stop_stream).grid(row=row, column=1, sticky='w', padx=5, pady=5)
         row += 1
 
+        # ---------------------------------------------------------------------
+        # Matplotlib Figure embedded in Tkinter for live plots
+        # ---------------------------------------------------------------------
+        main_frame = tk.Frame(master)
+        main_frame.grid(row=row, column=0, columnspan=7, padx=5, pady=5, sticky='nsew')
+        row += 1
 
-        self.output_text = tk.Text(master, height=20, width=100)
-        self.output_text.grid(row=row, column=0, columnspan=7, padx=5, pady=5)
+        main_frame.columnconfigure(0, weight=3)
+        main_frame.columnconfigure(1, weight=2)
+
+        plot_frame = tk.Frame(main_frame)
+        plot_frame.grid(row=0, column=0, sticky='nsew', padx=5, pady=5)
+
+        self.fig = Figure(figsize=(8, 6), dpi=100)
+
+        self.ax_acc = self.fig.add_subplot(2, 1, 1)
+        self.ax_acc.set_title("Calibrated Accelerometer Data (m/s^2)")
+        self.ax_acc.set_xlabel("Time (s)")
+        self.ax_acc.set_ylabel("Acceleration (m/s^2)")
+
+        self.line_ax, = self.ax_acc.plot([], [], label='Ax', color='r')
+        self.line_ay, = self.ax_acc.plot([], [], label='Ay', color='g')
+        self.line_az, = self.ax_acc.plot([], [], label='Az', color='b')
+        self.ax_acc.legend(loc='upper right')
+
+        self.ax_ang = self.fig.add_subplot(2, 1, 2)
+        self.ax_ang.set_title("Estimated Angles from Gyro Integration (degrees)")
+        self.ax_ang.set_xlabel("Time (s)")
+        self.ax_ang.set_ylabel("Angle (degrees)")
+        self.ang_line_yaw, = self.ax_ang.plot([], [], label='Yaw', color='m')
+        self.ang_line_pitch, = self.ax_ang.plot([], [], label='Pitch', color='c')
+        self.ang_line_roll, = self.ax_ang.plot([], [], label='Roll', color='y')
+
+        self.ax_ang.legend(loc='upper right')
+
+        self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
+        self.canvas_widget = self.canvas.get_tk_widget()
+        self.canvas_widget.pack(fill=tk.BOTH, expand=1)
+
+        # Output Text Box
+        log_frame = tk.Frame(main_frame)
+        log_frame.grid(row=0, column=1, sticky='nsew', padx=5, pady=5)
+
+        self.output_text = tk.Text(log_frame, wrap='word', height=30, width=50)
+        self.output_text.pack(fill=tk.BOTH, expand=1)
 
     def log(self, message):
         self.output_text.insert(tk.END, message + "\n")
@@ -269,6 +339,25 @@ class IMUCalibApp:
         if self.sock is None:
             messagebox.showerror("Error", "Not connected to server")
             return
+        
+        self.yaw = 0.0
+        self.pitch = 0.0
+        self.roll = 0.0
+        self.last_stream_time = None
+
+        self.acc_hist = {
+            't': [],
+            'ax': [],
+            'ay': [],
+            'az': []
+        }
+
+        self.ang_hist = {
+            't': [],
+            'yaw': [],
+            'pitch': [],
+            'roll': []
+        }
 
         self.streaming = True
         self.log("Starting calibrated data stream...")
@@ -289,7 +378,21 @@ class IMUCalibApp:
         result = self.send_sample_command(1)
         if result is None:
             self.streaming = False
+            self.log("Streaming stopped due to error.")
             return
+        
+        now = time.time()
+        if self.last_stream_time is None:
+            dt = 0.02  # assume 50 Hz first time
+        else:
+            dt = now - self.last_stream_time
+            #clamp dt sanity
+            if dt <= 0.001:
+                dt = 0.001
+            elif dt > 0.1:
+                dt = 0.1
+        self.last_stream_time = now
+        
         acc_raw, gyro_raw = result
 
         #accel calibration
@@ -305,10 +408,101 @@ class IMUCalibApp:
         gyro_cal = gyro_corr / scale  # rad/s
         gyro_rads = gyro_cal * DEG2RAD  # convert to rad/s
 
+        self.roll += gyro_rads[0] * dt
+        self.pitch += gyro_rads[1] * dt
+        self.yaw += gyro_rads[2] * dt
+
+        roll_deg = np.degrees(self.roll)
+        pitch_deg = np.degrees(self.pitch)
+        yaw_deg = np.degrees(self.yaw)
+
+
         self.log(f"Calibrated Accel (m/s^2): [{acc_cal[0]:7.3f}, {acc_cal[1]:7.3f}, {acc_cal[2]:7.3f}] | "
-                 f"Calibrated Gyro (rad/s): [{gyro_rads[0]:7.3f}, {gyro_rads[1]:7.3f}, {gyro_rads[2]:7.3f}]")
+                 f"Calibrated Gyro (rad/s): [{gyro_rads[0]:7.3f}, {gyro_rads[1]:7.3f}, {gyro_rads[2]:7.3f} | "
+                 f"Yaw: {yaw_deg:7.2f}°, Pitch: {pitch_deg:7.2f}°, Roll: {roll_deg:7.2f}°")
+        # Update history
+        self.append_history(now, acc_cal, yaw_deg, pitch_deg, roll_deg)
+        self.update_plots()
         self.master.after(20, self.stream_loop)  # schedule next call
 
+    def append_history(self, t, acc_cal, yaw, pitch, roll):
+        self.acc_hist['t'].append(t)
+        self.acc_hist['ax'].append(acc_cal[0])
+        self.acc_hist['ay'].append(acc_cal[1])
+        self.acc_hist['az'].append(acc_cal[2])
+
+        self.ang_hist['t'].append(t)
+        self.ang_hist['yaw'].append(yaw)
+        self.ang_hist['pitch'].append(pitch)
+        self.ang_hist['roll'].append(roll)
+
+        # Trim history if too long
+        for key in self.acc_hist:
+            if len(self.acc_hist[key]) > self.max_points:
+                self.acc_hist[key] = self.acc_hist[key][-self.max_points:]
+        for key in self.ang_hist:
+            if len(self.ang_hist[key]) > self.max_points:
+                self.ang_hist[key] = self.ang_hist[key][-self.max_points:]
+    
+    def update_plots(self):
+        # Update matplotlib with latest history
+        if len(self.acc_hist['t']) == 0:
+            return
+        
+        # Use relative time (seconds since first sample )
+        t0 = self.acc_hist['t'][0]
+        t_rel_acc = [ti - t0 for ti in self.acc_hist['t']]
+        t_rel_ang = [ti - t0 for ti in self.ang_hist['t']]
+
+        # update accel lines
+        self.line_ax.set_data(t_rel_acc, self.acc_hist['ax'])
+        self.line_ay.set_data(t_rel_acc, self.acc_hist['ay'])
+        self.line_az.set_data(t_rel_acc, self.acc_hist['az'])
+
+        # Auto x-limits: show the last few senconds or full range
+        if len(t_rel_acc) > 1:
+            xmin = max(0, t_rel_acc[-1] - 5)
+            xmax = t_rel_acc[-1] if t_rel_acc[-1] > 1.0 else 1.0
+        else:
+            xmin = 0
+            xmax = 1.0
+
+        self.ax_acc.set_xlim(xmin, xmax)
+
+        # Auto y-limits
+        all_acc = self.acc_hist['ax'] + self.acc_hist['ay'] + self.acc_hist['az']
+        ymin = min(all_acc) 
+        ymax = max(all_acc)
+        if ymin == ymax:
+            ymin -= 1.0
+            ymax += 1.0
+        self.ax_acc.set_ylim(ymin, ymax)
+
+        # update angle lines
+        self.ang_line_yaw.set_data(t_rel_ang, self.ang_hist['yaw'])
+        self.ang_line_pitch.set_data(t_rel_ang, self.ang_hist['pitch'])
+        self.ang_line_roll.set_data(t_rel_ang, self.ang_hist['roll'])
+
+        #x limits reused
+        self.ax_ang.set_xlim(xmin, xmax)
+        # Auto y-limits
+        all_ang = self.ang_hist['yaw'] + self.ang_hist['pitch'] + self.ang_hist['roll']
+        ymin = min(all_ang)
+        ymax = max(all_ang)
+        if ymin == ymax:
+            ymin -= 5.0
+            ymax += 5.0
+        else:
+            margin = (ymax - ymin) * 0.1
+            ymin -= margin
+            ymax += margin
+        self.ax_ang.set_ylim(ymin, ymax)
+        self.canvas.draw_idle()
+
+
+
+
+#----------------------------------------------------------------------------
 def main():
     root = tk.Tk()
     app = IMUCalibApp(root)
