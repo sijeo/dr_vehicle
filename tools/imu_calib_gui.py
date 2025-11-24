@@ -19,13 +19,94 @@ G = 9.80665  # Gravity constant
 DEG2RAD = np.pi / 180.0
 
 
+def quat_normalize(q):
+    norm = np.linalg.norm(q)
+    if norm <= 0:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+    return q / norm
+
+def quat_derivative(q, omega_body):
+    """
+    Quaternion derivative from angular velocity
+    q = [W, x, y, z]
+    omega_body = [wx, wy, wz] in rad/s
+    dq/dt = 0.5 * q * omega_quat
+    where omega_quat = [0, wx, wy, wz]
+    """
+
+    w, x, y, z = q
+    wx, wy, wz = omega_body
+    dqdt = 0.5 * np.array([
+        -x * wx - y * wy - z * wz,
+         w * wx + y * wz - z * wy,
+         w * wy - x * wz + z * wx,
+         w * wz + x * wy - y * wx
+    ], dtype=float)
+
+    return dqdt
+
+def quat_to_rotation_matrix(q):
+    """ Convert quaternion to rotation matrix """
+    w, x, y, z = q
+    R = np.array([
+        [1 - 2*(y**2 + z**2),     2*(x*y - z*w),       2*(x*z + y*w)],
+        [2*(x*y + z*w),       1 - 2*(x**2 + z**2),     2*(y*z - x*w)],
+        [2*(x*z - y*w),           2*(y*z + x*w),   1 - 2*(x**2 + y**2)]
+    ], dtype=float)
+    return R
+
+def gravity_body_from_quat(q):
+    """ 
+    Given quaternion q (body->world), compute expected gravity direction
+    in body-frame (unit-vector). We assume gravity in world frame is [0, 0, 1].
+    g_body = R(q)^T * [0, 0, 1]
+    """
+    R = quat_to_rotation_matrix(q)
+    g_body = R.T @ np.array([0.0, 0.0, 1.0], dtype=float)
+    n = np.linalg.norm(g_body)
+    if n <= 0.0:
+        return np.array([0.0, 0.0, 1.0], dtype=float)
+    return g_body / n
+
+def quat_to_euler(q):
+    """
+    Convert quaternion to Euler angles (yaw, pitch, roll) in radians.
+    
+    Convention: ZYX (yaw-pitch-roll)
+    yaw = rotation about Z
+    pitch = rotation about Y
+    roll = rotation about X
+    """
+
+    q = quat_normalize(q)
+    w, x, y, z = q
+
+    # roll (x-axis rotation)
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = np.arctan2(sinr_cosp, cosr_cosp)
+
+    # pitch (y-axis rotation)
+    sinp = 2.0 * (w * y - z * x)
+    if abs(sinp) >= 1:
+        pitch = np.pi / 2 * np.sign(sinp)  # use 90 degrees if out of range
+    else:
+        pitch = np.arcsin(sinp)
+
+    # yaw (z-axis rotation)
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = np.arctan2(siny_cosp, cosy_cosp)
+    return yaw, pitch, roll
+
+
 class IMUCalibApp:
     def __init__(self, master):
         self.master = master
         master.title("MPU6050 Accelerometer Calibration ")
 
         # Connection Parameters
-        self.host_var = tk.StringVar(value='192.168.1.100')
+        self.host_var = tk.StringVar(value='10.225.104.7')
         self.port_var = tk.IntVar(value=5005)
         self.samples_var = tk.IntVar(value=2000)
         self.gyro_scale_var = tk.DoubleVar(value=65.5)  # LSB per rad/s for gyro at +/- 250 dps
@@ -330,6 +411,75 @@ class IMUCalibApp:
         with open("imu_calibration.json", "w") as f:
             json.dump(calib_data, f, indent=4)
         self.log("\nCalibration data saved to imu_calibration.json")
+        self.log("You can now start streaming calibrated data.")
+
+    def ekf_predict(self, gyro_rads, dt):
+        """ EKF predict step using gyro readings (rad/s) and time delta dt (s) """
+        q = self.ekf_q
+        p = self.ekf_p
+
+        dqdt = quat_derivative(q, gyro_rads)
+        q_pred = quat_normalize(q + dqdt * dt)
+
+        # very simple model F ~ I add small process noise
+        F = np.eye(4)
+        q_process = 1e-6
+        Q = q_process * np.eye(4)
+
+        P_pred = F @ p @ F.T + Q
+
+        self.ekf_q = q_pred
+        self.ekf_p = P_pred
+
+    def ekf_update(self, acc_cal):
+        """
+        EKF update with accelerometer as gravity direction measurement
+
+        Measurement: z = acc_cal / ||acc_cal|| (unit vector)
+        Model: h(q) = gravity_body_from_quat(q)
+        """
+        acc_norm = np.linalg.norm(acc_cal)
+        if acc_norm < 0.5 * G or acc_norm > 1.5 * G:
+            # invalid measurement
+            return  
+        
+        z = acc_cal / acc_norm
+        q = self.ekf_q
+        p = self.ekf_p
+
+        # Predicted measurement
+        h_q = gravity_body_from_quat(q)
+
+        #NUmerical Jacobian H (3x4) wrt quaternion states
+        eps = 1e-6
+        H = np.zeros((3, 4), dtype=float)
+        for i in range(4):
+            dq = np.zeros(4, dtype=float)
+            dq[i] = eps
+            q_plus = quat_normalize(q + dq)
+            q_minus = quat_normalize(q - dq)
+            h_plus = gravity_body_from_quat(q_plus)
+            h_minus = gravity_body_from_quat(q_minus)
+            H[:, i] = (h_plus - h_minus) / (2 * eps)
+        # Measurement noise
+        R = (0.02 ** 2) * np.eye(3)  # assume 0.02 noise in each axis
+
+        y = z - h_q  # innovation
+        S = H @ p @ H.T + R  # innovation covariance
+        try:
+            S_inv = np.linalg.inv(S)
+        except np.linalg.LinAlgError:
+            return  # cannot invert, skip update
+        
+        K = p @ H.T @ S_inv  # Kalman gain
+        q_upd = quat_normalize(q + K @ y)
+        P_upd = (np.eye(4) - K @ H) @ p
+
+        self.ekf_q = q_upd
+        self.ekf_p = P_upd
+
+
+       
 
     def start_stream(self):
         """ Start calibrated streaming using SAMPLE 1 polling."""
@@ -339,6 +489,10 @@ class IMUCalibApp:
         if self.sock is None:
             messagebox.showerror("Error", "Not connected to server")
             return
+        
+        self.ekf_q = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)  # initial quaternion
+        self.ekf_p = 1e-3 * np.eye(4)  # initial covariance
+        self.last_stream_time = None
         
         self.yaw = 0.0
         self.pitch = 0.0
@@ -408,13 +562,16 @@ class IMUCalibApp:
         gyro_cal = gyro_corr / scale  # rad/s
         gyro_rads = gyro_cal * DEG2RAD  # convert to rad/s
 
-        self.roll += gyro_rads[0] * dt
-        self.pitch += gyro_rads[1] * dt
-        self.yaw += gyro_rads[2] * dt
+        # EKF predict/update
+        self.ekf_predict(gyro_rads, dt)
+        self.ekf_update(acc_cal)
 
-        roll_deg = np.degrees(self.roll)
-        pitch_deg = np.degrees(self.pitch)
-        yaw_deg = np.degrees(self.yaw)
+        # Extract Euler angles
+        yaw_rad, pitch_rad, roll_rad = quat_to_euler(self.ekf_q)
+        yaw_deg = np.degrees(yaw_rad)
+        pitch_deg = np.degrees(pitch_rad)
+        roll_deg = np.degrees(roll_rad)
+        
 
 
         self.log(f"Calibrated Accel (m/s^2): [{acc_cal[0]:7.3f}, {acc_cal[1]:7.3f}, {acc_cal[2]:7.3f}] | "
