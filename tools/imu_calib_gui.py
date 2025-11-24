@@ -562,6 +562,28 @@ class IMUCalibApp:
         gyro_cal = gyro_corr / scale  # rad/s
         gyro_rads = gyro_cal * DEG2RAD  # convert to rad/s
 
+        # 2. Detect if IMU is stationary
+        acc_norm = np.linalg.norm(acc_cal)
+        near_stationary = abs(acc_norm - G) < 0.1 * G  # within 10% of G
+
+        # 3. Small deadband on yaw rotation.
+        yaw_deadband = 0.03  # rad/s
+        if abs(gyro_rads[2]) < yaw_deadband and near_stationary:
+            gyro_rads[2] = 0.0
+
+        #4. Slowly update gyro bias when stationary
+        if near_stationary:
+            self.gyro_bias[2] = 0.999 * self.gyro_bias[2] + 0.001 * gyro_raw[2]
+
+        #5. Freeze yaw integration if still
+        if near_stationary and gyro_rads[2] == 0.0:
+            yaw_rate = 0.0
+        else:
+            yaw_rate = gyro_rads[2]
+
+        # Replace yaw rate in gyro_rads with the possibly modified yaw_rate
+        gyro_rads[2] = yaw_rate
+
         # EKF predict/update
         self.ekf_predict(gyro_rads, dt)
         self.ekf_update(acc_cal)
@@ -571,7 +593,7 @@ class IMUCalibApp:
         yaw_deg = np.degrees(yaw_rad)
         pitch_deg = np.degrees(pitch_rad)
         roll_deg = np.degrees(roll_rad)
-        
+
 
 
         self.log(f"Calibrated Accel (m/s^2): [{acc_cal[0]:7.3f}, {acc_cal[1]:7.3f}, {acc_cal[2]:7.3f}] | "
