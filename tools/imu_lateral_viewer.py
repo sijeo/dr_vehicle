@@ -72,7 +72,7 @@ class LateralViewer(QtWidgets.QMainWindow):
           grid = QtWidgets.QGridLayout(cw)
 
           #-------- top controls ------------
-          self.ipEdit = QtWidgets.QLineEdit("192.168.1.10")
+          self.ipEdit = QtWidgets.QLineEdit("10.225.104.7")
           self.portEdit = QtWidgets.QLineEdit("9010")
           self.btn = QtWidgets.QPushButton("Connect")
           self.statusLbl = QtWidgets.QLabel("Disconnected")
@@ -254,6 +254,7 @@ class LateralViewer(QtWidgets.QMainWindow):
 
 if __name__ == "__main__":
         app = QtWidgets.QApplication(sys.argv)
+        pg.setConfigOptions(antialias=True)
         w = LateralViewer()
         w.show()
         sys.exit(app.exec_())

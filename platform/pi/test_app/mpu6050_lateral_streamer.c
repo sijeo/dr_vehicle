@@ -51,31 +51,44 @@
  /* -----------Paste form the imu_calibration.json here ---------------*/
  
  static const float ACCEL_C[3][3] = {
-     { 0.0005974689581563919f, -2.1784230772321652e-05f, -1.9852839827949404e-05f},
-     {2.113679992812185e-05f, 0.000601753660132094f, 4.030792290731603e-06f},
-     { -5.738490874353012e-05f, 1.8537029515667165e-05f, -0.000589837309400134f}
+     { 0.0005961934151525817, -1.4056802633620443e-05,1.6514162578776096e-05},
+     {1.3947209675238649e-05, 0.0006017838672845617, 1.1787053553186505e-05},
+     {-3.239315574068853e-05, -1.6415215206900584e-05, 0.0005899858658002145}
  };
 
- static const float ACCEL_O[3] = {-0.13442628523983455, -0.24311073373939637, -1.1185218336206082};
+ static const float ACCEL_O[3] = {-0.1145544034597488, -0.08974878378291522, 0.993766742347543};
 
  static const float GYRO_A[3][3] = {    
-     { 1674.061172775616f, 8.369116874774079f, -89.21986611126125f},
-     { 50.7652460320293f, 1661.0587713439343f,-51.40552584215798f},
-     { -66.89134413892583f, -20.911932209265842f, -1687.268945052593f}
+     { 1673.8370901378141, 37.799809313068124, -47.60718492043665},
+     { -40.571550937374134,1659.9048604773304,-32.02683893072529},
+     { 90.77314883267991, 48.25903850958298, 1691.4509032136361}
  };   
 
  /* Gyro bias in raw counts */
-    static const float GYRO_B[3] = { -168.302, 78.101, 812.751};
+    static const float GYRO_B[3] = { -163.114, 80.188, 699.349 };
 
 /* -------------------ZUPT / DECAY TUNING ----------------------*/
 
-    #define ACC_ZUPT_THRESH   0.2f    /* m/s^2 */
-    #define GYRO_ZUPT_THRESH  (1.5f * DEG2RAD)   /* rad/s */
+    /* Attitude fusion gains (Mahony / Complementary style )*/
+    #define ATT_KP  0.8f    /* Accel correction propotional gain */
+    #define ATT_KI  0.05f    /* Accel correction integral gain */
 
+    /* Linear acceleration Low Pass filter coefficient (0 .. 1)*/
+    #define LIN_ACC_ALPHA   0.90f    /* 0.90 @ 100Hz ~ 1-2Hz corner */
+
+
+    #define ACC_ZUPT_THRESH   0.08f    /* m/s^2 */
+    #define GYRO_ZUPT_THRESH  (1.5f * DEG2RAD)   /* rad/s */
     #define ZUPT_COUNT_REQUIRED   10 /* Consecutive samples and qualified */
-    #define VEL_DECAY_NEAR_ZERO   0.90f
+
+
+    #define VEL_DECAY_NEAR_ZERO   0.98f
     #define VEL_EPSILON           1e-3f
     #define POS_CLAMP_MAX         5.0f  /* m */
+
+    #define YAW_FREEZE_GYRO_Z_THRESH   (0.3f * DEG2RAD) /* rad/s */
+
+
 
 /* --------------------------------------------------------------*/
 
@@ -135,13 +148,11 @@ static void euler_deg_from_q( dr_quatf_t q, float *yaw, float *pitch, float *rol
 }
 
 /* Apply LS calibration to accel raw counts -> m/s^2*/
-static void apply_accel_calib( int16_t ax, int16_t ay, int16_t az, float accel_mps2[3] )
+static void apply_accel_calib( const struct mpu6050_sample *s, float accel_mps2[3] )
 {
     int i;
     float r[3] = {
-        (float)ax,
-        (float)ay,
-        (float)az
+        (float)s->ax, (float)s->ay, (float)s->az
     };
 
     for( i = 0; i < 3; i++ )
@@ -258,7 +269,7 @@ static dr_quatf_t attitude_update( dr_quatf_t q, const float gyro_rad[3], const 
 
 /* Estimate initial orientation from average accel (gravity )*/
 
-static dr_quatf_t estimate_initial_orientation( int fd , const dr_ekf_config_t *cfg)
+static void estimate_initial_orientation( int fd , dr_nominal_state_t *x0, const dr_ekf_config_t *cfg)
 {
     const int N = 500;
     float sum[3] = {0};
@@ -273,7 +284,7 @@ static dr_quatf_t estimate_initial_orientation( int fd , const dr_ekf_config_t *
             break;
         }
         float a[3];
-        apply_accel_calib(s.ax, s.ay, s.az, a);
+        apply_accel_calib(&s, a);
         sum[0] += a[0];
         sum[1] += a[1];
         sum[2] += a[2];
@@ -281,19 +292,47 @@ static dr_quatf_t estimate_initial_orientation( int fd , const dr_ekf_config_t *
     } 
     float mean[3] = {sum[0]/N, sum[1]/N, sum[2]/N};
     dr_vec3f_t f_body =  dr_v3( mean[0], mean[1], mean[2] ); /* Specific force in body frame */
-    dr_vec3f_t f_body_u = dr_v3_normalize( f_body );
+    float norm = vec3_norm( mean );
 
-    /* At rest, specific force direction = - gravity direction */
-    dr_vec3f_t g_world = dr_v3( cfg->gravity[0], cfg->gravity[1], cfg->gravity[2] );\
-    dr_vec3f_t f_world = dr_v3( -g_world.x, -g_world.y, -g_world.z );
-    dr_vec3f_t f_world_u = dr_v3_normalize( f_world );
-    
-    dr_quatf_t q0 = q_from_two_unit_vecs( f_body_u, f_world_u );
+   /* direction of specific force in body frame */
+   dr_vec3f_t f_body = dr_v3( mean[0]/norm, mean[1]/norm, mean[2]/norm );
 
-    fprintf(stderr, "[CAL] Mean accel (m/s^2): [%.4f, %.4f, %.4f], norm=%.4f\n",
-        mean[0], mean[1], mean[2], vec3_norm(mean) );
-    return q0;
+   /* At rest: f_world = -gravity direction */
+    dr_vec3f_t g_world = dr_v3(cfg->gravity[0], cfg->gravity[1], cfg->gravity[2] );
+    float g_norm = sqrtf(g_world.x * g_world.x + g_world.y * g_world.y + g_world.z * g_world.z );
+    dr_vec3f_t f_world = dr_v3( -g_world.x / g_norm, -g_world.y / g_norm, -g_world.z / g_norm );
+
+    dr_quatf_t q0 = q_from_two_unit_vecs( f_body, f_world ); /* body f -> worold f*/
+    q0 = dr_q_normalize(q0);
+
+    memset(x0, 0, sizeof(*x0));
+    x0->q = q0;
+    x0->p[0] = 0.0f;
+    x0->p[1] = 0.0f;
+    x0->p[2] = 0.0f;
+    x0->v[0] = 0.0f;
+    x0->v[1] = 0.0f;
+    x0->v[2] = 0.0f;
+    x0->ba[0] = 0.0f;
+    x0->ba[1] = 0.0f;
+    x0->ba[2] = 0.0f;
+    x0->bg[0] = 0.0f;
+    x0->bg[1] = 0.0f;
+    x0->bg[2] = 0.0f;
+
+    fprintf(stderr, "[CAL] Mean Accel: [%.4f, %.4f, %.4f]m/s^2 (norm=%.4f)\n",
+        mean[0], mean[1], mean[2], norm );
+
+    fprintf(stderr, "[CAL] Initial Orientation Quaternion: [%.6f, %.6f, %.6f, %.6f]\n",
+        q0.w, q0.x, q0.y, q0.z );
 }
+
+
+/* Mahony / Complementry-style attitude update 
+* Integrate gyro
+* Uses accel to correct tilt
+* can freeze yaw when stationary.
+*/
 
 int main( void )
 {
@@ -320,7 +359,7 @@ int main( void )
     cfg.sigma_g = 0.02f;        /* rad/s/rtHz */
     cfg.sigma_a = 0.01f;         /* m/s^2/rtHz */
     cfg.sigma_bg = 0.005f;     /* rad/s^2/rtHz */
-    cfg.sigma_ba = 0.02f;     /* m/s^3/rtHz */
+    cfg.sigma_ba = 0.005f;     /* m/s^3/rtHz */
 
     /* Initial uncertainties */
     cfg.p0_pos = 0.1f;        /* m */
@@ -329,26 +368,14 @@ int main( void )
     cfg.p0_ba = 0.5f;         /* m/s^2 */
     cfg.p0_bg = 0.05f;        /* rad/s */
 
+    ekf.cfg = cfg;
+
     /* Estimate Initial orientation from accel (gravity )*/
     dr_nominal_state_t x0;
     memset( &x0, 0, sizeof(x0) );
-    x0.p[0] = 0.0f;
-    x0.p[1] = 0.0f;
-    x0.p[2] = 0.0f;
-    x0.v[0] = 0.0f;
-    x0.v[1] = 0.0f;
-    x0.v[2] = 0.0f;
-    x0.ba[0] = 0.0f;
-    x0.ba[1] = 0.0f;
-    x0.ba[2] = 0.0f;
-    x0.bg[0] = 0.0f;
-    x0.bg[1] = 0.0f;
-    x0.bg[2] = 0.0f;
-    x0.q = estimate_initial_orientation( imu_fd , &cfg);
+    estimate_initial_orientation( imu_fd, &x0, &ekf.cfg );
 
-    dr_ekf_init( &ekf, &cfg, &x0 );
-
-
+    dr_ekf_init( &ekf, &ekf.cfg, &x0 );
 
 
     /* Open TCP Server */
@@ -401,132 +428,213 @@ int main( void )
 
     fprintf(stderr, "[INFO] Client Connected.\n");
 
-    /* Main Streaming Loop */
+    /*----------------------------------------- Visual Integration State ------------------------ */
+    float pos_vis[3] = {0.0f, 0.0f, 0.0f};
+    float vel_vis[3] = {0.0f, 0.0f, 0.0f};
+
+    float lin_acc_filt[3] = {0.0f, 0.0f, 0.0f};
+    float lin_acc_init = false;
+
+    int zupt_count = 0;
+
+
+    float yaw_display = 0.0f;
+    bool yaw_display_init = false;
+
     uint64_t t_prev = monotonic_time_ns();
-    int zupt_counter = 0;
+
+    struct mpu6050_sample s;
 
     while(1)
     {
-       struct mpu6050_sample sample;
-       if ( read( imu_fd, &sample, sizeof(sample) ) != sizeof(sample))
+       ssize_t r = read( imu_fd, &s, sizeof(s) );
+       if( r != (ssize_t)sizeof(s))
        {
-          if( errno == EINTR )
-              continue;
-            perror("read");
-            break;
+        if ( r < 0 && errno == EINTR )
+            continue;
+        perror("read IMU ");
+        break;
        }
 
-       uint64_t t_now = monotonic_time_ns();
-       float dt = (float)(t_now - t_prev) * 1e-9f;
-       if( dt <= 0.0f || dt > 1.0f )
-              dt = 1.0f / SAMPLE_HZ;    
-              
-         t_prev = t_now;
+       uint64_t t_now_ns = monotonic_time_ns();
+       float dt = (float)( t_now_ns - t_prev ) * 1e-9f;
+       if( dt <= 0.0f || dt > 0.1f)
+       {
+            dt = 1.0f / SAMPLE_HZ;
+       }
+       t_prev = t_now_ns;
 
-         /* Apply calibration */
-         float acc[3], gyro[3];
-         apply_accel_calib( sample.ax, sample.ay, sample.az, acc );
-         apply_gyro_calib( &sample, gyro );
+       /* Calibrate IMU Sample */
+       float acc_b[3], gyro_rad[3];
+        apply_accel_calib( &s, acc_b );
+        apply_gyro_calib( &s, gyro_rad );
 
-         dr_imu_sample_t imu_s;
-         imu_s.accel[0] = acc[0];
-         imu_s.accel[1] = acc[1];
-         imu_s.accel[2] = acc[2];
-         imu_s.gyro[0] = gyro[0];
-         imu_s.gyro[1] = gyro[1];
-         imu_s.gyro[2] = gyro[2];
+        /* 2. EKF Predict using calibrated accel + gyro */
+        dr_imu_sample_t imu;
+        imu.accel[0] = acc_b[0];
+        imu.accel[1] = acc_b[1];
+        imu.accel[2] = acc_b[2];
+        imu.gyro[0] = gyro_rad[0];
+        imu.gyro[1] = gyro_rad[1];
+        imu.gyro[2] = gyro_rad[2];
 
-        
-        /* EKF Predict */
-        dr_ekf_predict( &ekf, &imu_s, dt );
+        dr_ekf_predict( &ekf, &imu, dt );
 
-        /* LInear acceleration from accel + orientation (not dv/dt )*/
-        float R[9];
-        dr_R_from_q( ekf.x.q, R ); /* row-major 3x3 */
+        /* 3. World frame linear acceleration from EKF state. */
 
-        float ax_b = acc[0];
-        float ay_b = acc[1];
-        float az_b = acc[2];
+        dr_vec3f_t acc_b_unbiased = dr_v3(
+            acc_b[0] - ekf.x.ba[0],
+            acc_b[1] - ekf.x.ba[1],
+            acc_b[2] - ekf.x.ba[2]
+        );
 
-        float ax_w = R[0]*ax_b + R[1]*ay_b + R[2]*az_b;
-        float ay_w = R[3]*ax_b + R[4]*ay_b + R[5]*az_b;
-        float az_w = R[6]*ax_b + R[7]*ay_b + R[8]*az_b;
+        dr_vec3f_t acc_w = dr_q_rotate( ekf.x.q, acc_b_unbiased ); /* body -> world */
 
-        float lin_acc[3];
-        lin_acc[0] = ax_w - cfg.gravity[0];
-        lin_acc[1] = ay_w - cfg.gravity[1];
-        lin_acc[2] = az_w + cfg.gravity[2];
+        float lin_acc_raw[3];
+        lin_acc_raw[0] = acc_w.x - ekf.cfg.gravity[0];
+        lin_acc_raw[1] = acc_w.y - ekf.cfg.gravity[1];
+        lin_acc_raw[2] = acc_w.z - ekf.cfg.gravity[2];
 
-        
-        /* ZUPT check */
-        float lin_norm = vec3_norm( lin_acc );
-        float gyro_norm = vec3_norm( gyro );
+        /* 4. Stationary Detection ( for ZUPT and yaw freeze )*/
+        float acc_norm = vec3_norm(acc_b);
+        float gyro_norm = vec3_norm(gyro_rad);
+        bool accel_near_1g = fabsf(acc_norm - G_CONST) < 0.15f * G_CONST; /* 15% tolerance */
+        bool gyro_small = gyro_norm < GYRO_ZUPT_THRESH;
+        bool still = accel_near_1g && gyro_small;
 
-        bool zupt = (lin_norm < ACC_ZUPT_THRESH ) && ( gyro_norm < GYRO_ZUPT_THRESH );
-
-        if( zupt )
+        if ( still )
         {
-            if( ++zupt_counter >= ZUPT_COUNT_REQUIRED ) {
-                /* Apply ZUPT: zero velocity */
-                ekf.x.v[0] = 0.0f;
-                ekf.x.v[1] = 0.0f;
-                ekf.x.v[2] = 0.0f;
-                zupt_counter = ZUPT_COUNT_REQUIRED; /* cap */
+            /* if at rest, we *expect* no linear acceleration */
+            lin_acc_raw[0] = 0.0f;
+            lin_acc_raw[1] = 0.0f;
+            lin_acc_raw[2] = 0.0f;
+
+        }
+        /* 5. Low Pass filter Linear acceleration */
+        if ( !lin_acc_init )
+        {
+            lin_acc_filt[0] = lin_acc_raw[0];
+            lin_acc_filt[1] = lin_acc_raw[1];
+            lin_acc_filt[2] = lin_acc_raw[2];
+            lin_acc_init = true;
+        }
+        else
+        {
+            lin_acc_filt[0] = LIN_ACC_ALPHA * lin_acc_filt[0] + (1.0f - LIN_ACC_ALPHA) * lin_acc_raw[0];
+            lin_acc_filt[1] = LIN_ACC_ALPHA * lin_acc_filt[1] + (1.0f - LIN_ACC_ALPHA) * lin_acc_raw[1];
+            lin_acc_filt[2] = LIN_ACC_ALPHA * lin_acc_filt[2] + (1.0f - LIN_ACC_ALPHA) * lin_acc_raw[2];
+        }
+
+        float lin_acc[3] = {
+            lin_acc_filt[0],
+            lin_acc_filt[1],
+            lin_acc_filt[2]
+        };
+
+        /* 6. ZUPT detection using filtered linear acceleration + gyro */
+        float lin_norm = vec3_norm(lin_acc);
+        bool zupt = (lin_norn < ACC_ZUPT_THRESH) && gyro_small;
+
+        if (zupt)
+        {
+            if ( ++zupt_count >= ZUPT_COUNT_REQUIRED )
+            {
+                vel_vis[0] = 0.0f;
+                vel_vis[1] = 0.0f;  
+                vel_vis[2] = 0.0f; /* reset velocity */ 
+
+            } 
+        } else
+        {
+                zupt_count = 0; /* reset count */
+        }
+
+        /*7. Integrate Velocity (visual) when not firmly in ZUPT */
+        if (!zupt) {
+            vel_vis[0] += lin_acc[0] * dt;
+            vel_vis[1] += lin_acc[1] * dt;
+            vel_vis[2] += lin_acc[2] * dt;
+        }
+
+            /* Apply velocity decay */
+        for(i = 0; i < 3; i++)
+        {
+          if( fabsf(lin_acc[i]) < ACC_ZUPT_THRESH )
+          {
+            vel_vis[i] *= VEL_DECAY_NEAR_ZERO;
+            if( fabsf(vel_vis[i]) < VEL_EPSILON )
+            {
+                vel_vis[i] = 0.0f; /* clamp near-zero velocities */
             }
-            
+          }
+
+        }
+
+        /* 8. Integrate Position (visual) */
+        for( i = 0; i < 3; i++ )
+        {
+            pos_vis[i] += vel_vis[i] * dt;
+            if ( pos_vis[i] > POS_CLAMP_MAX )
+            {
+                pos_vis[i] = POS_CLAMP_MAX; /* clamp position */
+            }
+            else if ( pos_vis[i] < -POS_CLAMP_MAX )
+            {
+                pos_vis[i] = -POS_CLAMP_MAX; /* clamp position */
+            }
+        }
+
+        /* 9. Euler angles from EKF quaternion */
+        float yaw_ekf, pitch_ekf, roll_ekf;
+        euler_deg_from_q(ekf.x.q, &yaw_ekf, &pitch_ekf, &roll_ekf);
+
+        /* Yaw display stabilization: freeze yaw when still and gyro_z small */
+        if (!yaw_display_init) {
+            yaw_display = yaw_ekf; /* initial value */
+            yaw_display_init = true;
         } else {
-                /* Not enough consecutive samples yet */
-                zupt_counter = 0;
-        }
-
-        /* Velocity decay near zero to reduce drift */
-        for ( i = 0; i < 3; i++ ){
-            if (fabsf(lin_acc[i]) < ACC_ZUPT_THRESH ) {
-                ekf.x.v[i] *= VEL_DECAY_NEAR_ZERO;
-                if ( fabsf( ekf.x.v[i] ) < VEL_EPSILON )
-                    ekf.x.v[i] = 0.0f;
+            if ( still && fabsf(gyro_rad[2]) < YAW_FREEZE_GYRO_Z_THRESH ) {
+                /* keep previous yaw_display */
+            } else {
+                yaw_display = yaw_ekf;
             }
-
-        }
-        /* Position integration is already done in EKF predict 
-        * but we can clamp for visualization 
-        */
-        for ( i = 0; i < 3; i++ ){
-            if ( ekf.x.p[i] > POS_CLAMP_MAX )
-                ekf.x.p[i] = POS_CLAMP_MAX;
-            else if ( ekf.x.p[i] < -POS_CLAMP_MAX )
-                ekf.x.p[i] = -POS_CLAMP_MAX;
         }
 
-        float yaw, pitch, roll;
-        euler_deg_from_q( ekf.x.q, &yaw, &pitch, &roll );
-        /* Send JSON packet */
+        /* 10. Send JSON over TCP */
         char buf[512];
-        int n  = snprintf( buf, sizeof(buf),
-            "{ \"t_ns\": %llu, \"pos_m\": [%.4f, %.4f, %.4f], \"vel_mps\": [%.4f, %.4f, %.4f],"
-            "\"lin_acc_mps2\": [%.4f, %.4f, %.4f], \"euler_deg\": [%.2f, %.2f, %.2f] , \"q\": [%.6f, %.6f, %.6f, %.6f] }\n", 
-            (unsigned long long)t_now, ekf.x.p[0], ekf.x.p[1], ekf.x.p[2], 
-            ekf.x.v[0], ekf.x.v[1], ekf.x.v[2],
+        int n = snprintf( buf, sizeof(buf),
+            "{ \"t_ns\": %llu, \"pos_m\": [%.4f, %.4f, %.4f], \"vel_mps\": [%.4f, %.4f, %.4f], "
+            "\"euler_deg\": [%.2f, %.2f, %.2f], \"lin_acc_mps2\": [%.4f, %.4f, %.4f], \"q\": [%.6f, %.6f, %.6f, %.6f] }\n",
+            (unsigned long long)t_now_ns, pos_vis[0], pos_vis[1], pos_vis[2],
+            vel_vis[0], vel_vis[1], vel_vis[2],
+            yaw_display, pitch_ekf, roll_ekf,
             lin_acc[0], lin_acc[1], lin_acc[2],
-            yaw, pitch, roll,
-            ekf.x.q.w, ekf.x.q.x, ekf.x.q.y, ekf.x.q.z );
+            ekf.x.q.w, ekf.x.q.x, ekf.x.q.y, ekf.x.q.z
+        );
 
-            if (n < 0 )
-            {
-                perror("snprintf");
-                break;
-            }
+        if( n  < 0)
+        {
+            perror("snprintf");
+            break;
+        }
+        ssize_t sent = send( sock_client, buf, (size_t)n, MSG_NOSIGNAL );
+        if ( sent < 0 )
+        {
+            perror("send");
+            break;
+        }
+            
+         /* Optional: Periodically print raw EKF p/v for testing core */
+         // static int dbg_counter = 0;
+         // if ( ++dbg_counter >= SAMPLE_HZ )
+            // { 
+            // dbg_counter = 0;
+            // fprintf(stderr, "[EKF] p: [%.4f, %.4f, %.4f] m, v: [%.4f, %.4f, %.4f] m/s\n",
+            //     ekf.x.p[0], ekf.x.p[1], ekf.x.p[2],
+            //     ekf.x.v[0], ekf.x.v[1], ekf.x.v[2] );
+            //}
 
-            ssize_t sw = send( sock_client, buf, (size_t)n, MSG_NOSIGNAL );
-            if ( sw < 0 )
-            {
-                perror("send");
-                break;
-            }
-
-            usleep( (useconds_t)(1e6f / SAMPLE_HZ) );
-
-
+            
     }
     close( sock_client );
     close( sock_listen );
