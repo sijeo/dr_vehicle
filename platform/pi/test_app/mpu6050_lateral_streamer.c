@@ -525,6 +525,7 @@ int main( void )
             lin_raw[0] = 0.0f;
             lin_raw[1] = 0.0f;
             lin_raw[2] = 0.0f;
+            fprintf(stderr, "[ZUPT] still detected\n");
         }
 
         /* LPF */
