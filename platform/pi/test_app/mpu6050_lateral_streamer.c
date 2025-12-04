@@ -117,7 +117,6 @@ static void vec3_scale( float out[3], const float v[3], float s )
     out[1] = v[1] * s;
     out[2] = v[2] * s;
 }
-#endif
 
 /* quaternion from two unit vectors (v_from -> v_to )*/
 static dr_quatf_t q_from_two_unit_vecs( dr_vec3f_t v_from, dr_vec3f_t v_to )
@@ -131,6 +130,7 @@ static dr_quatf_t q_from_two_unit_vecs( dr_vec3f_t v_from, dr_vec3f_t v_to )
     dr_quatf_t q = {1.0f + d, c.x, c.y, c.z };
     return dr_q_normalize(q);
 }
+#endif
 
 /* Euler (deg) from quaternion, ZYX order: yaw(Z)-pitch(Y)-roll(X) */
 static void euler_deg_from_q( dr_quatf_t q, float *yaw, float *pitch, float *roll)
