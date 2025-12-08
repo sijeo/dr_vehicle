@@ -45,15 +45,15 @@
  /*======================Calibration Constants ============================*/
  /* Replace these with the values in the imu_calibration.json file in /tools folder */
  static const float ACCEL_C[3][3] = {
-    {1.0025f, 0.0021f, -0.0015f},
-    {0.0021f, 0.9987f, 0.0030f},
-    {-0.0015f, 0.0030f, 1.0050f}
+    {0.0005964462462844185f, -9.211739001666678e-07f, 1.5763305507490624e-05f},
+    {-1.1573398643476584e-06f, 0.0006037351040586055f, 3.881537441769146e-07f},
+    {-3.851697134466662e-05f, -3.2356391081574615e-05f, 0.0005895175306304627f}
  };
 
-static const float ACCEL_O[3] = { -0.12f, 0.05f, 0.98f }; 
+static const float ACCEL_O[3] = { -0.1329121010477303f, -0.047222673271787766f, 1.257425727446983f}; 
 
 /* Gyro biass (raw ADC coounts) - can be learned dynamically */
-static const float GYRO_B[3] = { 1.5f, -2.3f, 0.7f };
+static const float GYRO_B[3] = { 153.461f, 69.446f, 992.782f };
 
 /*=================================ZUPT Parameters ===========================*/
 #define ACC_ZUPT_THRESH           0.25f  /* m/s^2 */
