@@ -12,7 +12,7 @@
  * - Robust field parsing: empty fields are allowed, numerical coversions checks.
  * - Locking: spinlock protects the latest fix snapshot; parsing happens in a 
  * worer to keep RX fast.
- * - Exposes /sys/class/neo6m_gnss/neo6m0/{lat, lon, alt_mm, speed_mmps, have_fix, utc}
+ * - Exposes /sys/class/neo6m_gnss/neo6m0/{lat, lon, alt_mm, speed_mmps, have_fix, utc, hdop_x100, course_deg_e5}
  * and /dev/neo6m_gnss for ioclt(N...GET_FIX).
  */
 
@@ -41,6 +41,20 @@
 #define RX_RING_SIZE 2048
 
 /*******************Utilities ********************/
+
+/**
+ * @brief Verify the NMEA sentence checksum.
+ *
+ * NMEA sentences begin with '$', contain a payload, and end with '*XX'
+ * where XX is the hexadecimal XOR of all characters between '$' and '*'.
+ *
+ * @param s   Pointer to the NMEA sentence (starting at '$').
+ * @param len Length of the sentence (without CR/LF terminators).
+ *
+ * @return true if checksum is valid, false otherwise.
+ */
+
+
 static inline bool nmea_checksum_ok(const char *s, size_t len)
 {
     /* s point to '$', len includes full line without CRLF. Expect *XX at end. */
@@ -79,6 +93,15 @@ static inline bool nmea_checksum_ok(const char *s, size_t len)
 
 }
 
+/**
+ * @brief Safe string-to-long conversion with default.
+ *
+ * @param p   Input string (may be NULL or empty).
+ * @param def Default value if conversion fails.
+ *
+ * @return Converted value or def on failure.
+ */
+
 static inline long strtol_safe(const char *p, long def)
 {
     char *e;
@@ -95,6 +118,17 @@ static inline long strtol_safe(const char *p, long def)
     }
     return v;   
 }
+
+/**
+ * @brief Convert decimal string to milli-units (×1000) with rounding.
+ *
+ * Example: "12.3456" -> 12346 (approx).
+ *
+ * @param p   Input decimal ASCII string.
+ * @param def Default value if input is invalid.
+ *
+ * @return Value in milli-units or def on failure.
+ */
 
 static inline long strtod_milli(const char *p, long def )
 {
@@ -138,6 +172,20 @@ static inline long strtod_milli(const char *p, long def )
     }
     return s * (whole * 1000 + frac);
 }
+
+/**
+ * @brief Convert NMEA latitude/longitude to degrees × 1e7.
+ *
+ * NMEA format:
+ *   - Latitude:  ddmm.mmmm
+ *   - Longitude: dddmm.mmmm
+ *
+ * @param val     NMEA ddmm.mmmm or dddmm.mmmm field.
+ * @param hem     Hemisphere indicator ('N','S','E','W').
+ * @param out_e7  Pointer to store result (degrees ×1e7).
+ *
+ * @return true on success, false on failure.
+ */
 
 static bool nmea_latlon_to_e7(const char *val, const char *hem, s32 *out_e7)
 {
@@ -200,6 +248,16 @@ static bool nmea_latlon_to_e7(const char *val, const char *hem, s32 *out_e7)
     return true;
 }
 
+/**
+ * @brief Convert speed in knots to mm/s.
+ *
+ * 1 knot = 0.514444 m/s.
+ *
+ * @param knots Speed over ground in knots (ASCII).
+ *
+ * @return Speed in mm/s.
+ */
+
 static u32 knots_to_mmps_maybe(const char *knots)
 {
     /* Speed over ground in knots => m/s * 1000*/
@@ -249,9 +307,12 @@ static struct of_device_id neo6m_of_match[] = {
 MODULE_DEVICE_TABLE(of, neo6m_of_match);
 
 /**
- * neo6m_push_line_for_parse() - hand a completed NMEA line to worker
+ * @brief Hand a completed NMEA line to the worker for parsing.
+ *
+ * @param priv Driver private data.
+ * @param s    Pointer to NMEA buffer.
+ * @param len  Length of buffer.
  */
-
  static void neo6m_push_line_for_parse(struct neo6m_priv *priv, const char *s, size_t len)
  {
     if(len >= sizeof(priv->parse_buf))
@@ -265,10 +326,17 @@ MODULE_DEVICE_TABLE(of, neo6m_of_match);
  }
 
  /**
-  * neo6m_parse_utc() - Parse UTC date/time from RMC
-  * @fields: token array
-  * Populates fix UTC if present and valid
-  */
+ * @brief Parse UTC date/time from RMC fields.
+ *
+ * RMC fields:
+ *   [1] = time hhmmss.sss
+ *   [9] = date ddmmyy
+ *
+ * @param f      Pointer to fix structure to update.
+ * @param fields Token array.
+ * @param n      Number of tokens.
+ */
+
 
   static void neo6m_parse_utc( struct neo6m_gnss_fix *f, char *const *fields, int n)
   {
@@ -303,11 +371,19 @@ MODULE_DEVICE_TABLE(of, neo6m_of_match);
   }
 
   /**
-   * neo6m_parse_line() - parse a single NMEA line
-   * 
-   * Handles $GPRMC/$GNRMC, $GPGGA/$GNGGA, $GPVTG/$GNVTG
-   * Empty tokens are tolerated, Checksum is verified. 
-   */
+ * @brief Parse a single NMEA line and update the fix.
+ *
+ * Handles:
+ *   - $GPRMC / $GNRMC
+ *   - $GPGGA / $GNGGA
+ *   - $GPVTG / $GNVTG
+ *
+ * Empty tokens are tolerated. Checksum is verified before parsing.
+ *
+ * @param priv Driver private data.
+ * @param s    Pointer to NMEA sentence buffer.
+ * @param len  Length of sentence.
+ */
 
    static void neo6m_parse_line(struct neo6m_priv *priv, const char *s, size_t len)
    {
@@ -380,6 +456,14 @@ MODULE_DEVICE_TABLE(of, neo6m_of_match);
             {
                 newfix.speed_mmps = knots_to_mmps_maybe(tok[7]);
             }
+
+            if( ntok > 8 && tok[8] && *tok[8] ){
+                long hdg_milli = strtod_milli(tok[8], 0); /* deg x1000 */
+                newfix.course_deg_e5 = (s32)(hdg_milli * 100);
+                newfix.heading_valid = true;
+            } else {
+                newfix.heading_valid = false;
+            }
         }
         else if( (!strncmp(tok[0] + 1, "GPGGA", 5)) || (!strncmp(tok[0] + 1, "GNGGA", 5)))
         {
@@ -404,6 +488,14 @@ MODULE_DEVICE_TABLE(of, neo6m_of_match);
                 long alt_milli = strtod_milli(tok[9], 0);
                 newfix.alt_mm = (s32)(alt_milli * 1); /* milli-meters already */
             }
+
+            /* HDOP (field 8) as x100 */
+            if( ntok > 8 && tok[8] && *tok[8]) {
+                long hdop_milli = strtod_milli(tok[8], 0); /* x1000 */
+                newfix.hdop_x100 = (u16)((hdop_milli + 5) / 10); /* x100 */
+                newfix.hdop_valid = true;
+            }
+
             /* UTC from field[1] if not set by RMC*/
             if ((ntok > 1) && (tok[1]) && (*tok[1])) {
                 const char *t = tok[1];
@@ -428,6 +520,18 @@ MODULE_DEVICE_TABLE(of, neo6m_of_match);
              * VTG fields:
              * 5 = speed(knots), 7= speed(km/h)- we prefer knots (field 5)
              */
+            if(!newfix.heading_valid) {
+                if( ntok >1 && tok[1] && *tok[1]) {
+                long hdg_milli = strtod_milli(tok[1], 0);
+                newfix.course_deg_e5 = (s32)(hdg_milli * 100);
+                newfix.heading_valid = true;
+               } else {
+                newfix.heading_valid = false;
+               }
+
+            }
+            
+
             if( (ntok > 5) &&( tok[5]) && (*tok[5])){
                 newfix.speed_mmps = knots_to_mmps_maybe(tok[5]);
             }
@@ -574,6 +678,34 @@ static ssize_t show_utc(struct device *dev, struct device_attribute *attr, char 
 }
 static DEVICE_ATTR(utc, 0444, show_utc, NULL);
 
+static ssize_t show_hdop(struct device *dev, struct device_attribute *attr, char *buf){
+    struct neo6m_priv *p = dev_get_drvdata(dev);
+    unsigned long flags;
+    u16 v;
+
+    spin_lock_irqsave(&p->lock, flags);
+    v = p->fix.hdop_x100;
+    spin_unlock_irqrestore(&p->lock, flags);
+
+    return scnprintf(buf, PAGE_SIZE, "%u\n", v);
+
+}
+static DEVICE_ATTR(hdop_x100, 0444, show_hdop, NULL);
+
+static ssize_t show_course(struct device *dev, struct device_attribute *attr, char *buf){
+    struct neo6m_priv *p = dev_get_drvdata(dev);
+    unsigned long flags;
+
+    s32 v;
+
+    spin_lock_irqsave(&p->lock, flags);
+    v = p->fix.course_deg_e5;
+    spin_unlock_irqrestore(&p->lock, flags);
+
+    return scnprintf(buf, PAGE_SIZE, "%d\n", v);
+}
+static DEVICE_ATTR(course_deg_e5, 0444, show_course, NULL);
+
 static struct attribute *neo6m_attrs[] = {
     &dev_attr_lat.attr,
     &dev_attr_lon.attr,
@@ -581,6 +713,8 @@ static struct attribute *neo6m_attrs[] = {
     &dev_attr_speed_mmps.attr,
     &dev_attr_have_fix.attr,
     &dev_attr_utc.attr,
+    &dev_attr_hdop_x100.attr,
+    &dev_attr_course_deg_e5.attr,
     NULL,
 };
 
@@ -655,6 +789,9 @@ static int neo6m_probe(struct serdev_device *serdev)
 
     p->dev = dev;
     p->serdev = serdev;
+    memset(&p->fix, 0, sizeof(p->fix));
+    p->fix.heading_valid = false;
+    p->fix.hdop_valid = false;
     spin_lock_init(&p->lock);
     INIT_WORK(&p->parse_work, neo6m_parse_workfn);
 

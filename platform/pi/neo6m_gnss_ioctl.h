@@ -28,6 +28,12 @@ struct neo6m_gnss_fix {
     /** Velocity */
     __s32 speed_mmps;        /**< Ground Speed in mm/s * 10^7 (from RMC/VTG)*/
 
+    /** Heading / Course Over Ground  */
+    __s32 course_deg_e5;     /**< Course/heading over ground in degrees x 10^5  */
+
+    /** Dilution of precision */
+    __u16 hdop_x100;           /**< Horizontal DOP x100 (unitless) */
+
     /** UTC time (if available) */
     __u16 utc_year;     /**< Year (4 digit)  e.g., 2025*/
     __u8 utc_mon;    /**< Month (1-12) */
@@ -36,6 +42,10 @@ struct neo6m_gnss_fix {
     __u8 utc_min;    /**< Minute (0-59) */
     __u8 utc_sec;    /**< Second (0-60) */
     __u16 utc_millis;  /**< Milliseconds (0-999) */
+
+    /** Validity Flags */
+    bool heading_valid;     /**< True if course_deg_e5 is valid  */
+    bool hdop_valid;        /**< True if hdop_x100 is valid  */
 }__attribute__((packed));
 
 
