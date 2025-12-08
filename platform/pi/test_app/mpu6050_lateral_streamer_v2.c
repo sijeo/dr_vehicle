@@ -56,7 +56,7 @@ static const float ACCEL_O[3] = { -0.1329121010477303f, -0.047222673271787766f, 
 static const float GYRO_B[3] = { 153.461f, 69.446f, 992.782f };
 
 /*=================================ZUPT Parameters ===========================*/
-#define ACC_ZUPT_THRESH           0.25f  /* m/s^2 */
+#define ACC_ZUPT_THRESH           0.4f  /* m/s^2 */
 #define GYRO_ZUPT_THRESH         (5.0f * DEG2RAD)    /* deg/s */
 #define ZUPT_COUNT_REQUIRED       5      /* number of consecutive samples below threshold to trigger ZUPT */
 
@@ -448,7 +448,7 @@ int main() {
      float lin_raw[3] = {
         aW.x, 
         aW.y,
-        aW.z + GRAVITY_CONST
+        aW.z - GRAVITY_CONST
    };
 
    float lin_norm = vec3_norm(lin_raw);
@@ -516,8 +516,8 @@ int main() {
     char json_buf[512];
     int n = snprintf( json_buf, sizeof(json_buf),
         "{ \"t_ns\": %llu, \"pos_m\": [%.4f, %.4f, %.4f], \"vel_mps\": [%.4f, %.4f, %.4f], "
-        "\"q\": [%.6f, %.6f, %.6f, %.6f], \"euler_deg\": [%.2f, %.2f, %.2f] ,
-        \"lin_acc_mps2\": [%.4f, %.4f, %.4f] }\n", (unsigned long long)now, 
+        "\"q\": [%.6f, %.6f, %.6f, %.6f], \"euler_deg\": [%.2f, %.2f, %.2f],"
+        "\"lin_acc_mps2\": [%.4f, %.4f, %.4f] }\n", (unsigned long long)now, 
         pos[0], pos[1], pos[2],
         vel[0], vel[1], vel[2],
         q.w, q.x, q.y, q.z,

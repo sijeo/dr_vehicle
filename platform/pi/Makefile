@@ -25,11 +25,12 @@ driver_test: test_app/mpu6050_lateral_streamer_v2.c
 	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o test_app/mpu6050_lateral_streamer_v2 $< $(CORE_SRCS) -lm
 
 deploy:
-	scp *.ko sijeo@10.225.104.7:/home/sijeo/dr_vehicle/
+	scp *.ko sijeo@10.47.228.7:/home/sijeo/dr_vehicle/
 
 deploy_app:
-	scp dr_app_1 sijeo@10.15.120.7:/home/sijeo/dr_vehicle/
+	scp dr_app_1 sijeo@10.47.228.7:/home/sijeo/dr_vehicle/
 
 deploy_test:
-	scp test_app/mpu6050_lateral_streamer_v2 sijeo@10.15.120.7:/home/sijeo/dr_vehicle/
+	scp test_app/mpu6050_lateral_streamer_v2 sijeo@10.47.228.7:/home/sijeo/dr_vehicle/
+	
 .PHONY: all clean app driver_test deploy deploy_app
