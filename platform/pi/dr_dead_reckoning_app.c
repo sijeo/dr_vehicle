@@ -46,7 +46,11 @@
 #define GNSS_TIMEOUT_S  2.0f
 
 #define GRAVITY         9.80665f
-#define DEG2RAD        (3.14159265358979323846/180.0) 
+/**
+ * @brief Value of PI
+ */
+#define M_PI 3.14159265358979323846
+#define DEG2RAD        (M_PI/180.0) 
 
 // Yaw dead-band (when nearly still )
 #define YAW_DEADBAND_RAD    (0.03f)          // ~1.7 deg/s
@@ -91,6 +95,8 @@
 #define YAW_FUSION_SPEED_MIN    (1.0f)  // m/s; only fuse heading above this 
 #define YAW_FUSION_HDOP_MAX     (4.0f)  // only fuse heading when HDOP <= this
 #define YAW_FUSION_ALPHA        (0.05f) // 0..1 fraction of yaw error corrected per update
+
+
 
 /** Time Utilities  */
 static inline uint64_t monotonic_ns( void ) {
@@ -730,3 +736,582 @@ static void pv6_update_zupt(pv6_t *s){
     }
 }
 
+/** ========================= Calibration ( replace with actual LSQ/bias valuse post calibration )===================== */
+static const float ACCEL_C[3][3] = {
+    {0.0005964462462844185f, -9.211739001666678e-07f, 1.5763305507490624e-05f},
+    {-1.1573398643476584e-06f, 0.0006037351040586055f, 3.881537441769146e-07f},
+    {-3.851697134466662e-05f, -3.2356391081574615e-05f, 0.0005895175306304627f}
+ };
+
+static const float ACCEL_O[3] = { -0.1329121010477303f, -0.047222673271787766f, 1.257425727446983f}; 
+
+/* Gyro biass (raw ADC coounts) - can be learned dynamically */
+static const float GYRO_B[3] = { 153.461f, 69.446f, 992.782f };
+
+#define GYRO_LSB_PER_DPS    65.5f
+
+static void calib_accel(const struct mpu6050_sample *raw, float acc_mps2[3]) {
+    const float a[3] = { raw->ax, raw->ay, raw->az };
+    int i;
+    for( i=0; i<3; i++ ){
+        acc_mps2[i] = ACCEL_C[i][0]*a[0] +
+                      ACCEL_C[i][1]*a[1] +
+                      ACCEL_C[i][2]*a[2] +
+                      ACCEL_O[i];
+    }
+}
+
+static void calib_gyro(const struct mpu6050_sample *raw, float gyro_rad[3]) {
+    float g[3] = {
+        raw->gx - GYRO_B[0],
+        raw->gy - GYRO_B[1],
+        raw->gz - GYRO_B[2]
+    };
+
+    float dps[3] = {
+        g[0]/GYRO_LSB_PER_DPS,
+        g[1]/GYRO_LSB_PER_DPS,
+        g[2]/GYRO_LSB_PER_DPS
+    };
+    gyro_rad[0] = dps[0]*DEG2RAD;
+    gyro_rad[1] = dps[1]*DEG2RAD;
+    gyro_rad[2] = dps[2]*DEG2RAD;
+}
+
+/**========================LLA/ECEF/ENU helpers (WGS-84)====================== */
+
+typedef struct { double lat, lon, h;} lla_t;
+typedef struct { double x, y, z } ecef_t;
+
+static const double aWGS = 6378137.0;
+static const double fWGS = 1.0/298.257223563;
+static const double bWGS = 6378137.0 * (1 - fWGS);
+static const double e2 = (aWGS*aWGS - bWGS*bWGS) / (aWGS*aWGS);
+
+static ecef_t lla2ecef(lla_t L) {
+    double s = sin(L.lat), c = cos(L.lat);
+    double N = aWGS / sqrt(1 - e2*s*s);
+    ecef_t e;
+    e.x = (N + L.h)*c*cos(L.lon);
+    e.y = (N + L.h)*c*sin(L.lon);
+    e.z = (N*(1-e2) + L.h)*s;
+
+    return e;
+}
+
+static void ecef2enu( ecef_t e, lla_t ref, ecef_t e0, double out[3] ) {
+    double s1 = sin(ref.lat), c1 = cos(ref.lat);
+    double s0 = sin(ref.lon), c0 = cost(ref.lon);
+    double dx = e.x - e0.x;
+    double dy = e.y - e0.y;
+    double dz = e.z - e0.z;
+
+    out[0] = -s0*dx + c0*dy;
+    out[1] = -c1*c0*dx - c1*s0*dy + s1*dz;
+    out[2] = s1*c0*dx + s1*s0*dy + c1*dz;
+}
+
+/**==============Utility for yaw fusion================ */
+static float wrap_pi(float a ){
+    while ( a > M_PI ) a -= -2.0f * M_PI;
+    while ( a <= -M_PI) a += 2.0f * M_PI;
+    return a;
+}
+
+static float yaw_from_q( const dr_quatf_t *q ){
+    /* ENU convention,  yaw about + Z*/
+    float siny_cosp = 2.0f * (q->w*q->z + q->x*q->y);
+    float cosy_cosp = 1.0f - 2.0f * (q->y*q->y + q->z*q->z);
+    return atan2f(siny_cosp, cosy_cosp);
+}
+
+static dr_quatf_t q_from_yaw_delta( float dpsi ) {
+    float half = 0.5f * dpsi;
+    float s = sinf(half), c = cosf(half);
+    dr_quatf_t dq = { c, 0.0f, 0.0f, s }; /*<< rotation about Z */
+    return dq;
+}
+
+/**====================================== Context and Threading ==================== */
+typedef struct {
+    /* Latest IMU Sample */
+    struct mpu6050_sample imu_raw;
+    bool have_imu;
+
+    /* Data Logging */
+    FILE *logf;
+    char log_filename[256];
+    double last_log_sec;        /*< for 1 second logging */
+
+    /* Latest GNSS Info */
+    bool    have_gnss;
+    double  gnss_lat_rad;
+    double  gnss_lon_rad;
+    double  gnss_alt_m;
+    float   gnss_speed_mps;
+    float   gnss_vel_enu[3];
+    bool    gnss_vel_valid;
+    float   gnss_heading_rad;
+    bool    gnss_heading_valid;
+    float   gnss_hdop;
+    bool    gnss_hdop_valid;
+
+    /* EKF States */
+    ekf4_t  ekf;
+    pv6_t   pv;
+
+    /* ENU Reference and Nav State */
+    bool    enu_ref_set;
+    lla_t   enu_ref_lla;
+    ecef_t  enu_ref_ecef;
+    bool    nav_ready;
+
+    /* GNSS health and outage tracking */
+    double  last_gnss_s;
+    bool    gnss_valid;
+    bool    gnss_just_returned;
+    int     fade_in_left;
+    double  outage_s;
+    float   qscale;
+
+    /* Misc*/
+    uint64_t    last_tick_ns;
+    int         zupt_count;
+
+    /* Threading */
+    pthread_mutex_t mtx;
+    pthread_cond_t  cv;
+    bool running;
+
+} ctx_t;
+
+static float compute_qscale(double outage_s ){
+    if( outage_s < TIER_A ) return QSCL_A;
+    if( outage_s < TIER_B ) return QSCL_B;
+    if( outage_s < TIER_C ) return QSCL_C;
+    return QSCL_D;
+
+}
+
+/*=====================Device Open Helpers ================== */
+static int open_imu( void ){
+    int fd = open(IMU_DEVICE_PATH, O_RDONLY | O_CLOEXEC );
+    return (fd < 0) ? -errno : fd;
+}
+
+static int open_gnss( void ){
+    int fd = open(NEO6M_DEVICE_PATH, O_RDONLY  | O_CLOEXEC );
+    return (fd < 0) ? -errno : fd;
+}
+
+/*==========================LOG FILE HELPERS ====================*/
+static void make_log_file( ctx_t *C ){
+    const char *log_dir = "home/sijeo/nav_logs";
+
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "mkdir -p %s", log_dir);
+    system(cmd);
+
+    time_t t = time(NULL);
+    struct tm *tmv = localtime(&t);
+
+    snprintf(C->log_filename, sizeof(C->log_filename), "%s/navlog_%04d-%02d-%02d_%02d-%02d-%02d.csv", log_dir, 
+            tmv->tm_year + 1900, tmv->tm_mon + 1, tmv->tm_mday, tmv->tm_hour, tmv->tm_min, tmv->tm_sec);
+    C->logf = fopen(C->log_filename, "w");
+    if( !C->logf ){
+        fprintf(stderr, "ERROR: unable to create log file\n");
+        exit(1);
+    }
+
+    fprintf(C->logf,
+        "time_s,E,N,U,Vx,Vy,Vz,Ax,Ay,Az,imu_ax,imu_ay,imu_az,imu_gx,imu_gy,imu_gz,gnss_fix,lat,lon,alt,speed,heading,hdop,outage_s");
+
+    fflush(C->logf);
+    C->last_log_sec = 0;
+    fprintf(stderr, "logging to %s\n",C->log_filename);
+
+}
+
+/* ===================IMU THREAD ============================== */
+static void* imu_thread( void *arg ){
+    ctx_t *C = (ctx_t*)arg;
+    int fd = open_imu();
+    if ( fd < 0 ) {
+        fprintf(stderr, "open_imu failed: %d\n", fd);
+        return NULL;
+    }
+
+    while( __atomic_load_n(&C->running, __ATOMIC_ACQUIRE)) {
+        struct mpu6050_sample s;
+        ssize_t n = read(fd, &s, sizeof(s));
+        if( n == (ssize_t)sizeof(s) ){
+            pthread_mutex_lock(&C->mtx);
+            C->imu_raw = s;
+            C->have_imu = true;
+            pthread_cond_signal(&C->cv);
+            pthread_mutex_unlock(&C->mtx);
+        } else {
+            usleep(1000);
+        }
+    }
+
+    close(fd);
+    return NULL;
+}
+
+
+/*===================GNSS THREAD ======================== */
+static void* gnss_thread( void* arg){
+    ctx_t *C = (ctx_t*)arg;
+    int fd = open_gnss();
+    if( fd < 0 ){
+        fprintf(stderr, "open_gnss failed: %d\n", fd);
+        return NULL
+    }
+
+    while( __atomic_load_n(&C->running, __ATOMIC_ACQUIRE)) {
+        struct neo6m_gnss_fix f;
+        if( ioctl(fd, NEO6M_GNSS_IOC_FIX, &f) != 0){
+            usleep(10000);
+            continue;
+        }
+
+        pthread_mutex_lock(&C->mtx);
+        if( f.have_fix ){
+            /** read values */
+            double lat_deg = f.lat_e7/1e7;
+            double lon_deg = f.lon_e7/1e7;
+            double alt_m = f.alt_mm/1000.0f;
+
+            C->gnss_lat_rad = lat_deg * (M_PI/180.0);
+            C->gnss_lon_rad = lon_deg * (M_PI/180.0);
+            C->gnss_alt_m = alt_m;
+            C->gnss_speed_mps = f.speed_mmps/1000.0f;
+
+            /** HDOP */
+            if( f.hdop_valid ) {
+                C->gnss_hdop = (float)f.hdop_x10 * 0.1f;
+                C->gnss_hdop_valid = true;
+
+            }
+            else {
+                C->gnss_hdop_valid = false;
+
+            }
+
+            /* Heading / Course over ground (deg * 1e5)*/
+            if (f.heading_valid && C->gnss_speed_mps > 0.5f ) {
+                float heading_deg = f.heading_deg_e5 / 1e5f;
+                C->gnss_heading_rad = heading_deg * (M_PI/180.0f);
+                C->gnss_heading_valid = true;
+
+                float spd =  C->gnss_speed_mps;
+                float psi = C->gnss_heading_rad;
+
+                C->gnss_vel_enu[0] = spd * sinf(psi); /**< EAST */
+                C->gnss_vel_enu[1] = spd * cosf(psi); /**< NORTH */
+                C->gnss_vel_enu[2] = 0.0f;
+                C->gnss_vel_valid = true;
+            } else {
+                C->gnss_heading_valid = false;
+                C->gnss_vel_valid = false;
+            }
+
+            C->have_gnss = true;
+
+            /**< ENU Origin on First-Ever Fix */
+            if( !C->enu_ref_set ){
+                C->enu_ref_lla = (lla_t){
+                    C->gnss_lat_rad,
+                    C->gnss_lon_rad,
+                    C->gnss_alt_m
+                };
+                C->enu_ref_ecef = lla2ecef(C->enu_ref_lla);
+                C->enu_ref_set = true;
+                fprintf(stederr, "ENU Origin set (First GNSS Fix)\n");
+            }
+
+        }
+        pthread_conf_signal(&C->cv);
+        pthread_mutex_unlock(&C->mtx);
+
+        usleep(100000); /**< ~10Hz poll (GNSS typically 1 Hz) */
+
+    }
+
+    close(fd);
+    return NULL;
+}
+
+/*=====================FUSION THREAD =========================== */
+
+static void* fusion_thread( void* arg ) {
+    ctx_t *C = (ctx_t*)arg;
+    C->last_tick_ns = monotonic_ns();
+
+    while(__atomic_load_n(&C->running, __ATOMIC_ACQUIRE )) {
+        pthread_mutex_lock(&C->mtx);
+
+        /* Wait for the IMU Sample */
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_nsec += 5*1000*1000;
+        if( ts.tv_nsec >= 1000000000 ) {
+            ts.tv_sec++;
+            ts.tv_nsec -= 1000000000;
+        }
+        pthread_cond_timedwait(&C->cv, &C->mtx, &ts);
+
+        uint64_t now_ns = monotonic_ns();
+        float dt = (now_ns - C->last_tick_ns)*1e-9f;
+        if( dt <= 0 || dt > 1.0f ) dt = DT_IMU;
+        C->last_tick_ns = now_ns;
+
+        if( !C->have_imu ){
+            pthread_mutex_unlock(&C->mtx);
+            continue;
+        }
+
+        /* Apply Calibration to IMU */
+        float acc_b[3], gyro_b[3];
+        calib_accel(&C->imu_raw, acc_b);
+        calib_gyro(&C->imu_raw, gyro_b);
+
+        float acc_norm = sqrtf( acc_b[0]*acc_b[0] + acc_b[1]*acc_b[1] + acc_b[2]*acc_b[2]);
+        bool near_still = fabsf(acc_norm - GRAVITY ) < ACC_STILL_TOL;
+
+        /* Yaw dead band at low motion  */
+        if( near_still && fabsf(gyro_b[2]) < YAW_DEADBAND_RAD ){
+            gyro_b[2] = 0.0f;
+
+        }
+        /* Attitude EKF always runs */
+        ekf4_predict(&C->ekf, gyro_b, dt);
+        ekf4_update_accel(&C->ekf, acc_b);
+
+        /* If nav not ready yet, try to initialize from First GNSS fix */
+        if( !C->nav_ready ){
+            if( C->enu_ref_set && C->have_gnss ){
+                lla_t L = { C->gnss_lat_rad, C->gnss_lon_rad, C->gnss_alt_m };
+                ecef_t E = lla2ecef(L);
+                double z_enu_d[3];
+                ecef2enu(E, C->enu_ref_lla, C->enu_ref_ecef, z_enu_d);
+
+                pv6_init(&C->pv);
+                C->pv.p[0] = (float)z_enu_d[0];
+                C->pv.p[1] = (float)z_enu_d[1];
+                C->pv.p[2] = (float)z_enu_d[2];
+                C->pv.v[0] = 0.0f;
+                C->pv.v[1] = 0.0f;
+                C->pv.v[2] = 0.0f;
+
+                C->nav_ready    = true;
+                C->gnss_valid   = true;
+                C->gnss_just_returned = false;
+                C->fade_in_left = 0;
+                C->outage_s     = 0.0f;
+                C->qscale       = 1.0f;
+                C->last_gnss_s  = now_sec();
+                C->have_gnss    = false;
+
+                fprintf(stderr, "Nav Initialized: ENU (%.2f, %.2f, %.2f)\n", C->pv.p[0], C->pv.p[1], C->pv.p[2]);
+            }
+
+            pthread_mutex_unlock(&C->mtx);
+            continue;
+        }
+
+        /* From Here: nav_active == true */
+
+        /** Outage Tracking  */
+        double tnow = now_sec();
+        if( !C->gnss_valid || (tnow - C->last_gnss_s ) > GNSS_TIMEOUT_S ){
+            if( C->gnss_valid ){
+                C->gnss_valid = false;
+                C->gnss_just_returned = false;
+            }
+            C->outage_s += dt;
+        } else {
+            C->outage_s = 0.0f;
+
+        }
+        C->qscale = C->gnss_valid ? 1.0f : compute_qscale(C->outage_s);
+
+        /* World frame accel */
+        float Rm[9];
+        dr_R_from_q(C->ekf.q, Rm);
+        float aw[3] = {
+            Rm[0]*acc_b[0] + Rm[1]*acc_b[1] + Rm[2]*acc_b[2],
+            Rm[3]*acc_b[0] + Rm[4]*acc_b[1] + Rm[5]*acc_b[2],
+            Rm[6]*acc_b[0] + Rm[7]*acc_b[1] + Rm[8]*acc_b[2] - GRAVITY
+        };
+
+        pv6_predict(&C->pv, aw, dt, C->qscale);
+        /*NHC*/
+        pv6_update_nhc(&C->pv, &C->ekf.q);
+
+        /*ZUPT detection */
+        bool zupt_cond = 
+                (fabsf(acc_norm - GRAVITY ) < ZUPT_ACC_THR ) &&
+                (fabsf(gyro_b[0]) < ZUPT_GYRO_THR  &&
+                 fabsf(gyro_b[1]) < ZUPT_GYRO_THR  &&
+                 fabsf(gyro_b[2]) < ZUPT_GYRO_THR);
+
+        if ( zupt_cond ) {
+            C->zupt_count++;
+        } else {
+            C->zupt_count = 0;
+
+        }
+
+        /** Velocity Decay  */
+        float v_norm = sqrtf(C->pv.v[0]*C->pv.v[0] + C->pv.v[1]*C->pv.v[1] + C->pv.v[2]*C->pv.v[2] );
+        if( vnorm < VEL_EPS ) {
+            C->pv.v[0] *= VEL_DECAY;
+            C->pv.v[1] *= VEL_DECAY;
+            C->pv.v[2] *= VEL_DECAY;
+        }
+
+        /** GNSS Fusion (pos + vel + yaw ) */
+        if( C->hav_gnss ){
+            /** POSITION UPDATE WITH HDOP ADAPTIVE R */
+            lla_t L = { C->gnss_lat_rad, C->gnss_lon_rad, C->gnss_alt_m };
+            ecef_t E = lla2ecef(L);
+            double z_enu_d[3];
+            ecef2enu(E, C->enu_ref_lla, C->enu_ref_ecef, z_enu_d);
+
+            float z_pos[3] ={
+                (float)z_enu_d[0], 
+                (float)z_enu_d[1],
+                (float)z_enu_d[2]
+            };
+
+            float hdop = (C->gnss_hdop_valid ? C->gnss_hdop : 1.0f );
+            float Rpos = R_GNSS_POS_VAR * hdop * hdop;
+
+            if( !C->gnss_valid ){
+                C->gnss_just_returned = true;
+                C->fade_in_left = FADE_IN_STEPS;
+
+            }
+            if( C->gnss_just_returned ){
+                Rpos *= FADE_IN_FACT_INIT;
+            }
+
+            float NIS_pos = 0.0f;
+            bool ok_pos = pv6_update_pos(&C->pv, z_pos, Rpos, &NIS_pos);
+            bool gate_pos = ok_pos && (NIS_pos < CHI2_3DOF_GATE);
+
+            if(gate_pos){
+                double tfix = now_sec();
+                C->last_gnss_s = tfix;
+                C->gnss_valid = true;
+                C->outage_s = 0.0f;
+                C->qscale = 1.0f;
+            }
+
+            /** Velocity Update  */
+            if (C->gnss_vel_valid){
+                float z_vel[3] = {
+                    C->gnss_vel_enu[0],
+                    C->gnss_vel_enu[1],
+                    C->gnss_vel_enu[2]
+                };
+
+                float Rv[3] = { RV_VEL_E, RV_VEL_N, RV_VEL_U };
+
+                float NIS_vel = 0.0f;
+                bool ok_vel = pv6_update_vel(&C->pv, z_vel, Rv, &NIS_vel);
+                bool gate_vel = ok_vel && (NIS_vel < CHI2_3DOF_GATE);
+
+                fprintf(stderr, "GNSS Vel upd: NIS=%.2f gate=%s vel=(%.2f, %.2f, %.2f)\n", NIS_vel, gate_vel ? "OK":"REJ", 
+                            z_vel[0], z_vel[1], z_vel[2]);
+
+            }
+            /* Yaw Fusion Complementary */
+            if( C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN && hdop <= YAW_FUSION_HDOP_MAX){
+                float yaw_est = yaw_from_q(&C->ekf.q);
+                float yaw_gnss = C->gnss_heading_rad;
+                float dpsi = wrap_pi( yaw_gnss - yaw_est );
+
+                float dpsi_corr = YAW_FUSION_ALPHA * dpsi;
+                dr_quatf_t dq = q_from_yaw_delta(dpsi_corr);
+                C->ekf.q = dr_q_normalize( dr_q_mult(C->ekf.q, dq));
+            }
+
+            /** Fade in Bookkeeping  */
+            if( C->gnss_just_returned && gate_pos ){
+                C->fade_in_left--;
+                if(C->fade_in_left <= 0){
+                    C->gnss_just_returned = false;
+                }
+            }
+            fprintf(stderr, "GNSS pos upd: NIS=%.2f gate=%s, Rpos=%.2f, HDOP=%.2f outage=%.1f qS=%.1f\n", NIS_pos, 
+                    gate_pos ? "OK":"REJ", Rpos, hdop, C->outage_s, C->qscale);
+
+            C->have_gnss = false; /*<< Consumed */
+        } else {
+            //DR - Only Logging 
+            static double t_last_log = 0;
+            double t = now_sec();
+            if( t - t_last_log > 0.5f ){
+                fprintf(stderr, "DR: outage=%.1fs qS=%.1f p=(%.1f,%.1f,%.1f) v=(%.2f, %.2f, %.2f)\n", C->outage_s, C->qscale,
+                        C->pv.p[0], C->pv.p[1], C->pv.p[2], C->pv.v[0], C->pv.v[1], C->pv.v[2]);
+                t_last_log = t;
+            }
+        }
+
+        /* ENU output (only after nav initialized )*/
+        if(C->nav_ready ) {
+            printf("%.3f, %.3f, %.3f\n", C->pv.p[0], C->pv.p[1], C->pv.p[2]);
+            fflush(stdout);
+        }
+
+        pthread_mutex_unlock( &C->mtx );
+    }
+
+    return NULL;
+}
+
+/*===================MAIN APPLICATION============================== */
+int main( void ){
+    ctx_t C;
+    memset(&C, 0, sizeof(C));
+    ekf4_init(&C.ekf);
+    pv6_init(&C.pv);
+
+    C.enu_ref_set   = false;
+    C.nav_ready     = false;
+    C.gnss_valid    = false;
+    C.gnss_just_returned = false;
+    C.fade_in_left  = 0;
+    C.outage_s      = 0.0f;
+    C.qscale        = 1.0f;
+    C.zupt_count    = 0;
+    C.gnss_hdop_valid   = false;
+    C.gnss_vel_valid    = false;
+    C.gnss_heading_valid = false;
+
+    pthread_mutex_init(&C.mtx, NULL);
+    pthread_cond_init(&C.cv, NULL);
+    C.running       = true;
+
+    pthread_t th_imu, th_gnss, th_fuse;
+    if( pthread_create(&th_imu, NULL, imu_thread, &C ) != 0 ) { perror("imu_thread"); return 1; }
+    if( pthread_create(&th_gnss, NULL, gnss_thread, &C ) != 0 ) { perror("gnss thread "); return 1; }
+    if( pthread_create(&th_fuse, NULL, fusion_thread, &C ) != 0 ){ perror("fusion thread "); return 1; }
+
+    /* Simple blocking run ( Ctrl + C to kill )*/
+    pause();
+
+    C.running=false;
+    pthread_join(th_imu, NULL);
+    pthread_join(th_gnss, NULL);
+    pthread_join(th_fuse, NULL);
+
+    pthread_mutex_destroy(&C.mtx);
+    pthread_cond_destroy(&C.cv);
+
+    return 0;
+
+}
