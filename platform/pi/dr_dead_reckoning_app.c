@@ -843,6 +843,19 @@ typedef struct {
     char log_filename[256];
     double last_log_sec;        /*< for 1 second logging */
 
+    /* Storage for raw data */
+    struct mpu6050_sampel imu_last_raw;
+    bool imu_last_valid;
+
+    double gnss_last_lat_deg;
+    double gnss_last_lon_deg;
+    double gnss_last_alt_m;
+    float gnss_last_speed_mps;
+    float gnss_last_heading_deg;
+    float gnss_last_hdop;
+    int gnss_last_fix;
+    bool gnss_last_valid;
+
     /* Latest GNSS Info */
     bool    have_gnss;
     double  gnss_lat_rad;
@@ -948,6 +961,8 @@ static void* imu_thread( void *arg ){
             pthread_mutex_lock(&C->mtx);
             C->imu_raw = s;
             C->have_imu = true;
+            C->imu_last_raw = s;
+            C->imu_last_valid = true;
             pthread_cond_signal(&C->cv);
             pthread_mutex_unlock(&C->mtx);
         } else {
@@ -1018,6 +1033,16 @@ static void* gnss_thread( void* arg){
             }
 
             C->have_gnss = true;
+
+            /* Save for Logging */
+            C->gnss_last_lat_deg    = lat_deg;
+            C->gnss_last_lon_deg    = lon_deg;
+            C->gnss_last_alt_m      = alt_m;
+            C->gnss_last_speed_mps  = C->gnss_speed_mps;
+            C->gnss_last_heading_deg = C->gnss_heading_valid ? (C->gnss_heading_rad * 180.0f/M_PI) : 0.0f;
+            C->gnss_last_hdop        = C->gnss_hdop_valid ? C->gnss_hdop : -1.0f;
+            C->gnss_last_fix        = f.have_fix ? 1 : 0;
+            C->gnss_last_valid      = true;
 
             /**< ENU Origin on First-Ever Fix */
             if( !C->enu_ref_set ){
@@ -1164,6 +1189,11 @@ static void* fusion_thread( void* arg ) {
 
         }
 
+        if( C->zupt_count >= ZUPT_COUNT_REQUIRED ){
+            pv6_update_zupt(&C->pv);
+            C->zupt_count = 0;
+        }
+
         /** Velocity Decay  */
         float v_norm = sqrtf(C->pv.v[0]*C->pv.v[0] + C->pv.v[1]*C->pv.v[1] + C->pv.v[2]*C->pv.v[2] );
         if( vnorm < VEL_EPS ) {
@@ -1173,7 +1203,7 @@ static void* fusion_thread( void* arg ) {
         }
 
         /** GNSS Fusion (pos + vel + yaw ) */
-        if( C->hav_gnss ){
+        if( C->have_gnss ){
             /** POSITION UPDATE WITH HDOP ADAPTIVE R */
             lla_t L = { C->gnss_lat_rad, C->gnss_lon_rad, C->gnss_alt_m };
             ecef_t E = lla2ecef(L);
@@ -1267,6 +1297,44 @@ static void* fusion_thread( void* arg ) {
             fflush(stdout);
         }
 
+        /**1Hz Combined Logging  */
+        double tnow_log = now_sec();
+        if( tnow_log - C->last_log_sec >= 1.0) {
+            if(C->logf && C->imu_last_valid ){
+                fprintf(C->logf, 
+                "%.3f,"
+                "%.3f,%.3f,%.3f,"
+                "%.3f,%.3f,%.3f,"
+                "%.3f,%.3f,%.3f,"
+                "%d,%d,%d",
+                "%d,%d,%d,"
+                "%d,%.7f,%.7f,%.2f,"
+                "%.3f,%.2f,%.2f,"
+                "%.3f\n",
+                tnow_log,
+                C->pv.p[0],C->pv.p[1],C->pv.p[2],
+                C->pv.v[0],C->pv.v[1],C->pv.v[2],
+                aw[0],aw[1],aw[2],
+                C->imu_last_raw.ax,
+                C->imu_last_raw.ay,
+                C->imu_last_raw.az,
+                C->imu_last_raw.gx,
+                C->imu_last_raw.gy,
+                C->imu_last_raw.gz,
+                C->gnss_last_fix,
+                C->gnss_last_lat_deg,
+                C->gnss_last_lon_deg,
+                C->gnss_last_alt_m,
+                C->gnss_last_speed_mps,
+                C->gnss_last_heading_deg,
+                C->gnss_last_hdop,
+                C->outage_s
+              );
+              fflush(C->logf);
+            }
+            C->last_log_sec = tnow_log;
+        }
+
         pthread_mutex_unlock( &C->mtx );
     }
 
@@ -1295,6 +1363,8 @@ int main( void ){
     pthread_mutex_init(&C.mtx, NULL);
     pthread_cond_init(&C.cv, NULL);
     C.running       = true;
+
+    make_log_file(&C);
 
     pthread_t th_imu, th_gnss, th_fuse;
     if( pthread_create(&th_imu, NULL, imu_thread, &C ) != 0 ) { perror("imu_thread"); return 1; }
