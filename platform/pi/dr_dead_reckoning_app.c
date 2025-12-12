@@ -102,7 +102,7 @@
 static inline uint64_t monotonic_ns( void ) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + tv.tv_nsec;   
+    return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;   
 }
 
 static inline double now_sec( void ){
@@ -801,7 +801,7 @@ static ecef_t lla2ecef(lla_t L) {
 
 static void ecef2enu( ecef_t e, lla_t ref, ecef_t e0, double out[3] ) {
     double s1 = sin(ref.lat), c1 = cos(ref.lat);
-    double s0 = sin(ref.lon), c0 = cost(ref.lon);
+    double s0 = sin(ref.lon), c0 = cos(ref.lon);
     double dx = e.x - e0.x;
     double dy = e.y - e0.y;
     double dz = e.z - e0.z;
