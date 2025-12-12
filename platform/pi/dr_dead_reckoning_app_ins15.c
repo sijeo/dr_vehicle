@@ -55,6 +55,7 @@
 #include "mpu6050_ioctl.h"
 #include "neo6m_gnss_ioctl.h"
 
+
 // ------------------------- Configuration -------------------------
 
 #define IMU_DEVICE_PATH     "/dev/mpu6050-0"
