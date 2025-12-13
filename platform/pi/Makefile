@@ -1,4 +1,4 @@
-obj-m := mpu6050_char.o
+obj-m := neo6m_gnss_serdev.o
 
 KDIR := $(HOME)/rpi_work/kernel_rpi/linux
 CROSS_COMPILE ?= arm-linux-gnueabihf-
@@ -18,8 +18,12 @@ clean:
 	$(RM) dr_app_1
 
 # Build user-space app without kernel include paths
-app: dr_app_1.c
-	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o dr_app_1 $< $(CORE_SRCS) -lm
+app: dr_dead_reckoning_app.c
+	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o dr_dead_reckoning_app $< $(CORE_SRCS) -lm -lpthread
+
+app_v2: dr_dead_reckoning_app_ins15.c
+	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o dr_dead_reckoning_app_ins15 $< $(CORE_SRCS) -lm -lpthread
+
 
 driver_test: test_app/mpu6050_lateral_streamer_v2.c
 	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o test_app/mpu6050_lateral_streamer_v2 $< $(CORE_SRCS) -lm
@@ -28,8 +32,11 @@ deploy:
 	scp *.ko sijeo@10.47.228.7:/home/sijeo/dr_vehicle/
 
 deploy_app:
-	scp dr_app_1 sijeo@10.47.228.7:/home/sijeo/dr_vehicle/
+	scp dr_dead_reckoning_app sijeo@10.47.228.7:/home/sijeo/dr_vehicle/
 
+deploy_app_2:
+	scp dr_dead_reckoning_app_ins15 sijeo@10.47.228.7:/home/sijeo/dr_vehicle/
+	
 deploy_test:
 	scp test_app/mpu6050_lateral_streamer_v2 sijeo@10.47.228.7:/home/sijeo/dr_vehicle/
 	

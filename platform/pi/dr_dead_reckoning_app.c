@@ -19,7 +19,8 @@
 
 #define _GNU_SOURCE
 #include <stdio.h>
-#include <stdlib.h>#include <math.h>
+#include <stdlib.h>
+#include <math.h>
 #include <string.h>
 #include <stdbool.h>
 #include <pthread.h>
@@ -28,7 +29,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
-
+#include <sys/ioctl.h>
 // ================Project Headers (adjust path as needed )============== //
 #include "mpu6050_ioctl.h"
 #include "neo6m_gnss_ioctl.h"
@@ -96,6 +97,10 @@
 #define YAW_FUSION_HDOP_MAX     (4.0f)  // only fuse heading when HDOP <= this
 #define YAW_FUSION_ALPHA        (0.05f) // 0..1 fraction of yaw error corrected per update
 
+#define  aWGS        6378137.0
+#define  fWGS        (1.0/298.257223563)
+#define  bWGS        (6378137.0 * (1 - fWGS))
+#define  e2          ((aWGS*aWGS - bWGS*bWGS) / (aWGS*aWGS))
 
 
 /** Time Utilities  */
@@ -140,7 +145,7 @@ static void gravity_body_from_q( const dr_quatf_t *q, float gb[3]) {
     gb[2] = gbv.z / n;
 }
 
-static ekf4_predict( ekf4_t *e, const float gyro[3], float dt ){
+static void ekf4_predict( ekf4_t *e, const float gyro[3], float dt ){
     const float q_proc = 1e-6f;
     dr_quatf_t dqdt;
     quat_deriv(&e->q, gyro, &dqdt);
@@ -170,7 +175,7 @@ static void ekf4_update_accel(ekf4_t *e, const float acc[3]) {
     float h[3];
     gravity_body_from_q(&e->q, h);
 
-    flaot y[3] = { z[0]-h[0], z[1]-h[1], z[2]-h[2] };
+    float y[3] = { z[0]-h[0], z[1]-h[1], z[2]-h[2] };
 
     /* Numerical Jacobian H(3x4) */
     float H[12];
@@ -331,7 +336,7 @@ static void mat6_mul(const float *A, const float *B, float *C) {
 }
 
 static void mat6_T(const float *A, float *AT ){
-    int r, c, k;
+    int r, c;
     for( r=0; r<6; r++ ){
         for( c=0; c<6; c++ ){
             AT[c*6 + r] = A[r*6 + c];
@@ -599,7 +604,7 @@ static bool pv6_update_vel( pv6_t *s, const float z[3], const float Rv[3], float
 /* NHC: enforce v_body, y~ 0, v_body, z ~ 0 */
 static void pv6_update_nhc(pv6_t *s, const dr_quatf_t *q){
     float R[9];
-    int i, j, k, r, c;
+    int i, k, r, c;
     dr_R_from_q(*q, R);
     float vbx = R[0]*s->v[0] + R[3]*s->v[1] + R[6]*s->v[2];
     float vby = R[1]*s->v[0] + R[4]*s->v[1] + R[7]*s->v[2];
@@ -629,7 +634,7 @@ static void pv6_update_nhc(pv6_t *s, const dr_quatf_t *q){
         for( c=0; c<6; c++ ) {
             float x=0.0f;
             for( k=0; k<6; k++ ){
-                x += H[r*6 + k] * s->[k*6 + c];
+                x += H[r*6 + k] * s->P[k*6 + c];
             }
             HP[r*6 + c] = x;
         }
@@ -725,7 +730,7 @@ static void pv6_update_zupt(pv6_t *s){
         float Kv0 = s->P[3*6 + (i+3)] / S;
         float Kv1 = s->P[4*6 + (i+3)] / S;
         float Kv2 = s->P[5*6 + (i+3)] / S;
-        flaot nu = zi - hi;
+        float nu = zi - hi;
 
         s->p[0] += Kp0*nu;
         s->p[1] += Kp1*nu;
@@ -781,12 +786,9 @@ static void calib_gyro(const struct mpu6050_sample *raw, float gyro_rad[3]) {
 /**========================LLA/ECEF/ENU helpers (WGS-84)====================== */
 
 typedef struct { double lat, lon, h;} lla_t;
-typedef struct { double x, y, z } ecef_t;
+typedef struct { double x, y, z; } ecef_t;
 
-static const double aWGS = 6378137.0;
-static const double fWGS = 1.0/298.257223563;
-static const double bWGS = 6378137.0 * (1 - fWGS);
-static const double e2 = (aWGS*aWGS - bWGS*bWGS) / (aWGS*aWGS);
+
 
 static ecef_t lla2ecef(lla_t L) {
     double s = sin(L.lat), c = cos(L.lat);
@@ -844,7 +846,7 @@ typedef struct {
     double last_log_sec;        /*< for 1 second logging */
 
     /* Storage for raw data */
-    struct mpu6050_sampel imu_last_raw;
+    struct mpu6050_sample imu_last_raw;
     bool imu_last_valid;
 
     double gnss_last_lat_deg;
@@ -981,12 +983,12 @@ static void* gnss_thread( void* arg){
     int fd = open_gnss();
     if( fd < 0 ){
         fprintf(stderr, "open_gnss failed: %d\n", fd);
-        return NULL
+        return NULL;
     }
 
     while( __atomic_load_n(&C->running, __ATOMIC_ACQUIRE)) {
         struct neo6m_gnss_fix f;
-        if( ioctl(fd, NEO6M_GNSS_IOC_FIX, &f) != 0){
+        if( ioctl(fd, NEO6M_GNSS_IOC_GET_FIX, &f) != 0){
             usleep(10000);
             continue;
         }
@@ -1005,7 +1007,7 @@ static void* gnss_thread( void* arg){
 
             /** HDOP */
             if( f.hdop_valid ) {
-                C->gnss_hdop = (float)f.hdop_x10 * 0.1f;
+                C->gnss_hdop = (float)f.hdop_x100 * 0.1f;
                 C->gnss_hdop_valid = true;
 
             }
@@ -1016,7 +1018,7 @@ static void* gnss_thread( void* arg){
 
             /* Heading / Course over ground (deg * 1e5)*/
             if (f.heading_valid && C->gnss_speed_mps > 0.5f ) {
-                float heading_deg = f.heading_deg_e5 / 1e5f;
+                float heading_deg = f.course_deg_e5 / 1e5f;
                 C->gnss_heading_rad = heading_deg * (M_PI/180.0f);
                 C->gnss_heading_valid = true;
 
@@ -1053,11 +1055,11 @@ static void* gnss_thread( void* arg){
                 };
                 C->enu_ref_ecef = lla2ecef(C->enu_ref_lla);
                 C->enu_ref_set = true;
-                fprintf(stederr, "ENU Origin set (First GNSS Fix)\n");
+                fprintf(stderr, "ENU Origin set (First GNSS Fix)\n");
             }
 
         }
-        pthread_conf_signal(&C->cv);
+        pthread_cond_signal(&C->cv);
         pthread_mutex_unlock(&C->mtx);
 
         usleep(100000); /**< ~10Hz poll (GNSS typically 1 Hz) */
@@ -1196,7 +1198,7 @@ static void* fusion_thread( void* arg ) {
 
         /** Velocity Decay  */
         float v_norm = sqrtf(C->pv.v[0]*C->pv.v[0] + C->pv.v[1]*C->pv.v[1] + C->pv.v[2]*C->pv.v[2] );
-        if( vnorm < VEL_EPS ) {
+        if( v_norm < VEL_EPS ) {
             C->pv.v[0] *= VEL_DECAY;
             C->pv.v[1] *= VEL_DECAY;
             C->pv.v[2] *= VEL_DECAY;
@@ -1306,7 +1308,7 @@ static void* fusion_thread( void* arg ) {
                 "%.3f,%.3f,%.3f,"
                 "%.3f,%.3f,%.3f,"
                 "%.3f,%.3f,%.3f,"
-                "%d,%d,%d",
+                "%d,%d,%d,"
                 "%d,%d,%d,"
                 "%d,%.7f,%.7f,%.2f,"
                 "%.3f,%.2f,%.2f,"
