@@ -38,7 +38,7 @@
 
 //==========Device Paths (adjust if needed )=======//
 #define IMU_DEVICE_PATH     "/dev/mpu6050-0"
-#define NEO6M_DEVICE_PATH   "/dev/neo6m-0"
+#define NEO6M_DEVICE_PATH   "/dev/neo6m0"
 
 //====== Constant & tuning =======//
 
@@ -988,7 +988,7 @@ static void* gnss_thread( void* arg){
 
     while( __atomic_load_n(&C->running, __ATOMIC_ACQUIRE)) {
         struct neo6m_gnss_fix f;
-        if( ioctl(fd, NEO6M_GNSS_IOC_GET_FIX, &f) != 0){
+        if( ioctl(fd, NEO6M_GNSS_IOC_GET_FIX, &f) < 0){
             usleep(10000);
             continue;
         }

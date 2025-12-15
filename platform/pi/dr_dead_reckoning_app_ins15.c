@@ -60,7 +60,7 @@
 // ------------------------- Configuration -------------------------
 
 #define IMU_DEVICE_PATH     "/dev/mpu6050-0"
-#define NEO6M_DEVICE_PATH   "/dev/neo6m-0"
+#define NEO6M_DEVICE_PATH   "/dev/neo6m0"
 
 #define IMU_HZ              100.0f
 #define DT_IMU_DEFAULT      (1.0f/IMU_HZ)
@@ -790,7 +790,7 @@ static void* gnss_thread(void *arg) {
     while (__atomic_load_n(&C->running, __ATOMIC_ACQUIRE)) {
         struct neo6m_gnss_fix f;
         int rc = get_gnss_fix_ioctl(fd, &f);
-        if (rc != 0) {
+        if (rc < 0) {
             usleep(10000);
             continue;
         }
