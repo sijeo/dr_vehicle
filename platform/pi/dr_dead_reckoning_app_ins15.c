@@ -335,7 +335,7 @@ static void ecef2enu(ecef_t e, lla_t ref, ecef_t e0, double out[3]) {
     out[1] = -slat*clon*dx - slat*slon*dy + clat*dz; /** NORTH */
     out[2] =  clat*clon*dx + clat*slon*dy + slat*dz; /** UP */
 }
-
+#if 0
 /** Convert ENU to LLA for debugging  */
 static void enu2lla( vec3f enu, lla_t ref_lla, ecef_t ref_ecef, double *lat, double *lon, double *alt){
     double sin_lat = sin(ref_lla.lat);
@@ -364,6 +364,7 @@ static void enu2lla( vec3f enu, lla_t ref_lla, ecef_t ref_ecef, double *lat, dou
     double N = aWGS / sqrt(1.0f - e2*sin_lat2*sin_lat2);
     *alt = p / cos(*lat) - N;
 }
+#endif 
 
 // ------------------------- Calibration (from your current app) -------------------------
 // (Keep your LSQ accel matrix + offset; and gyro bias in raw counts.)
@@ -478,7 +479,7 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
 
     // Attitude integration (small-angle)
     vec3f w_dt = v3_scale(w, dt);
-    quatf dq = q_from_small_angle(v3_scale(w, dt));
+    quatf dq = q_from_small_angle(w_dt);
     S->q = q_normalize(q_mul(S->q, dq));
 
     // Rotate specific force to ENU and subtract gravity
