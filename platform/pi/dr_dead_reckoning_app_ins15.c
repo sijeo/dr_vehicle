@@ -72,6 +72,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 #define DEG2RAD ( (float)M_PI / 180.0f )
+#define RAD2DEG ( 180.0f/(float)M_PI )
 
 // If your neo6m_gnss_fix was extended with HDOP + heading/course fields, enable these.
 #ifndef HAVE_GNSS_HDOP
@@ -93,7 +94,8 @@
 
 // Mild velocity decay (helps bound drift when filter is "almost stopped")
 #define VEL_DECAY           0.98f
-#define VEL_EPS             1e-3f
+#define VEL_EPS             0.01f
+#define MAX_VELOCITY        50.0f   //m/s
 
 // Outage-tiered Q inflation
 #define TIER_A  2.0f
@@ -134,6 +136,20 @@
 #define bWGS       (6378137.0 * (1 - fWGS))
 #define e2         ((aWGS*aWGS - bWGS*bWGS) / (aWGS*aWGS))
 
+
+typedef struct {
+    // Nominal
+    vec3f p;     // ENU (m)
+    vec3f v;     // ENU (m/s)
+    quatf q;     // body->ENU
+
+    // Bias estimates (nominal)
+    vec3f ba;    // accel bias (m/s^2)
+    vec3f bg;    // gyro bias (rad/s)
+
+    // Error-state covariance (15x15)
+    float P[15*15];
+} ins15_t;
 // ------------------------- Small math utils -------------------------
 
 static inline uint64_t monotonic_ns(void) {
@@ -158,21 +174,20 @@ typedef struct { float w, x, y, z; } quatf;
 typedef struct { float x, y, z; } vec3f;
 
 static inline vec3f v3(float x, float y, float z) { return (vec3f){x,y,z}; }
-
 static inline float v3_norm(vec3f a) { return sqrtf(a.x*a.x + a.y*a.y + a.z*a.z); }
-
 static inline vec3f v3_add(vec3f a, vec3f b) { return v3(a.x+b.x, a.y+b.y, a.z+b.z); }
 static inline vec3f v3_sub(vec3f a, vec3f b) { return v3(a.x-b.x, a.y-b.y, a.z-b.z); }
 static inline vec3f v3_scale(vec3f a, float s) { return v3(a.x*s, a.y*s, a.z*s); }
-
 static inline vec3f v3_cross(vec3f a, vec3f b) {
     return v3(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x);
 }
-
 static inline float v3_dot(vec3f a, vec3f b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
+static inline vec3f v3_normalize(vec3f a ){
+    float n = v3_norm(a);
+    return (n > 1e-12f) ? v3_scale(a, 1.0f/n) : a;
+}
 
 static inline quatf q_identity(void) { return (quatf){1,0,0,0}; }
-
 static inline quatf q_normalize(quatf q) {
     float n = sqrtf(q.w*q.w + q.x*q.x + q.y*q.y + q.z*q.z);
     if (n <= 0) return q_identity();
@@ -194,6 +209,17 @@ static inline quatf q_from_small_angle(vec3f dtheta) {
     return q_normalize((quatf){1.0f, 0.5f*dtheta.x, 0.5f*dtheta.y, 0.5f*dtheta.z});
 }
 
+static inline quatf q_from_ yaw_pitch_roll( float yaw, float pitch, float roll ){
+    float cy = cosf(yaw * 0.5f);
+    float sy = sinf(yaw * 0.5f);
+    float cp = cosf(pitch * 0.5f);
+    float sp = sinf(pitch * 0.5f);
+    float cr = cosf(roll * 0.5f);
+    float sr = sinf(roll * 0.5f);
+
+    return (quatf){cr*cp*cy + sr*sp*sy, sr*cp*cy - cr*sp*sy, cr*sp*cy + sr*cp*sy, cr*cp*sy - sr*sp*cy };
+}
+
 static inline void R_from_q(quatf q, float R[9]) {
     // ENU: columns are body axes in world? Here: R maps body->world: v_w = R * v_b
     q = q_normalize(q);
@@ -203,8 +229,13 @@ static inline void R_from_q(quatf q, float R[9]) {
     R[6] = 2*(x*z - w*y);      R[7] = 2*(y*z + w*x);      R[8] = 1 - 2*(x*x + y*y);
 }
 
+static inline quatf q_from_yaw(float yaw ) {
+    return q_normalize((quatf){cosf(yaw/2), 0, 0, sinf(yaw/2)});
+}
+
 static inline float yaw_from_q(quatf q) {
     // yaw about +Z in ENU
+    q = q_normalize(q);
     float siny_cosp = 2.0f * (q.w*q.z + q.x*q.y);
     float cosy_cosp = 1.0f - 2.0f * (q.y*q.y + q.z*q.z);
     return atan2f(siny_cosp, cosy_cosp);
@@ -212,7 +243,43 @@ static inline float yaw_from_q(quatf q) {
 
 static inline quatf q_from_yaw_delta(float dpsi) {
     float half = 0.5f*dpsi;
-    return (quatf){cosf(half), 0.0f, 0.0f, sinf(half)};
+    return q_normalize((quatf){cosf(half), 0.0f, 0.0f, sinf(half)});
+}
+
+static inline quatf q_nlerp(quatf a, quatf b, float dt ){
+    /* Normalized linear interpolation (adequate for small t )*/
+    quatf q = (quatf){
+        a.w + dt*(b.w - a.w),
+        a.x + dt*(b.x - a.x),
+        a.y + dt*(b.y - a.y),
+        a.z + dt*(b.z - a.z), 
+    };
+    return q_normalize(q);
+}
+
+static void ins15_tilt_correction(ins15_t *s vec3f acc_meas_b, vec3f gyro_meas_b, float alpha) {
+/* User accelerometer to stabilize roll/pitch when dynamics are low */
+/* Keeps current yaw (no magnetometer ), only corrects tilt */
+float an = v3_norm(acc_meas_b);
+float wn = v3_norm(gyro_meas_b);
+if( an < 1e-3f ) return;
+
+bool low_dyn = (fabs(an - GRAVITY) < 0.35f) &&(wn < 0.35f);
+if( !low_dyn ) return ;
+
+/* Accel-based tilt (body frame: x forward, y right, z down/up depending on the mount )
+* This formula assumez +Z points up  in the body after mounting matrizx. if +Z is down flip az.
+*/
+float ax = acc_meas_b.x, ay = acc_meas_b.y, az = acc_meas_b.z;
+/* Derive roll/pitch that make body-Z align with gravity direction */
+float roll = atan2f(ay, az);
+float pitch = atan2f(-ax, sqrtf(ay*ay + az*az) + 1e-6f);
+
+float yaw = yaw_from_q(s->q);
+quatf q_tilt = q_from_yaw_pitch_roll(yaw, pitch, roll);
+
+/* small blend toward accel tilt */
+s->q = q_nlerp(s->q, q_tilt, clampf(alpha, 0.0f, 0.2f));
 }
 
 static bool mat3_inv(const float A[9], float invA[9]) {
@@ -237,6 +304,7 @@ static bool mat3_inv(const float A[9], float invA[9]) {
     return true;
 }
 
+
 // ------------------------- WGS84 helpers (LLA/ECEF/ENU) -------------------------
 
 typedef struct { double lat, lon, h; } lla_t;
@@ -255,15 +323,44 @@ static ecef_t lla2ecef(lla_t L) {
 }
 
 static void ecef2enu(ecef_t e, lla_t ref, ecef_t e0, double out[3]) {
-    double s1 = sin(ref.lat), c1 = cos(ref.lat);
-    double s0 = sin(ref.lon), c0 = cos(ref.lon);
+    double slat = sin(ref.lat), clat = cos(ref.lat);
+    double slon = sin(ref.lon), clon = cos(ref.lon);
     double dx = e.x - e0.x;
     double dy = e.y - e0.y;
     double dz = e.z - e0.z;
 
-    out[0] = -s0*dx + c0*dy;
-    out[1] = -c1*c0*dx - c1*s0*dy + s1*dz;
-    out[2] =  s1*c0*dx + s1*s0*dy + c1*dz;
+    out[0] = -slon*dx + clon*dy;   /**< East */
+    out[1] = -slat*clon*dx - slat*slon*dy + clat*dz; /** NORTH */
+    out[2] =  clat*clon*dx + clat*slon*dy + slat*dz; /** UP */
+}
+
+/** Convert ENU to LLA for debugging  */
+static void enu2lla( vec3f enu, lla_t ref_lla, ecef_t ref_ecef, double *lat, double *lon, double *alt){
+    double sin_lat = sin(ref_lla.lat);
+    double cos_lat = cos(ref_lla.lat);
+    double sin_lon = sin(ref_lla.lon);
+    double cos_lon = cos(ref_lla.lon);
+
+    /* ENU to ECEF offset */
+    double dx = -sin_lon*enu.x - cos_lon*sin_lat*enu.y + cos_lon*cos_lat*enu.z;
+    double dy = cos_lon*enu.x - sin_lon*sin_lat*enu.y + sin_lon*cos_lat*enu.z;
+    double dz = cos_lat*enu.y + sin_lat*enu.z;
+
+    /** Add to reference ECEF */
+    ecef_t e = { ref_ecef.x + dx, ref_ecef.y + dy, ref_ecef.z + dz };
+
+    /** Convert back to LLA */
+    double p = sqrt(e.x*e.x + e.y*e.y);
+    double theta = atan2(e.z * aWGS, p * bWGS);
+    double sin_theta = sin(theta);
+    double cos_theta = cos(theta);
+
+    *lat = atan2(e.z + e2 * bWGS * sin_theta*sin_theta*sin_theta, p - e2 * aWGS * cos_theta*cos_theta*cos_theta);
+    *lon = atan2(e.y, e.x);
+
+    double sin_lat2 = sin(*lat);
+    double N = aWGS / sqrt(1.0f - e2*sin_lat2*sin_lat2);
+    *alt = p / cos(*lat) - N;
 }
 
 // ------------------------- Calibration (from your current app) -------------------------
@@ -280,11 +377,23 @@ static const float ACCEL_O[3] = { -0.1329121010477303f, -0.047222673271787766f, 
 // Gyro bias in raw counts (constant here; can be learned slowly in future)
 static const float GYRO_B[3] = { 153.461f, 69.446f, 992.782f };
 
+static const float MOUNT_MATRIX[9] = {
+    1.0f, 0.0f, 0.0f,
+    0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 1.0f,
+};
+
 static void calib_accel(const struct mpu6050_sample *raw, vec3f *acc_mps2) {
     float a0 = (float)raw->ax, a1 = (float)raw->ay, a2 = (float)raw->az;
-    acc_mps2->x = ACCEL_C[0][0]*a0 + ACCEL_C[0][1]*a1 + ACCEL_C[0][2]*a2 + ACCEL_O[0];
-    acc_mps2->y = ACCEL_C[1][0]*a0 + ACCEL_C[1][1]*a1 + ACCEL_C[1][2]*a2 + ACCEL_O[1];
-    acc_mps2->z = ACCEL_C[2][0]*a0 + ACCEL_C[2][1]*a1 + ACCEL_C[2][2]*a2 + ACCEL_O[2];
+    float x = ACCEL_C[0][0]*a0 + ACCEL_C[0][1]*a1 + ACCEL_C[0][2]*a2 + ACCEL_O[0];
+    float y = ACCEL_C[1][0]*a0 + ACCEL_C[1][1]*a1 + ACCEL_C[1][2]*a2 + ACCEL_O[1];
+    float z = ACCEL_C[2][0]*a0 + ACCEL_C[2][1]*a1 + ACCEL_C[2][2]*a2 + ACCEL_O[2];
+
+    *acc_mps2 = v3(
+        MOUNT_MATRIX[0]*x + MOUNT_MATRIX[1]*y + MOUNT_MATRIX[2]*z,
+        MOUNT_MATRIX[3]*x + MOUNT_MATRIX[4]*y + MOUNT_MATRIX[5]*z,
+        MOUNT_MATRIX[6]*x + MOUNT_MATRIX[7]*y + MOUNT_MATRIX[8]*z
+    );
 }
 
 static void calib_gyro(const struct mpu6050_sample *raw, vec3f *gyro_radps) {
@@ -294,26 +403,21 @@ static void calib_gyro(const struct mpu6050_sample *raw, vec3f *gyro_radps) {
     float dps0 = g0 / GYRO_LSB_PER_DPS;
     float dps1 = g1 / GYRO_LSB_PER_DPS;
     float dps2 = g2 / GYRO_LSB_PER_DPS;
-    gyro_radps->x = dps0 * DEG2RAD;
-    gyro_radps->y = dps1 * DEG2RAD;
-    gyro_radps->z = dps2 * DEG2RAD;
+    float x = dps0 * DEG2RAD;
+    float y = dps1 * DEG2RAD;
+    float z = dps2 * DEG2RAD;
+
+    /* Apply Mounting alignment */
+    *gyro_radps = v3(
+        MOUNT_MATRIX[0]*x + MOUNT_MATRIX[1]*y + MOUNT_MATRIX[2]*z,
+        MOUNT_MATRIX[3]*x + MOUNT_MATRIX[4]*y + MOUNT_MATRIX[5]*z,
+        MOUNT_MATRIX[6]*x + MOUNT_MATRIX[7]*y + MOUNT_MATRIX[8]*z
+    );
 }
 
 // ------------------------- 15-state INS EKF -------------------------
 
-typedef struct {
-    // Nominal
-    vec3f p;     // ENU (m)
-    vec3f v;     // ENU (m/s)
-    quatf q;     // body->ENU
 
-    // Bias estimates (nominal)
-    vec3f ba;    // accel bias (m/s^2)
-    vec3f bg;    // gyro bias (rad/s)
-
-    // Error-state covariance (15x15)
-    float P[15*15];
-} ins15_t;
 
 static void ins15_init(ins15_t *S) {
     int i;
@@ -321,18 +425,18 @@ static void ins15_init(ins15_t *S) {
     S->q = q_identity();
 
     // Conservative initial covariance (tune)
-    const float p0 = 5.0f;          // m
+    const float p0 = 25.0f;          // m
     const float v0 = 1.0f;          // m/s
-    const float th0 = 5.0f*DEG2RAD; // rad
-    const float ba0 = 0.5f;         // m/s^2
-    const float bg0 = 0.01f;        // rad/s
+    const float th0 = powf(10.0f*DEG2RAD, 2); // rad
+    const float ba0 = 0.25f;         // m/s^2
+    const float bg0 = powf(0.01f*DEG2RAD, 2);        // rad/s
 
-    for (i=0;i<15;i++) S->P[i*15+i] = 1e-6f;
-    for (i=0;i<3;i++) S->P[(0+i)*15 + (0+i)] = p0*p0;
-    for (i=0;i<3;i++) S->P[(3+i)*15 + (3+i)] = v0*v0;
-    for (i=0;i<3;i++) S->P[(6+i)*15 + (6+i)] = th0*th0;
-    for (i=0;i<3;i++) S->P[(9+i)*15 + (9+i)] = ba0*ba0;
-    for (i=0;i<3;i++) S->P[(12+i)*15 + (12+i)] = bg0*bg0;
+    for (i=0;i<15;i++) S->P[i*15+i] = 1e-6f;   /* Small but non zero */
+    for (i=0;i<3;i++) S->P[(0+i)*15 + (0+i)] = p0;
+    for (i=0;i<3;i++) S->P[(3+i)*15 + (3+i)] = v0;
+    for (i=0;i<3;i++) S->P[(6+i)*15 + (6+i)] = th0;
+    for (i=0;i<3;i++) S->P[(9+i)*15 + (9+i)] = ba0;
+    for (i=0;i<3;i++) S->P[(12+i)*15 + (12+i)] = bg0;
 }
 
 static inline float compute_qscale(double outage_s) {
@@ -371,6 +475,7 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
     if (near_still && fabsf(w.z) < YAW_DEADBAND_RAD) w.z = 0.0f;
 
     // Attitude integration (small-angle)
+    vec3f w_dt = v3_scale(w, dt);
     quatf dq = q_from_small_angle(v3_scale(w, dt));
     S->q = q_normalize(q_mul(S->q, dq));
 
@@ -384,8 +489,16 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
     vec3f a_enu = v3(f_enu.x, f_enu.y, f_enu.z - GRAVITY);
 
     // Kinematics
-    S->p = v3_add(S->p, v3_add(v3_scale(S->v, dt), v3_scale(a_enu, 0.5f*dt*dt)));
+   
     S->v = v3_add(S->v, v3_scale(a_enu, dt));
+
+    /* Limit Velocity during outages */
+    float v_norm = v3_norm(S->v);
+    if( v_norm > MAX_VELOCITY ){
+        S->v = v3_scale(S->v, MAX_VELOCITY/v_norm);
+    }
+
+     S->p = v3_add(S->p, v3_scale(S->v, dt));
 
     if (out_aw) *out_aw = a_enu;
 
@@ -403,7 +516,7 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
     float skew_f[9] = { 0, -fz,  fy,
                         fz,  0, -fx,
                        -fy, fx,  0 };
-    float A[9]; // -R * skew(f)
+    float A[9] = {0}; // -R * skew(f)
     
     for (r=0;r<3;r++) for (c=0;c<3;c++) {
         float s=0;
@@ -431,10 +544,10 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
 
     // Process noise (continuous densities, scaled during outages)
     // Tune these to your IMU
-    const float sigma_a = 0.50f;     // m/s^2
-    const float sigma_g = 0.010f;    // rad/s
-    const float sigma_ba = 0.010f;   // m/s^2/sqrt(s)
-    const float sigma_bg = 0.005f;   // rad/s/sqrt(s)
+    const float sigma_a = 0.05f;     // m/s^2
+    const float sigma_g = 0.001f;    // rad/s
+    const float sigma_ba = 0.001f;   // m/s^2/sqrt(s)
+    const float sigma_bg = 0.0001f;   // rad/s/sqrt(s)
 
     float sa2 = (sigma_a*sigma_a) * q_scale;
     float sg2 = (sigma_g*sigma_g) * q_scale;
@@ -468,7 +581,8 @@ static void ins15_inject(ins15_t *S, const float dx[15]) {
     S->v.x += dx[3];  S->v.y += dx[4];  S->v.z += dx[5];
 
     vec3f dth = v3(dx[6], dx[7], dx[8]);
-    S->q = q_normalize(q_mul(S->q, q_from_small_angle(dth)));
+    quatf dq = q_from_small_angle(dth);
+    S->q = q_normalize(q_mul(dq, S->q));
 
     S->ba.x += dx[9];  S->ba.y += dx[10]; S->ba.z += dx[11];
     S->bg.x += dx[12]; S->bg.y += dx[13]; S->bg.z += dx[14];
@@ -652,6 +766,7 @@ typedef struct {
     double gnss_lat_rad;
     double gnss_lon_rad;
     double gnss_alt_m;
+    uint64_t gnss_fix_ns;   /*<< Monotonic timestamp from driver when fix parsed.*/
     float gnss_speed_mps;
 
     // optional heading/HDOP
@@ -691,6 +806,8 @@ typedef struct {
 
     // ZUPT
     int zupt_count;
+    float acc_variance;
+    float gyro_variance;
 
     // NIS for logging/diagnostics
     float last_nis_pos;
@@ -741,7 +858,7 @@ static void make_log_file(ctx_t *C) {
         "bg_x,bg_y,bg_z,"
         "imu_ax,imu_ay,imu_az,imu_gx,imu_gy,imu_gz,"
         "gnss_fix,lat_deg,lon_deg,alt_m,speed_mps,heading_deg,hdop,"
-        "gnss_valid,outage_s,qscale,nis_pos,nis_vel\n"
+        "gnss_valid,outage_s,qscale,nis_pos,nis_vel,acc_var,gyro_var,zupt_count\n"
     );
     fflush(C->logf);
 
@@ -808,6 +925,7 @@ static void* gnss_thread(void *arg) {
             C->gnss_lat_rad = lat_deg * (M_PI/180.0);
             C->gnss_lon_rad = lon_deg * (M_PI/180.0);
             C->gnss_alt_m   = alt_m;
+            C->gnss_fix_ns = (uint64_t)f.monotonic_ns;
             C->gnss_speed_mps = (float)f.speed_mmps / 1000.0f;
 
 #if HAVE_GNSS_HDOP
@@ -815,7 +933,7 @@ static void* gnss_thread(void *arg) {
             //   f.hdop_valid (bool-like), f.hdop_x10 (uint16/uint8)
             // If not present, set HAVE_GNSS_HDOP=0.
             if (f.hdop_valid) {
-                C->gnss_hdop = (float)f.hdop_x100 * 0.1f;
+                C->gnss_hdop = (float)f.hdop_x100 / 100.0f;
                 C->gnss_hdop_valid = true;
             } else {
                 C->gnss_hdop_valid = false;
@@ -854,7 +972,7 @@ static void* gnss_thread(void *arg) {
             C->gnss_last_alt_m = alt_m;
             C->gnss_last_speed_mps = C->gnss_speed_mps;
             C->gnss_last_fix = 1;
-            C->gnss_last_heading_deg = C->gnss_heading_valid ? (C->gnss_heading_rad / DEG2RAD) : 0.0f;
+            C->gnss_last_heading_deg = C->gnss_heading_valid ? (C->gnss_heading_rad * RAD2DEG) : 0.0f;
             C->gnss_last_hdop = C->gnss_hdop_valid ? C->gnss_hdop : -1.0f;
             C->gnss_last_valid = true;
 
@@ -886,6 +1004,7 @@ static void* gnss_thread(void *arg) {
 static void* fusion_thread(void *arg) {
     ctx_t *C = (ctx_t*)arg;
     uint64_t last_tick_ns = monotonic_ns();
+    uint64_t imu_count = 0;
 
     while (__atomic_load_n(&C->running, __ATOMIC_ACQUIRE)) {
         pthread_mutex_lock(&C->mtx);
@@ -893,7 +1012,7 @@ static void* fusion_thread(void *arg) {
         // Wait for IMU sample (or timeout)
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_nsec += 5*1000*1000;
+        ts.tv_nsec += 10*1000*1000;   /**< 10ms timeout  */
         if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
         (void)pthread_cond_timedwait(&C->cv, &C->mtx, &ts);
 
@@ -901,6 +1020,7 @@ static void* fusion_thread(void *arg) {
         float dt = (float)((now_ns - last_tick_ns) * 1e-9);
         if (dt <= 0.0f || dt > 1.0f) dt = DT_IMU_DEFAULT;
         last_tick_ns = now_ns;
+        imu_count++;
 
         if (!C->have_imu) {
             pthread_mutex_unlock(&C->mtx);
@@ -914,6 +1034,11 @@ static void* fusion_thread(void *arg) {
 
         float acc_norm = v3_norm(acc_b);
 
+        /* Update Variance for ZUPT detection */
+        C->acc_variance = 0.95f * C->acc_variance + 0.05f * powf(acc_norm - GRAVITY, 2);
+        float gyro_norm = v3_norm(gyro_b);
+        C->gyro_variance = 0.95f * C->gyro_variance + 0.05f * powf(gyro_norm, 2);
+
         // Initialize nav on first GNSS fix (wait until ENU origin set AND have current GNSS fix)
         if (!C->nav_ready) {
             if (C->enu_ref_set && C->have_gnss && C->gnss_have_fix) {
@@ -925,7 +1050,12 @@ static void* fusion_thread(void *arg) {
                 ins15_init(&C->ins);
                 C->ins.p = v3((float)enu_d[0], (float)enu_d[1], (float)enu_d[2]);
                 C->ins.v = v3(0,0,0);
-                C->ins.q = q_identity();
+                //Initialize attitude from GNSS heading if available
+                if(C->gnss_heading_valid) {
+                    C->ins.q = q_from_yaw(C->gnss_heading_rad);
+                } else {
+                    C->ins.q = q_identity();  /*<< Assume Level and north facing */
+                }
 
                 // Start biases at 0 (since you already calibrated raw -> SI).
                 C->ins.ba = v3(0,0,0);
@@ -967,11 +1097,16 @@ static void* fusion_thread(void *arg) {
         // Predict INS
         ins15_predict(&C->ins, acc_b, gyro_b, dt, C->qscale, &C->last_aw);
 
+        // Roll/Pitch stabilization using accelerometer when dynamics are low
+        ins15_tilt_correction(&C->ins, acc_b, gyro_b, 0.02f);
+
         // Apply constraints every IMU step
         ins15_update_nhc(&C->ins);
 
         // ZUPT detection
         bool zupt_cond =
+            (C->acc_variance < 0.1f) &&
+            (C->gyro_variance < 0.01f) &&
             (fabsf(acc_norm - GRAVITY) < ZUPT_ACC_THR) &&
             (fabsf(gyro_b.x) < ZUPT_GYRO_THR) &&
             (fabsf(gyro_b.y) < ZUPT_GYRO_THR) &&
@@ -999,6 +1134,21 @@ static void* fusion_thread(void *arg) {
             ecef2enu(E, C->enu_ref_lla, C->enu_ref_ecef, enu_d);
             vec3f zpos = v3((float)enu_d[0], (float)enu_d[1], (float)enu_d[2]);
 
+            /**
+             * Time align  GNSSS to "now" using speed/course and monotonic timestamps (no replay buffer)
+             * If GNSS fix was parsed earlier than now, forward-extrapolate the position by dt_lat
+             */
+            uint64_t now_ns = monotonic_ns();
+            if(C->gnss_fix_ns != 0 && now_ns > C->gnss_fix_ns && C->gnss_vel_valid ){
+                float dt_lat = (float)((double) (now_ns - C->gnss_fix_ns) * 1e-9);
+                dt_lat = clampf(dt_lat, 0.0f, 1.5f);
+                zpos.x += C->gnss_vel_enu.x * dt_lat;
+                zpos.y += C->gnss_vel_enu.y * dt_lat;
+                // Inflate Rpos with latency induced uncertainity
+                float lat_sig = C->gnss_speed_mps *dt_lat * 0.7f /*<< 0.7 typical along track uncertainity */
+                Rpos += lat_sig * lat_sig;
+            }
+
             float hdop = (C->gnss_hdop_valid ? C->gnss_hdop : 1.0f);
             float Rpos = R_GNSS_POS_VAR * hdop * hdop;
 
@@ -1006,7 +1156,7 @@ static void* fusion_thread(void *arg) {
                 C->gnss_just_returned = true;
                 C->fade_in_left = FADE_IN_STEPS;
             }
-            if (C->gnss_just_returned) Rpos *= FADE_IN_FACT_INIT;
+            if (C->gnss_just_returned) Rpos *= FADE_IN_FACT_INIT * (1.0f - (float)C->fade_in_left / FADE_IN_STEPS );
 
             float nis_pos = 0.0f;
             bool ok_pos = ins15_update_gnss_pos(&C->ins, zpos, Rpos, &nis_pos);
@@ -1014,10 +1164,14 @@ static void* fusion_thread(void *arg) {
             C->last_nis_pos = nis_pos;
 
             if (gate_pos) {
-                C->last_gnss_s = now_sec();
+                C->last_gnss_s = tnow;
                 C->gnss_valid = true;
                 C->outage_s = 0.0;
                 C->qscale = 1.0f;
+
+                if (imu_count % 100 == 0 ){
+                    fprintf(stderr, "GNSS: NIS=%.2f, pos=(%.1f, %.1f, %.1f), hdop=%.1f\n", nis_pos, zpos.x, zpos.y, zpos.z, hdop);
+                }
             } else {
                 // reject -> do not mark gnss_valid true
             }
@@ -1027,9 +1181,9 @@ static void* fusion_thread(void *arg) {
                 float Rv[3] = { RV_VEL_E, RV_VEL_N, RV_VEL_U };
                 float nis_vel = 0.0f;
                 bool ok_vel = ins15_update_gnss_vel(&C->ins, C->gnss_vel_enu, Rv, &nis_vel);
-                bool gate_vel = ok_vel && (nis_vel < CHI2_3DOF_GATE);
+                //bool gate_vel = ok_vel && (nis_vel < CHI2_3DOF_GATE);
                 C->last_nis_vel = nis_vel;
-                (void)gate_vel;
+                (void)ok_vel;
             } else {
                 C->last_nis_vel = 0.0f;
             }
@@ -1057,14 +1211,11 @@ static void* fusion_thread(void *arg) {
             C->have_gnss = false; // consumed
         } else {
             // Dead-reckoning status prints at ~2 Hz
-            static double t_last = 0.0;
-            double t = now_sec();
-            if (t - t_last > 0.5) {
+            if (imu_count % 50 == 0) {
                 fprintf(stderr, "DR: outage=%.1fs qS=%.1f p=(%.1f,%.1f,%.1f) v=(%.2f,%.2f,%.2f)\n",
                         C->outage_s, C->qscale,
                         C->ins.p.x, C->ins.p.y, C->ins.p.z,
                         C->ins.v.x, C->ins.v.y, C->ins.v.z);
-                t_last = t;
             }
         }
 
@@ -1087,7 +1238,7 @@ static void* fusion_thread(void *arg) {
                     "%.6f,%.6f,%.6f,"
                     "%d,%d,%d,%d,%d,%d,"
                     "%d,%.7f,%.7f,%.2f,%.3f,%.2f,%.2f,"
-                    "%d,%.3f,%.2f,%.2f,%.2f\n",
+                    "%d,%.3f,%.2f,%.2f,%.2f,%.6f,%.6f,%d\n",
                     tlog,
                     C->ins.p.x, C->ins.p.y, C->ins.p.z,
                     C->ins.v.x, C->ins.v.y, C->ins.v.z,
@@ -1104,7 +1255,10 @@ static void* fusion_thread(void *arg) {
                     C->gnss_last_hdop,
                     C->gnss_valid ? 1 : 0,
                     C->outage_s, C->qscale,
-                    C->last_nis_pos, C->last_nis_vel
+                    C->last_nis_pos, C->last_nis_vel,
+                    C->acc_variance, C->gyro_variance,
+                    C->zupt_count
+
                 );
                 fflush(C->logf);
             }
@@ -1142,6 +1296,8 @@ int main(void) {
     C.outage_s = 0.0;
     C.qscale = 1.0f;
     C.zupt_count = 0;
+    C.acc_variance = 1.0f;
+    C.gyro_variance = 1.0f;
     C.last_nis_pos = 0.0f;
     C.last_nis_vel = 0.0f;
     C.last_aw = v3(0,0,0);
