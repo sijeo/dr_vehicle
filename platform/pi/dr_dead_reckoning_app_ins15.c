@@ -137,19 +137,7 @@
 #define e2         ((aWGS*aWGS - bWGS*bWGS) / (aWGS*aWGS))
 
 
-typedef struct {
-    // Nominal
-    vec3f p;     // ENU (m)
-    vec3f v;     // ENU (m/s)
-    quatf q;     // body->ENU
 
-    // Bias estimates (nominal)
-    vec3f ba;    // accel bias (m/s^2)
-    vec3f bg;    // gyro bias (rad/s)
-
-    // Error-state covariance (15x15)
-    float P[15*15];
-} ins15_t;
 // ------------------------- Small math utils -------------------------
 
 static inline uint64_t monotonic_ns(void) {
@@ -172,6 +160,20 @@ static inline float wrap_pi(float a) {
 
 typedef struct { float w, x, y, z; } quatf;
 typedef struct { float x, y, z; } vec3f;
+
+typedef struct {
+    // Nominal
+    vec3f p;     // ENU (m)
+    vec3f v;     // ENU (m/s)
+    quatf q;     // body->ENU
+
+    // Bias estimates (nominal)
+    vec3f ba;    // accel bias (m/s^2)
+    vec3f bg;    // gyro bias (rad/s)
+
+    // Error-state covariance (15x15)
+    float P[15*15];
+} ins15_t;
 
 static inline vec3f v3(float x, float y, float z) { return (vec3f){x,y,z}; }
 static inline float v3_norm(vec3f a) { return sqrtf(a.x*a.x + a.y*a.y + a.z*a.z); }
@@ -209,7 +211,7 @@ static inline quatf q_from_small_angle(vec3f dtheta) {
     return q_normalize((quatf){1.0f, 0.5f*dtheta.x, 0.5f*dtheta.y, 0.5f*dtheta.z});
 }
 
-static inline quatf q_from_ yaw_pitch_roll( float yaw, float pitch, float roll ){
+static inline quatf q_from_yaw_pitch_roll( float yaw, float pitch, float roll ){
     float cy = cosf(yaw * 0.5f);
     float sy = sinf(yaw * 0.5f);
     float cp = cosf(pitch * 0.5f);
@@ -257,7 +259,7 @@ static inline quatf q_nlerp(quatf a, quatf b, float dt ){
     return q_normalize(q);
 }
 
-static void ins15_tilt_correction(ins15_t *s vec3f acc_meas_b, vec3f gyro_meas_b, float alpha) {
+static void ins15_tilt_correction(ins15_t *s ,vec3f acc_meas_b, vec3f gyro_meas_b, float alpha) {
 /* User accelerometer to stabilize roll/pitch when dynamics are low */
 /* Keeps current yaw (no magnetometer ), only corrects tilt */
 float an = v3_norm(acc_meas_b);
@@ -1139,18 +1141,20 @@ static void* fusion_thread(void *arg) {
              * If GNSS fix was parsed earlier than now, forward-extrapolate the position by dt_lat
              */
             uint64_t now_ns = monotonic_ns();
+            float hdop = (C->gnss_hdop_valid ? C->gnss_hdop : 1.0f);
+            float Rpos = R_GNSS_POS_VAR * hdop * hdop;
             if(C->gnss_fix_ns != 0 && now_ns > C->gnss_fix_ns && C->gnss_vel_valid ){
                 float dt_lat = (float)((double) (now_ns - C->gnss_fix_ns) * 1e-9);
                 dt_lat = clampf(dt_lat, 0.0f, 1.5f);
                 zpos.x += C->gnss_vel_enu.x * dt_lat;
                 zpos.y += C->gnss_vel_enu.y * dt_lat;
                 // Inflate Rpos with latency induced uncertainity
-                float lat_sig = C->gnss_speed_mps *dt_lat * 0.7f /*<< 0.7 typical along track uncertainity */
+                float lat_sig = C->gnss_speed_mps *dt_lat * 0.7f;/*<< 0.7 typical along track uncertainity */
                 Rpos += lat_sig * lat_sig;
             }
 
-            float hdop = (C->gnss_hdop_valid ? C->gnss_hdop : 1.0f);
-            float Rpos = R_GNSS_POS_VAR * hdop * hdop;
+            
+            
 
             if (!C->gnss_valid) {
                 C->gnss_just_returned = true;
