@@ -113,16 +113,19 @@
 #define FADE_IN_STEPS       3
 
 //GNSS reacquisition helpers(after long outage, avoid "reject forever ")
-#define REACQ_TRIGGER_S     10.0f       // Start reacq mode if outage longer than this
+#define REACQ_START_S     10.0f       // Start reacq mode if outage longer than this
 #define REACQ_STEPS         8           // Number of GNSS epochs to keep reacq mode.
 #define CHI2_3DOF_REACQ     100.0f      // Looser NIS gate during reacq
-#define REACQ_RPOS_MULT     25.0f       // Inflate Rpos during reacq (be conservative.)
+#define REACQ_R_MULT     25.0f       // Inflate Rpos during reacq (be conservative.)
+#define REACQ_GATE_MULT     4.0f
 
 // Optional snap-to-GNSSS after very long outages (prevents permanent divergence )
 #define SNAP_OUTAGE_S       60.0f       // Only consider snap if outage longer than this
 #define SNAP_NIS_MIN        500.0f      // Snap if residual is huge (and reacq can't recover)
 #define SNAP_POS_VAR        25.0f       // Position covariance after snap (m^2)
 #define SNAP_VEL_VAR        4.0f        // Velocity covariance after snap (m/s^2)
+#define SNAP_HDOP_MAX       2.5f
+#define SNAP_MAX_JUMP_M     500.0f
 
 
 // Measurement noise
@@ -1188,10 +1191,10 @@ static void* fusion_thread(void *arg) {
              * Optional snap after very long outages (prevents "never relock" behavior)
              * Snap only if GNSS quality is good (HDOP) and jump isn't absurd 
              */
-            float jump_m = v3_norm(v_sub(zpos, C->ins.p));
+            float jump_m = v3_norm(v3_sub(zpos, C->ins.p));
             if(!C->gnss_valid && C->outage_s > SNAP_OUTAGE_S && hdop <= SNAP_HDOP_MAX && jump_m <= SNAP_MAX_JUMP_M){
                 C->ins.p = zpos;
-                C->ins.v = C->gnss_vel_valid ? C->gnss_vel_enu > v3(0,0,0);
+                C->ins.v = C->gnss_vel_valid ? C->gnss_vel_enu : v3(0,0,0);
 
                 // Reset only the position/velocity covariance to a reasonable level (keep attitude/bias covariances)
                 const float p_snap = 10.0f;
