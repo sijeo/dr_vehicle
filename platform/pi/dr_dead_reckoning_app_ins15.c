@@ -135,6 +135,11 @@
 // MPU6050 scale (assuming ±500 dps for gyro here; adjust to your config)
 #define GYRO_LSB_PER_DPS    65.5f
 
+#define aWGS        6378137.0
+#define fWGS        (1.0/298.257223563)
+#define bWGS        (6378137.0 * (1 - fWGS))
+#define  e2         ((aWGS*aWGS - bWGS*bWGS) / (aWGS*aWGS))
+
 // ------------------------- Small math utils -------------------------
 
 static inline uint64_t monotonic_ns(void) {
@@ -243,10 +248,7 @@ static bool mat3_inv(const float A[9], float invA[9]) {
 typedef struct { double lat, lon, h; } lla_t;
 typedef struct { double x, y, z; } ecef_t;
 
-static const double aWGS = 6378137.0;
-static const double fWGS = 1.0/298.257223563;
-static const double bWGS = 6378137.0 * (1 - fWGS);
-static const double e2 = (aWGS*aWGS - bWGS*bWGS) / (aWGS*aWGS);
+
 
 static ecef_t lla2ecef(lla_t L) {
     double s = sin(L.lat), c = cos(L.lat);
@@ -322,6 +324,7 @@ typedef struct {
 static void ins15_init(ins15_t *S) {
     memset(S, 0, sizeof(*S));
     S->q = q_identity();
+    int i;
 
     // Conservative initial covariance (tune)
     const float p0 = 5.0f;          // m
@@ -330,12 +333,12 @@ static void ins15_init(ins15_t *S) {
     const float ba0 = 0.5f;         // m/s^2
     const float bg0 = 0.01f;        // rad/s
 
-    for (int i=0;i<15;i++) S->P[i*15+i] = 1e-6f;
-    for (int i=0;i<3;i++) S->P[(0+i)*15 + (0+i)] = p0*p0;
-    for (int i=0;i<3;i++) S->P[(3+i)*15 + (3+i)] = v0*v0;
-    for (int i=0;i<3;i++) S->P[(6+i)*15 + (6+i)] = th0*th0;
-    for (int i=0;i<3;i++) S->P[(9+i)*15 + (9+i)] = ba0*ba0;
-    for (int i=0;i<3;i++) S->P[(12+i)*15 + (12+i)] = bg0*bg0;
+    for (i=0;i<15;i++) S->P[i*15+i] = 1e-6f;
+    for (i=0;i<3;i++) S->P[(0+i)*15 + (0+i)] = p0*p0;
+    for (i=0;i<3;i++) S->P[(3+i)*15 + (3+i)] = v0*v0;
+    for (i=0;i<3;i++) S->P[(6+i)*15 + (6+i)] = th0*th0;
+    for (i=0;i<3;i++) S->P[(9+i)*15 + (9+i)] = ba0*ba0;
+    for (i=0;i<3;i++) S->P[(12+i)*15 + (12+i)] = bg0*bg0;
 }
 
 static inline float compute_qscale(double outage_s) {
@@ -346,21 +349,24 @@ static inline float compute_qscale(double outage_s) {
 }
 
 static void mat15_mul(const float *A, const float *B, float *C) {
-    for (int r=0;r<15;r++) {
-        for (int c=0;c<15;c++) {
+    int r, c, k;
+    for (r=0;r<15;r++) {
+        for (c=0;c<15;c++) {
             float s=0;
-            for (int k=0;k<15;k++) s += A[r*15+k]*B[k*15+c];
+            for (k=0;k<15;k++) s += A[r*15+k]*B[k*15+c];
             C[r*15+c]=s;
         }
     }
 }
 static void mat15_T(const float *A, float *AT) {
-    for (int r=0;r<15;r++) for (int c=0;c<15;c++) AT[c*15+r]=A[r*15+c];
+    int r, c;
+    for (r=0;r<15;r++) for (c=0;c<15;c++) AT[c*15+r]=A[r*15+c];
 }
-static void mat15_add(float *A, const float *B) { for (int i=0;i<15*15;i++) A[i]+=B[i]; }
+static void mat15_add(float *A, const float *B) { int i; for (i=0;i<15*15;i++) A[i]+=B[i]; }
 
 // Mechanization + covariance propagation (discrete-time linearized, ENU, flat Earth)
 static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float dt, float q_scale, vec3f *out_aw) {
+    int i, r, c, k;
     // Remove estimated biases
     vec3f w = v3_sub(gyro_meas_b, S->bg);
     vec3f fb = v3_sub(acc_meas_b, S->ba);
@@ -393,7 +399,7 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
     // x = [dp dv dtheta ba bg]
     float F[15*15]; memset(F, 0, sizeof(F));
     // dp_dot = dv
-    for (int i=0;i<3;i++) F[(0+i)*15 + (3+i)] = 1.0f;
+    for (i=0;i<3;i++) F[(0+i)*15 + (3+i)] = 1.0f;
     // dv_dot = -R*skew(fb)*dtheta - R*ba
     // dtheta_dot = -skew(w)*dtheta - bg
     // ba_dot = 0 (random walk), bg_dot = 0 (random walk)
@@ -404,29 +410,29 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
                         fz,  0, -fx,
                        -fy, fx,  0 };
     float A[9]; // -R * skew(f)
-    for (int r=0;r<3;r++) for (int c=0;c<3;c++) {
+    for (r=0;r<3;r++) for (c=0;c<3;c++) {
         float s=0;
-        for (int k=0;k<3;k++) s += R[r*3+k]*skew_f[k*3+c];
+        for (k=0;k<3;k++) s += R[r*3+k]*skew_f[k*3+c];
         A[r*3+c] = -s;
     }
     // dv wrt dtheta
-    for (int r=0;r<3;r++) for (int c=0;c<3;c++) F[(3+r)*15 + (6+c)] = A[r*3+c];
+    for (r=0;r<3;r++) for (c=0;c<3;c++) F[(3+r)*15 + (6+c)] = A[r*3+c];
     // dv wrt ba: -R
-    for (int r=0;r<3;r++) for (int c=0;c<3;c++) F[(3+r)*15 + (9+c)] = -R[r*3+c];
+    for (r=0;r<3;r++) for (c=0;c<3;c++) F[(3+r)*15 + (9+c)] = -R[r*3+c];
 
     // dtheta wrt dtheta: -skew(w)
     float wx=w.x, wy=w.y, wz=w.z;
     float skew_w[9] = { 0, -wz,  wy,
                         wz,  0, -wx,
                        -wy, wx,  0 };
-    for (int r=0;r<3;r++) for (int c=0;c<3;c++) F[(6+r)*15 + (6+c)] = -skew_w[r*3+c];
+    for (r=0;r<3;r++) for (c=0;c<3;c++) F[(6+r)*15 + (6+c)] = -skew_w[r*3+c];
     // dtheta wrt bg: -I
-    for (int i=0;i<3;i++) F[(6+i)*15 + (12+i)] = -1.0f;
+    for (i=0;i<3;i++) F[(6+i)*15 + (12+i)] = -1.0f;
 
     // Discrete Phi ≈ I + F dt
     float Phi[15*15]; memset(Phi, 0, sizeof(Phi));
-    for (int i=0;i<15;i++) Phi[i*15+i] = 1.0f;
-    for (int r=0;r<15;r++) for (int c=0;c<15;c++) Phi[r*15+c] += F[r*15+c]*dt;
+    for (i=0;i<15;i++) Phi[i*15+i] = 1.0f;
+    for (r=0;r<15;r++) for (c=0;c<15;c++) Phi[r*15+c] += F[r*15+c]*dt;
 
     // Process noise (continuous densities, scaled during outages)
     // Tune these to your IMU
@@ -443,14 +449,14 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
     // Discrete Qd (simple diagonal approximation in error-state space)
     // dv driven by accel noise; dtheta driven by gyro noise
     float Q[15*15]; memset(Q, 0, sizeof(Q));
-    for (int i=0;i<3;i++) {
+    for (i=0;i<3;i++) {
         Q[(3+i)*15 + (3+i)] = sa2 * dt;     // dv
         Q[(6+i)*15 + (6+i)] = sg2 * dt;     // dtheta
         Q[(9+i)*15 + (9+i)] = sba2 * dt;    // ba RW
         Q[(12+i)*15 + (12+i)] = sbg2 * dt;  // bg RW
     }
     // also inject into dp via integration of dv noise (rough)
-    for (int i=0;i<3;i++) Q[(0+i)*15 + (0+i)] = sa2 * dt*dt*dt / 3.0f;
+    for (i=0;i<3;i++) Q[(0+i)*15 + (0+i)] = sa2 * dt*dt*dt / 3.0f;
 
     // P = Phi P Phi^T + Q
     float PhiP[15*15], PhiT[15*15], PhiPPhiT[15*15];
@@ -477,19 +483,20 @@ static void ins15_inject(ins15_t *S, const float dx[15]) {
 }
 
 static bool kf_update_3(ins15_t *S, const float H[3*15], const float z[3], const float h[3], const float Rdiag[3], float *out_NIS) {
+    int i, r, c, k, j;
     // S = H P H^T + R (3x3)
     float HP[3*15];
-    for (int r=0;r<3;r++) {
-        for (int c=0;c<15;c++) {
+    for (r=0;r<3;r++) {
+        for (c=0;c<15;c++) {
             float s=0;
-            for (int k=0;k<15;k++) s += H[r*15+k]*S->P[k*15+c];
+            for (k=0;k<15;k++) s += H[r*15+k]*S->P[k*15+c];
             HP[r*15+c]=s;
         }
     }
     float S33[9];
-    for (int r=0;r<3;r++) for (int c=0;c<3;c++) {
+    for (r=0;r<3;r++) for (c=0;c<3;c++) {
         float s=0;
-        for (int k=0;k<15;k++) s += HP[r*15+k]*H[c*15+k];
+        for (k=0;k<15;k++) s += HP[r*15+k]*H[c*15+k];
         if (r==c) s += Rdiag[r];
         S33[r*3+c]=s;
     }
@@ -500,39 +507,39 @@ static bool kf_update_3(ins15_t *S, const float H[3*15], const float z[3], const
 
     if (out_NIS) {
         float tmp[3]={0};
-        for (int i=0;i<3;i++) for (int j=0;j<3;j++) tmp[i] += nu[j]*Sinv[j*3+i];
+        for(i=0;i<3;i++) for (j=0;j<3;j++) tmp[i] += nu[j]*Sinv[j*3+i];
         *out_NIS = nu[0]*tmp[0] + nu[1]*tmp[1] + nu[2]*tmp[2];
     }
 
     // K = P H^T Sinv  (15x3)
     float PHt[15*3];
-    for (int r=0;r<15;r++) for (int c=0;c<3;c++) {
+    for (r=0;r<15;r++) for (c=0;c<3;c++) {
         float s=0;
-        for (int k=0;k<15;k++) s += S->P[r*15+k]*H[c*15+k];
+        for (k=0;k<15;k++) s += S->P[r*15+k]*H[c*15+k];
         PHt[r*3+c]=s;
     }
     float K[15*3];
-    for (int r=0;r<15;r++) for (int c=0;c<3;c++) {
+    for (r=0;r<15;r++) for (c=0;c<3;c++) {
         float s=0;
-        for (int k=0;k<3;k++) s += PHt[r*3+k]*Sinv[k*3+c];
+        for (k=0;k<3;k++) s += PHt[r*3+k]*Sinv[k*3+c];
         K[r*3+c]=s;
     }
 
     // dx = K nu
     float dx[15]={0};
-    for (int r=0;r<15;r++) dx[r] = K[r*3+0]*nu[0] + K[r*3+1]*nu[1] + K[r*3+2]*nu[2];
+    for (r=0;r<15;r++) dx[r] = K[r*3+0]*nu[0] + K[r*3+1]*nu[1] + K[r*3+2]*nu[2];
     ins15_inject(S, dx);
 
     // Joseph covariance update: P = (I-KH)P(I-KH)^T + K R K^T
     float KH[15*15]; memset(KH,0,sizeof(KH));
-    for (int r=0;r<15;r++) for (int c=0;c<15;c++) {
+    for (r=0;r<15;r++) for (c=0;c<15;c++) {
         float s=0;
-        for (int k=0;k<3;k++) s += K[r*3+k]*H[k*15+c];
+        for (k=0;k<3;k++) s += K[r*3+k]*H[k*15+c];
         KH[r*15+c]=s;
     }
     float I_KH[15*15]; memset(I_KH,0,sizeof(I_KH));
-    for (int i=0;i<15;i++) I_KH[i*15+i]=1.0f;
-    for (int i=0;i<15*15;i++) I_KH[i] -= KH[i];
+    for (i=0;i<15;i++) I_KH[i*15+i]=1.0f;
+    for (i=0;i<15*15;i++) I_KH[i] -= KH[i];
 
     float tmp[15*15], I_KH_T[15*15], P1[15*15];
     mat15_mul(I_KH, S->P, tmp);
@@ -540,24 +547,25 @@ static bool kf_update_3(ins15_t *S, const float H[3*15], const float z[3], const
     mat15_mul(tmp, I_KH_T, P1);
 
     float KRKt[15*15]; memset(KRKt,0,sizeof(KRKt));
-    for (int r=0;r<15;r++) {
-        for (int c=0;c<15;c++) {
+    for (r=0;r<15;r++) {
+        for (c=0;c<15;c++) {
             float s=0;
-            for (int k=0;k<3;k++) {
+            for (k=0;k<3;k++) {
                 float Rk = Rdiag[k];
                 s += K[r*3+k] * Rk * K[c*3+k];
             }
             KRKt[r*15+c]=s;
         }
     }
-    for (int i=0;i<15*15;i++) S->P[i] = P1[i] + KRKt[i];
+    for (i=0;i<15*15;i++) S->P[i] = P1[i] + KRKt[i];
     return true;
 }
 
 static bool ins15_update_gnss_pos(ins15_t *S, vec3f zpos, float Rpos, float *out_NIS) {
+    int i;
     float H[3*15]; memset(H,0,sizeof(H));
     // z = p + n  => nu uses nominal p, and H maps error δp
-    for (int i=0;i<3;i++) H[i*15 + (0+i)] = 1.0f;
+    for (i=0;i<3;i++) H[i*15 + (0+i)] = 1.0f;
 
     float z[3] = { zpos.x, zpos.y, zpos.z };
     float h[3] = { S->p.x, S->p.y, S->p.z };
@@ -566,16 +574,18 @@ static bool ins15_update_gnss_pos(ins15_t *S, vec3f zpos, float Rpos, float *out
 }
 
 static bool ins15_update_gnss_vel(ins15_t *S, vec3f zvel, const float Rvdiag[3], float *out_NIS) {
+    int i;
     float H[3*15]; memset(H,0,sizeof(H));
-    for (int i=0;i<3;i++) H[i*15 + (3+i)] = 1.0f; // δv
+    for (i=0;i<3;i++) H[i*15 + (3+i)] = 1.0f; // δv
     float z[3] = { zvel.x, zvel.y, zvel.z };
     float h[3] = { S->v.x, S->v.y, S->v.z };
     return kf_update_3(S, H, z, h, Rvdiag, out_NIS);
 }
 
 static void ins15_update_zupt(ins15_t *S) {
+    int i;
     // 3 sequential scalar updates on v components with z=0
-    for (int i=0;i<3;i++) {
+    for (i=0;i<3;i++) {
         float H[3*15]; memset(H,0,sizeof(H));
         H[0*15 + (3+i)] = 1.0f;
         float z[3]={0,0,0};
@@ -590,6 +600,7 @@ static void ins15_update_zupt(ins15_t *S) {
 }
 
 static void ins15_update_nhc(ins15_t *S) {
+    int c;
     // Measurement: [v_y^b, v_z^b] ~ 0
     float R[9]; R_from_q(S->q, R);
     // v_b = R^T v_enu
@@ -607,9 +618,9 @@ static void ins15_update_nhc(ins15_t *S) {
     // vb = RT * v => d(vb) = RT * δv
     float H[3*15]; memset(H,0,sizeof(H));
     // row0 -> vb.y
-    for (int c=0;c<3;c++) H[0*15 + (3+c)] = RT[3 + c];
+    for (c=0;c<3;c++) H[0*15 + (3+c)] = RT[3 + c];
     // row1 -> vb.z
-    for (int c=0;c<3;c++) H[1*15 + (3+c)] = RT[6 + c];
+    for (c=0;c<3;c++) H[1*15 + (3+c)] = RT[6 + c];
 
     float z[3] = {0,0,0};
     float h[3] = { vb.y, vb.z, 0.0f };
@@ -888,6 +899,7 @@ C->gnss_present = true;
 // ------------------------- Fusion thread -------------------------
 
 static void* fusion_thread(void *arg) {
+    int i;
     ctx_t *C = (ctx_t*)arg;
     uint64_t last_tick_ns = monotonic_ns();
 
@@ -1040,7 +1052,7 @@ if (allow_snap && (!C->gnss_hdop_valid || hdop <= SNAP_HDOP_MAX) && innov_h > SN
     if (C->gnss_vel_valid) C->ins.v = C->gnss_vel_enu;
 
     // Inflate position covariance a bit after snap
-    for (int i=0;i<3;i++) {
+    for (i=0;i<3;i++) {
         int ii = i*15 + i;
         if (C->ins.P[ii] < (25.0f)) C->ins.P[ii] = 25.0f; // ~5 m std
     }
