@@ -287,7 +287,7 @@ static const float ACCEL_C[3][3] = {
 static const float ACCEL_O[3] = { -0.1329121010477303f, -0.047222673271787766f, 1.257425727446983f };
 
 // Gyro bias in raw counts (constant here; can be learned slowly in future)
-static const float GYRO_B[3] = { 153.461f, 69.446f, 992.782f };
+static const float GYRO_B[3] = { -153.461f, 69.446f, 992.782f };
 
 static void calib_accel(const struct mpu6050_sample *raw, vec3f *acc_mps2) {
     float a0 = (float)raw->ax, a1 = (float)raw->ay, a2 = (float)raw->az;
