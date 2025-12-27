@@ -1039,7 +1039,16 @@ if (C->last_gnss_meas_s <= 0.0) {
         C->outage_s = age;
     }
 }
-C->qscale = C->gnss_present ? 1.0f : compute_qscale(C->outage_s);
+
+double nav_age = tnow - C->last_gnss_used_s;
+if (nav_age <= GNSS_TIMEOUT_S) {
+    C->outage_s = 0.0;
+    C->qscale = 1.0f;
+} else {
+    C->outage_s = nav_age;
+    C->qscale = compute_qscale(C->outage_s);
+}
+
         // Predict INS
         ins15_predict(&C->ins, acc_b, gyro_b, dt, C->qscale, &C->last_aw);
 
@@ -1078,7 +1087,7 @@ C->qscale = C->gnss_present ? 1.0f : compute_qscale(C->outage_s);
             C->enu_ref_lla.lat * (180.0/M_PI),
             C->enu_ref_lla.lon * (180.0/M_PI),
             C->enu_ref_lla.h,
-            C->last_gnss_meas_s,
+            (float)(now_sec() - C->last_gnss_meas_s),
             C->gnss_present ? 1 : 0);
             dbg_printf(C, "GNSS_FUSE zpos_ENU=(%.3f,%.3f,%.3f) ins.p=(%.3f,%.3f,%.3f)",
             zpos.x, zpos.y, zpos.z, 
