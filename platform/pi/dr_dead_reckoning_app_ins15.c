@@ -1166,7 +1166,7 @@ C->qscale = C->gnss_present ? 1.0f : compute_qscale(C->outage_s);
             static double t_last = 0.0;
             double t = now_sec();
             if (t - t_last > 0.5) {
-                fprintf(stderr, "DR: outage=%.1fs qS=%.1f p=(%.1f,%.1f,%.1f) v=(%.2f,%.2f,%.2f)\n",
+                dbg_printf(C, "DR: outage=%.1fs qS=%.1f p=(%.1f,%.1f,%.1f) v=(%.2f,%.2f,%.2f)\n",
                         C->outage_s, C->qscale,
                         C->ins.p.x, C->ins.p.y, C->ins.p.z,
                         C->ins.v.x, C->ins.v.y, C->ins.v.z);
