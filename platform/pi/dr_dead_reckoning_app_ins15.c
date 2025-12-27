@@ -925,7 +925,7 @@ C->gnss_present = true;
                 dbg_printf(C, "ENU_REF_SET lat=%.9f lon=%.9f alt=%.3f",
                 C->enu_ref_lla.lat * (180.0/M_PI), 
                 C->enu_ref_lla.lon * (180.0/M_PI),
-                C->enu_ref_lla.alt); /* Print in Degrees for Sanity*/
+                C->enu_ref_lla.h); /* Print in Degrees for Sanity*/
             }
         } else {
             // No fix: still keep last values for logging

@@ -6,7 +6,7 @@ SYSROOT ?= $(HOME)/rpi_work/rpi_tools/tools/arm-bcm2708/arm-rpi-4.9.3-linux-gnue
 CC := $(CROSS_COMPILE)gcc
 RM ?= rm -f
 
-CORE_DIR := $(abspath ../../core) 
+CORE_DIR := $(abspath ../../core)
 CORE_SRCS := $(wildcard $(CORE_DIR)/*.c)
 
 all:
