@@ -854,6 +854,8 @@ static void* gnss_thread(void *arg) {
 
         C->have_gnss = false;
         C->gnss_have_fix = f.have_fix ? 1 : 0;
+        double tmeas = now_sec();
+        C->last_gnss_meas_s = tmeas;
 
         if (C->gnss_have_fix) {
             double lat_deg = (double)f.lat_e7 / 1e7;
@@ -903,9 +905,8 @@ static void* gnss_thread(void *arg) {
 
             C->have_gnss = true;
 // Mark GNSS measurement presence (independent of EKF gating)
-double tmeas = now_sec();
-C->last_gnss_meas_s = tmeas;
-C->gnss_present = true;
+
+
 
             // Save for logging
             C->gnss_last_lat_deg = lat_deg;
