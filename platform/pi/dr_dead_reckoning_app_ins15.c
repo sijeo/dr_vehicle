@@ -51,6 +51,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <stdarg.h>
 
 #include "mpu6050_ioctl.h"
 #include "neo6m_gnss_ioctl.h"
@@ -712,6 +713,8 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
     // logging
     FILE *logf;
     char log_filename[256];
+    FILE *dbglog;
+    char dbglog_filename[256];
     double last_log_s;
 
     // threading
@@ -760,6 +763,26 @@ static void make_log_file(ctx_t *C) {
     C->last_log_s = 0.0;
 }
 
+static void make_debug_log_file(ctx_t *C){
+    /* Assume make_log_file already created nav_log folder */
+    time_t t = time(NULL);
+    struct tm tm;
+    localtime_r(&t, &tm);
+
+    snprintf(C->dbglog_filename, sizeof(C->dbglog_filename),
+            "nav_log/debug_%04d%02d%02d_%02d%02d%02d.log",
+        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+    C->dbglog = fopen(C->dbglog_filename, "w");
+    if( !C->dbglog ){
+        perror("fopen dbglog ");
+        return;
+    }
+    setvbuf(C->dbglog, NULL, _IOLBF, 0); /* Line Buffered */
+}
+
+
+
 // ------------------------- IMU thread -------------------------
 
 static void* imu_thread(void *arg) {
@@ -789,6 +812,27 @@ static void* imu_thread(void *arg) {
 }
 
 // ------------------------- GNSS thread -------------------------
+
+static pthread_mutex_t dbglog_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+static void dbg_printf(ctx_t *C, const char *fmt, ... ){
+    if(!C || !C->dbglog ){
+        return;
+    }
+    pthread_mutex_lock(&dbglog_mtx);
+
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    fprintf(C->dbglog, "[%lld.%03lld]", (long long)ts.tv_sec, (long long)(ts.tv_nsec/1000000));
+
+    va_list ap;
+    va_start( ap, fmt );
+    vprintf(C->dbglog, fmt, ap);
+    va_end(ap);
+
+    fputc('\n', C->dbglog);
+    pthread_mutex_unlock(&dbglog_mtx);
+}
 
 static void* gnss_thread(void *arg) {
     ctx_t *C = (ctx_t*)arg;
@@ -878,7 +922,10 @@ C->gnss_present = true;
                 C->enu_ref_lla = (lla_t){C->gnss_lat_rad, C->gnss_lon_rad, C->gnss_alt_m};
                 C->enu_ref_ecef = lla2ecef(C->enu_ref_lla);
                 C->enu_ref_set = true;
-                fprintf(stderr, "ENU origin set from first GNSS fix.\n");
+                dbg_printf(C, "ENU_REF_SET lat=%.9f lon=%.9f alt=%.3f",
+                C->enu_ref_lla.lat * (180.0/M_PI), 
+                C->enu_ref_lla.lon * (180.0/M_PI),
+                C->enu_ref_lla.alt); /* Print in Degrees for Sanity*/
             }
         } else {
             // No fix: still keep last values for logging
@@ -935,9 +982,13 @@ static void* fusion_thread(void *arg) {
             if (C->enu_ref_set && C->have_gnss && C->gnss_have_fix) {
                 lla_t L = { C->gnss_lat_rad, C->gnss_lon_rad, C->gnss_alt_m };
                 ecef_t E = lla2ecef(L);
+                dbg_printf(C, "NAV_INIT using ENU_REF lat=%.9f lon=%.9f alt=%.3f",
+                C->enu_ref_lla.lat * (180.0/M_PI),
+                C->enu_ref_lla.lon * (180.0/M_PI),
+                C->enu_ref_lla.alt);
                 double enu_d[3];
                 ecef2enu(E, C->enu_ref_lla, C->enu_ref_ecef, enu_d);
-
+                dbg_printf(C, "NAV_INIT zpos_ENU=(%.3f,%.3f,%.3f)", enu_d[0],enu_d[1],enu_d[2]);
                 ins15_init(&C->ins);
                 C->ins.p = v3((float)enu_d[0], (float)enu_d[1], (float)enu_d[2]);
                 C->ins.v = v3(0,0,0);
@@ -962,8 +1013,7 @@ static void* fusion_thread(void *arg) {
                 C->last_nis_pos = 0.0f;
                 C->last_nis_vel = 0.0f;
 
-                fprintf(stderr, "Nav initialized. ENU p=(%.2f,%.2f,%.2f)\n",
-                        C->ins.p.x, C->ins.p.y, C->ins.p.z);
+                dbg_printf(C, "NAV_READY ins.p=(%.3f,%.3f,%.3f)",C->ins.p.x, C->ins.p.y, C->ins.p.z);
 
                 C->have_gnss = false; // consume
             }
@@ -1023,65 +1073,74 @@ C->qscale = C->gnss_present ? 1.0f : compute_qscale(C->outage_s);
             double enu_d[3];
             ecef2enu(E, C->enu_ref_lla, C->enu_ref_ecef, enu_d);
             vec3f zpos = v3((float)enu_d[0], (float)enu_d[1], (float)enu_d[2]);
-
+            dbg_printf(C, "GNSS_FUSE ENU_REF lat=%.9f lon=%.9f alt=%.3f meas_age=%.3f present=%d",
+            C->enu_ref_lla.lat * (180.0/M_PI),
+            C->enu_ref_lla.lon * (180.0/M_PI),
+            C->enu_ref_lla.alt,
+            C->gnss_meas_age_s,
+            C->gnss_present ? 1 : 0);
+            dbg_printf(C, "GNSS_FUSE zpos_ENU=(%.3f,%.3f,%.3f) ins.p=(%.3f,%.3f,%.3f)",
+            zpos.x, zpos.y, zpos.z, 
+            C->ins.p.x, C->ins.p.y, C->ins.p.z);
             float hdop = (C->gnss_hdop_valid ? C->gnss_hdop : 1.0f);
-float Rpos = R_GNSS_POS_VAR * hdop * hdop;
+            float Rpos = R_GNSS_POS_VAR * hdop * hdop;
 
-// Reacquisition: if we haven't ACCEPTED GNSS for a while, relax gating and inflate R
-double tnow2 = now_sec();
-if ((tnow2 - C->last_gnss_used_s) > REACQ_MIN_OUTAGE_S && C->reacq_left <= 0) {
-    C->reacq_left = REACQ_STEPS;
-}
+            // Reacquisition: if we haven't ACCEPTED GNSS for a while, relax gating and inflate R
+            double tnow2 = now_sec();
+            if ((tnow2 - C->last_gnss_used_s) > REACQ_MIN_OUTAGE_S && C->reacq_left <= 0) {
+                C->reacq_left = REACQ_STEPS;
+            }
 
-float gate_thr = CHI2_3DOF_GATE;
-if (C->reacq_left > 0) {
-    Rpos *= REACQ_R_MULT;
-    gate_thr = REACQ_CHI2_GATE;
-    C->reacq_active = true; // latched for 1 Hz logs
-}
+            float gate_thr = CHI2_3DOF_GATE;
+            if (C->reacq_left > 0) {
+                 Rpos *= REACQ_R_MULT;
+                gate_thr = REACQ_CHI2_GATE;
+                C->reacq_active = true; // latched for 1 Hz logs
+            }
 
-// Optional snap-to-GNSS safety net after long outage and large innovation
-float innov_e = zpos.x - C->ins.p.x;
-float innov_n = zpos.y - C->ins.p.y;
-float innov_h = sqrtf(innov_e*innov_e + innov_n*innov_n);
+            // Optional snap-to-GNSS safety net after long outage and large innovation
+            float innov_e = zpos.x - C->ins.p.x;
+            float innov_n = zpos.y - C->ins.p.y;
+            float innov_h = sqrtf(innov_e*innov_e + innov_n*innov_n);
+            dbg_printf(C, "GNSS_INNOV innov_ENU=(%.3f,%.3f) norm=%.3f hdop=%.2f qscale=%.2f",
+            innov_e, innov_n, innov_h, hdop, C->qscale);
+            bool allow_snap = ((tnow2 - C->last_gnss_used_s) > SNAP_MIN_OUTAGE_S);
+            if (allow_snap && (!C->gnss_hdop_valid || hdop <= SNAP_HDOP_MAX) && innov_h > SNAP_INNOV_M) {
+                // Snap position (and velocity if available) to GNSS to guarantee re-lock.
+                C->ins.p = zpos;
+                if (C->gnss_vel_valid) C->ins.v = C->gnss_vel_enu;
 
-bool allow_snap = ((tnow2 - C->last_gnss_used_s) > SNAP_MIN_OUTAGE_S);
-if (allow_snap && (!C->gnss_hdop_valid || hdop <= SNAP_HDOP_MAX) && innov_h > SNAP_INNOV_M) {
-    // Snap position (and velocity if available) to GNSS to guarantee re-lock.
-    C->ins.p = zpos;
-    if (C->gnss_vel_valid) C->ins.v = C->gnss_vel_enu;
+                // Inflate position covariance a bit after snap
+                for (i=0;i<3;i++) {
+                int ii = i*15 + i;
+                    if (C->ins.P[ii] < (25.0f)) C->ins.P[ii] = 25.0f; // ~5 m std
+                }
 
-    // Inflate position covariance a bit after snap
-    for (i=0;i<3;i++) {
-        int ii = i*15 + i;
-        if (C->ins.P[ii] < (25.0f)) C->ins.P[ii] = 25.0f; // ~5 m std
-    }
+                C->last_gnss_used_s = tnow2;
+                C->gnss_valid = true;
+                C->last_gnss_used_pos = 1;
+                C->snap_applied = true;
+                C->last_nis_pos = 0.0f;
+                C->reacq_left = 0; // done
+            } else {
+                float nis_pos = 0.0f;
+                bool ok_pos = ins15_update_gnss_pos(&C->ins, zpos, Rpos, &nis_pos);
+                bool gate_pos = ok_pos && (nis_pos < gate_thr);
+                C->last_nis_pos = nis_pos;
 
-    C->last_gnss_used_s = tnow2;
-    C->gnss_valid = true;
-    C->last_gnss_used_pos = 1;
-    C->snap_applied = true;
-    C->last_nis_pos = 0.0f;
-    C->reacq_left = 0; // done
-} else {
-    float nis_pos = 0.0f;
-    bool ok_pos = ins15_update_gnss_pos(&C->ins, zpos, Rpos, &nis_pos);
-    bool gate_pos = ok_pos && (nis_pos < gate_thr);
-    C->last_nis_pos = nis_pos;
+                if (gate_pos) {
+                    C->last_gnss_used_s = tnow2;
+                    C->gnss_valid = true;
+                    C->last_gnss_used_pos = 1;
+                }
 
-    if (gate_pos) {
-        C->last_gnss_used_s = tnow2;
-        C->gnss_valid = true;
-        C->last_gnss_used_pos = 1;
-    }
+                if (C->reacq_left > 0) {
+                    // count down each GNSS attempt during reacq, regardless of accept
+                    C->reacq_left--;
+                }
+            }
 
-    if (C->reacq_left > 0) {
-        // count down each GNSS attempt during reacq, regardless of accept
-        C->reacq_left--;
-    }
-}
-
-// Velocity update if valid
+            // Velocity update if valid
             if (C->gnss_vel_valid) {
                 float Rv[3] = { RV_VEL_E, RV_VEL_N, RV_VEL_U };
                 float nis_vel = 0.0f;
@@ -1170,7 +1229,7 @@ if (allow_snap && (!C->gnss_hdop_valid || hdop <= SNAP_HDOP_MAX) && innov_h > SN
                 C->reacq_active = false;
                 C->snap_applied = false;
             }
-C->last_log_s = tlog;
+            C->last_log_s = tlog;
         }
 
         pthread_mutex_unlock(&C->mtx);
@@ -1215,6 +1274,7 @@ C.last_gnss_used_pos = 0;
 C.last_gnss_used_vel = 0;
 
     make_log_file(&C);
+    make_debug_log_file(&C);
 
     pthread_t th_imu, th_gnss, th_fuse;
     if (pthread_create(&th_imu, NULL, imu_thread, &C) != 0) { perror("imu_thread"); return 1; }
