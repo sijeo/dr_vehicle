@@ -985,7 +985,7 @@ static void* fusion_thread(void *arg) {
                 dbg_printf(C, "NAV_INIT using ENU_REF lat=%.9f lon=%.9f alt=%.3f",
                 C->enu_ref_lla.lat * (180.0/M_PI),
                 C->enu_ref_lla.lon * (180.0/M_PI),
-                C->enu_ref_lla.alt);
+                C->enu_ref_lla.h);
                 double enu_d[3];
                 ecef2enu(E, C->enu_ref_lla, C->enu_ref_ecef, enu_d);
                 dbg_printf(C, "NAV_INIT zpos_ENU=(%.3f,%.3f,%.3f)", enu_d[0],enu_d[1],enu_d[2]);
@@ -1076,8 +1076,8 @@ C->qscale = C->gnss_present ? 1.0f : compute_qscale(C->outage_s);
             dbg_printf(C, "GNSS_FUSE ENU_REF lat=%.9f lon=%.9f alt=%.3f meas_age=%.3f present=%d",
             C->enu_ref_lla.lat * (180.0/M_PI),
             C->enu_ref_lla.lon * (180.0/M_PI),
-            C->enu_ref_lla.alt,
-            C->gnss_meas_age_s,
+            C->enu_ref_lla.h,
+            C->last_gnss_meas_s,
             C->gnss_present ? 1 : 0);
             dbg_printf(C, "GNSS_FUSE zpos_ENU=(%.3f,%.3f,%.3f) ins.p=(%.3f,%.3f,%.3f)",
             zpos.x, zpos.y, zpos.z, 
