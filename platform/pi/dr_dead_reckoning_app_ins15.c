@@ -827,7 +827,7 @@ static void dbg_printf(ctx_t *C, const char *fmt, ... ){
 
     va_list ap;
     va_start( ap, fmt );
-    vprintf(C->dbglog, fmt, ap);
+    vfprintf(C->dbglog, fmt, ap);
     va_end(ap);
 
     fputc('\n', C->dbglog);
