@@ -886,7 +886,9 @@ static void* gnss_thread(void *arg) {
             //   f.heading_valid (bool-like), f.course_deg_e5 (int32, deg*1e5)
             if (f.heading_valid && C->gnss_speed_mps > 0.5f) {
                 float heading_deg = (float)f.course_deg_e5 / 1e5f;
-                C->gnss_heading_rad = heading_deg * DEG2RAD;
+                float yaw_enu = (0.5*M_PI) - (heading_deg * DEG2RAD)
+                yaw_enu = wrap_pi(yaw_enu);
+                C->gnss_heading_rad = yaw_enu;
                 C->gnss_heading_valid = true;
 
                 // derive ENU velocity (course over ground)
@@ -993,7 +995,12 @@ static void* fusion_thread(void *arg) {
                 ins15_init(&C->ins);
                 C->ins.p = v3((float)enu_d[0], (float)enu_d[1], (float)enu_d[2]);
                 C->ins.v = v3(0,0,0);
-                C->ins.q = q_identity();
+                //C->ins.q = q_identity();
+                float yaw0 = 0.0f;
+                if(C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN ) {
+                    yaw0 = C->gnss_heading_rad;
+                }
+                C->ins.q = q_normalize(q_from_yaw_delta(yaw0));
 
                 // Start biases at 0 (since you already calibrated raw -> SI).
                 C->ins.ba = v3(0,0,0);
