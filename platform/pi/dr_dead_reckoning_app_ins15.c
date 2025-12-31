@@ -770,7 +770,7 @@ static void make_debug_log_file(ctx_t *C){
     localtime_r(&t, &tm);
 
     snprintf(C->dbglog_filename, sizeof(C->dbglog_filename),
-            "nav_logs/debug_%04d%02d%02d_%02d%02d%02d.log",
+            "/home/sijeo/nav_logs/debug_%04d%02d%02d_%02d%02d%02d.log",
         tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
 
     C->dbglog = fopen(C->dbglog_filename, "w");
