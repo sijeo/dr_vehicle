@@ -886,7 +886,7 @@ static void* gnss_thread(void *arg) {
             //   f.heading_valid (bool-like), f.course_deg_e5 (int32, deg*1e5)
             if (f.heading_valid && C->gnss_speed_mps > 0.5f) {
                 float heading_deg = (float)f.course_deg_e5 / 1e5f;
-                float yaw_enu = (0.5*M_PI) - (heading_deg * DEG2RAD)
+                float yaw_enu = (0.5*M_PI)-(heading_deg * DEG2RAD);
                 yaw_enu = wrap_pi(yaw_enu);
                 C->gnss_heading_rad = yaw_enu;
                 C->gnss_heading_valid = true;
