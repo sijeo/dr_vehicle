@@ -112,7 +112,7 @@
 #define QSCL_D  20.0f
 
 // GNSS gating and fade-in
-#define CHI2_3DOF_GATE      16.2f            // ~99.5% for 3 DOF
+#define CHI2_3DOF_GATE      50.0f            // ~99.5% for 3 DOF
 #define R_GNSS_POS_VAR      4.0f             // base (m^2), scaled by HDOP^2
 #define FADE_IN_FACT_INIT   4.0f
 #define FADE_IN_STEPS       3
