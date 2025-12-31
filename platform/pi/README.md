@@ -301,5 +301,57 @@ sudo systemctl start dr_stack.service
 sudo journalctl -u dr_stack.service -f
 
 '''
+'''
+|Col  |Header Name  |Variable in Code   |                     Description                                                   |
+-----------------------------------------------------------------------------------------------------------------------------
+|A    |time_s       |tlog               |Timestamp of the log entry (seconds since boot)                                    |
+|B    |E            |C->ins.p.x         |Estimated Position East (meters) relative to the start point                       |
+|C    |N            |C->ins.p.y         |Estimated Position North (meters).                                                 |
+|D    |U            |C->ins.p.z         |Estimated Position Up (meters).                                                    |
+|E    |V_E          |C->ins.v.x         |Estimated Velocity East (m/s).                                                     |        
+|F    |V_N          |C->ins.v.y         |Estimated Velocity North (m/s).                                                    |
+|G    |V_U          |C->ins.v.z         |Estimated Velocity Up (m/s).                                                       |
+|H    |A_E          |C->last_aw.x       |World Acceleration East (m/s²). The raw accel rotated to world frame minus gravity |
+|I    |A_N          |C->last_aw.y       |World Acceleration North (m/s²).                                                   |
+|J    |A_U          |C->last_aw.z       |World Acceleration Up (m/s²)                                                       |
+|K    |yaw_deg      |yaw_deg            |Estimated Yaw/Heading (degrees). calculated from the quaternion C->ins.q.          |
+|L    |ba_x         |C->ins.ba.x        |Accel Bias X (m/s²). The filter's estimate of the sensor error.                    |
+|M    |ba_y         |C->ins.ba.y        |Accel Bias Y (m/s²).                                                               |
+|N    |ba_z         |C->ins.ba.z        |Accel Bias Z (m/s²).                                                               |
+|O    |bg_x         |C->ins.bg.x        |Gyro Bias X (rad/s). The filter's estimate of gyro drift.                          |
+|P    |bg_y         |C->ins.bg.y        |Gyro Bias Y (rad/s).                                                               |
+|Q    |bg_z         |C->ins.bg.z        |Gyro Bias Z (rad/s).                                                               |
+|R    |imu_ax       |imu_raw.ax         |Raw Accel X (counts). Direct data from MPU6050 register.                           |
+|S    |imu_ay       |imu_raw.ay         |Raw Accel Y (counts).                                                              |
+|T    |imu_az       |imu_raw.az         |Raw Accel Z (counts).                                                              |
+|U    |imu_gx       |imu_raw.gx         |Raw Gyro X (counts).                                                               |
+|V    |imu_gy       |imu_raw.gy         |Raw Gyro Y (counts).                                                               |
+|W    |imu_gz       |imu_raw.gz         |Raw Gyro Z (counts).                                                               |
+|X    |gnss_fix     |C->gnss_last_fix   |"Fix Status. 1 if GNSS has a fix, 0 if not."                                       |
+|Y    |lat_deg      |gnss_last_lat      |GNSS Latitude (degrees). Last received value.                                      |
+|Z    |lon_deg      |gnss_last_lon      |GNSS Longitude (degrees). Last received value.                                     |
+|AA   |alt_m        |gnss_last_alt      |GNSS Altitude (meters).                                                            |
+|AB   |speed_mps    |gnss_last_speed    |GNSS Speed (m/s).                                                                  |
+|AC   |heading_deg  |gnss_last_head     |GNSS Heading (degrees). Course over ground from GPS.                               |
+|AD   |hdop         |gnss_last_hdop     |HDOP. Horizontal Dilution of Precision (lower is better accuracy).                 |
+|AE   |gnss_present |gnss_present       |Signal Presence. 1 if valid GNSS data arrived recently (within 2s).                |
+|AF   |gnss_valid   |gnss_valid         |Data Acceptance. 1 if the filter accepted the last GNSS point.                     |
+|AG   |gnss_used_pos|last_gnss_used_pos |Update Flag (Pos). 1 if a position update happened in this specific log step.      |
+|AH   |gnss_used_vel|last_gnss_used_vel |Update Flag (Vel). 1 if a velocity update happened in this specific log step.      |
+|AI   |reacq_active |reacq_active       |Reacquisition Mode. 1 if filter has relaxed tolerances to find GPS again.          |
+|AJ   |snap_applied |snap_applied       |Snap Event. 1 if filter forced position to match GPS (hard reset).                 |
+|AK   |outage_s     |C->outage_s        |Outage Duration (seconds). How long since the last valid GPS update.               |
+|AL   |qscale       |C->qscale          |Uncertainty Scale. Multiplier for process noise (higher = less trusting of IMU).   |
+|AM   |nis_pos      |C->last_nis_pos    |"NIS Position. ""Normalized Innovation Squared"". If > 16.2, update was rejected." |
+|AN   |nis_vel      |C->last_nis_vel    |NIS Velocity. Quality metric for velocity updates.                                 |
+|AO   |gnss_age_s   |gnss_meas_age_s    |Data Latency. How old the last GNSS measurement is (seconds).                      |
+-----------------------------------------------------------------------------------------------------------------------------
 
-
+## Key Columns for Troubleshooting
+1. Heading Mismatch: Compare column K (yaw_deg) with column AC (heading_deg)
+    > If K stays 0 while AC changes to 90 or 180, Initialization is failing 
+2. Filter Rejection: Check Column AM (nis_pos)
+    > If this value is consistently > 16.2 (or red/high), the filter is rejecting GNSS data
+3. Vertical Instability: Check column (V_U) and Column N (ba_z)
+    > If G runs away to -10 or 10 m/s, your Z axis is dampening is insufficient.
+'''
