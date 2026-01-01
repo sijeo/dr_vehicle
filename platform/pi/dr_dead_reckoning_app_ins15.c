@@ -675,6 +675,7 @@ typedef struct {
     int gnss_last_fix;
     double gnss_last_lat_deg, gnss_last_lon_deg, gnss_last_alt_m;
     float gnss_last_speed_mps, gnss_last_heading_deg, gnss_last_hdop;
+    float gnss_last_course_deg, gnss_last_yaw_enu_deg;
 
     // INS
     ins15_t ins;
@@ -717,6 +718,12 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
     char dbglog_filename[256];
     double last_log_s;
 
+    int64_t last_gnss_fix_mono_ns;
+
+    vec3f gnss_enu_last;
+    bool gnss_enu_last_valid;
+    
+
     // threading
     pthread_mutex_t mtx;
     pthread_cond_t cv;
@@ -753,7 +760,8 @@ static void make_log_file(ctx_t *C) {
         "ba_x,ba_y,ba_z,"
         "bg_x,bg_y,bg_z,"
         "imu_ax,imu_ay,imu_az,imu_gx,imu_gy,imu_gz,"
-        "gnss_fix,lat_deg,lon_deg,alt_m,speed_mps,heading_deg,hdop,"
+        "gnss_fix,lat_deg,lon_deg,alt_m,speed_mps,course_deg,yaw_enu_deg,hdop,"
+        "gnss_E,gnss_N,gnss_U,err_E,err_N,err_H,"
         "gnss_present,gnss_valid,gnss_used_pos,gnss_used_vel,reacq_active,snap_applied,"
         "outage_s,qscale,nis_pos,nis_vel,gnss_meas_age_s\n"
     );
@@ -856,6 +864,15 @@ static void* gnss_thread(void *arg) {
         C->gnss_have_fix = f.have_fix ? 1 : 0;
         double tmeas = now_sec();
         C->last_gnss_meas_s = tmeas;
+        bool new_fix = true;
+        if( C->gnss_have_fix ){
+            if( C->last_gnss_fix_mono_ns == f.monotonic_ns ){
+                new_fix = false;
+
+            } else {
+                C->last_gnss_fix_mono_ns = f.monotonic_ns;
+            }
+        }
 
         if (C->gnss_have_fix) {
             double lat_deg = (double)f.lat_e7 / 1e7;
@@ -888,13 +905,17 @@ static void* gnss_thread(void *arg) {
                 float heading_deg = (float)f.course_deg_e5 / 1e5f;
                 float yaw_enu = (0.5*M_PI)-(heading_deg * DEG2RAD);
                 yaw_enu = wrap_pi(yaw_enu);
+
                 C->gnss_heading_rad = yaw_enu;
                 C->gnss_heading_valid = true;
+
+                C->gnss_last_course_deg = heading_deg;
+                C->gnss_last_yaw_enu_deg = yaw_enu/DEG2RAD;
 
                 // derive ENU velocity (course over ground)
                 float spd = C->gnss_speed_mps;
                 float psi = C->gnss_heading_rad;
-                C->gnss_vel_enu = v3(spd*sinf(psi), spd*cosf(psi), 0.0f);
+                C->gnss_vel_enu = v3(spd*cosf(psi), spd*sinf(psi), 0.0f);
                 C->gnss_vel_valid = true;
             } else {
                 C->gnss_heading_valid = false;
@@ -905,7 +926,7 @@ static void* gnss_thread(void *arg) {
             C->gnss_vel_valid = false;
 #endif
 
-            C->have_gnss = true;
+            C->have_gnss = (C->gnss_have_fix && new_fix) ;
 // Mark GNSS measurement presence (independent of EKF gating)
 
 
@@ -1090,6 +1111,8 @@ if (nav_age <= GNSS_TIMEOUT_S) {
             double enu_d[3];
             ecef2enu(E, C->enu_ref_lla, C->enu_ref_ecef, enu_d);
             vec3f zpos = v3((float)enu_d[0], (float)enu_d[1], (float)enu_d[2]);
+            C->gnss_enu_last = zpos;
+            C->gnss_enu_last_valid = true;
             dbg_printf(C, "GNSS_FUSE ENU_REF lat=%.9f lon=%.9f alt=%.3f meas_age=%.3f present=%d",
             C->enu_ref_lla.lat * (180.0/M_PI),
             C->enu_ref_lla.lon * (180.0/M_PI),
@@ -1201,6 +1224,15 @@ if (nav_age <= GNSS_TIMEOUT_S) {
             if (C->logf) {
                 float yaw_deg = yaw_from_q(C->ins.q) / DEG2RAD;
                 float gnss_meas_age_s = (C->last_gnss_meas_s > 0.0) ? (float)(tlog - C->last_gnss_meas_s) : -1.0f;
+                float gnssE = 0, gnssN=0, gnssU=0, errE=0, errN=0, errH=0;
+                if( C->gnss_enu_last_valid ){
+                    gnssE = C->gnss_enu_last.x;
+                    gnssN = C->gnss_enu_last.y;
+                    gnssU = C->gnss_enu_last.z;
+                    errE = C->ins.p.x - gnssE;
+                    errN = C->ins.p.y - gnssN;
+                    errH = sqrtf(errE*errE + errN*errN);
+                }
 
                 fprintf(C->logf,
                     "%.3f,"
@@ -1211,7 +1243,8 @@ if (nav_age <= GNSS_TIMEOUT_S) {
                     "%.6f,%.6f,%.6f,"
                     "%.6f,%.6f,%.6f,"
                     "%d,%d,%d,%d,%d,%d,"
-                    "%d,%.7f,%.7f,%.2f,%.3f,%.2f,%.2f,"
+                    "%d,%.7f,%.7f,%.2f,%.3f,%.2f,%.2f,%.2f,"
+                    "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,"
                     "%d,%d,%d,%d,%d,%d,"
                     "%.3f,%.2f,%.2f,%.2f,%.3f\n",
                     tlog,
@@ -1226,8 +1259,10 @@ if (nav_age <= GNSS_TIMEOUT_S) {
                     C->gnss_last_fix,
                     C->gnss_last_lat_deg, C->gnss_last_lon_deg, C->gnss_last_alt_m,
                     C->gnss_last_speed_mps,
-                    C->gnss_last_heading_deg,
+                    C->gnss_last_course_deg,
+                    C->gnss_last_yaw_enu_deg,
                     C->gnss_last_hdop,
+                    gnssE, gnssN, gnssU, errE, errN, errH,
                     C->gnss_present ? 1 : 0,
                     C->gnss_valid ? 1 : 0,
                     C->last_gnss_used_pos,
@@ -1289,6 +1324,8 @@ C.zupt_count = 0;
     C.last_aw = v3(0,0,0);
 C.last_gnss_used_pos = 0;
 C.last_gnss_used_vel = 0;
+C.last_gnss_fix_mono_ns = -1;
+C.gnss_enu_last_valid = false;
 
     make_log_file(&C);
     make_debug_log_file(&C);
