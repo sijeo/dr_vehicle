@@ -1,4 +1,3 @@
-
 // dr_dead_reckoning_app_ins15.c
 //
 // 15-state INS (Error-State EKF) + GNSS (Neo6M) dead-reckoning app for RPi3B + MPU6050
@@ -41,6 +40,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <math.h>
 #include <pthread.h>
 #include <signal.h>
@@ -51,7 +51,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <sys/ioctl.h>
+#include <stdarg.h>
 
 #include "mpu6050_ioctl.h"
 #include "neo6m_gnss_ioctl.h"
@@ -59,12 +59,20 @@
 // ------------------------- Configuration -------------------------
 
 #define IMU_DEVICE_PATH     "/dev/mpu6050-0"
-#define NEO6M_DEVICE_PATH   "/dev/neo6m-0"
+#define NEO6M_DEVICE_PATH   "/dev/neo6m0"
 
 #define IMU_HZ              100.0f
 #define DT_IMU_DEFAULT      (1.0f/IMU_HZ)
 
 #define GNSS_TIMEOUT_S      2.0f
+// Reacquisition / snap parameters (GNSS returns after outage)
+#define REACQ_MIN_OUTAGE_S     3.0f     // start reacq if outage longer than this
+#define REACQ_STEPS           8        // number of GNSS attempts in reacq mode
+#define REACQ_R_MULT          100.0f   // inflate Rpos during reacq
+#define REACQ_CHI2_GATE       200.0f   // relaxed gate during reacq (3 dof)
+#define SNAP_MIN_OUTAGE_S     15.0f    // allow snap after long outage
+#define SNAP_INNOV_M          120.0f   // if horizontal innovation exceeds, snap to GNSS
+#define SNAP_HDOP_MAX         3.0f     // require decent HDOP for snap
 
 #define GRAVITY             9.80665f
 #ifndef M_PI
@@ -74,10 +82,10 @@
 
 // If your neo6m_gnss_fix was extended with HDOP + heading/course fields, enable these.
 #ifndef HAVE_GNSS_HDOP
-#define HAVE_GNSS_HDOP      0
+#define HAVE_GNSS_HDOP      1
 #endif
 #ifndef HAVE_GNSS_HEADING
-#define HAVE_GNSS_HEADING   0
+#define HAVE_GNSS_HEADING   1
 #endif
 
 // Yaw dead-band for near-stationary conditions (limits gyro z noise from integrating into yaw)
@@ -104,22 +112,10 @@
 #define QSCL_D  20.0f
 
 // GNSS gating and fade-in
-#define CHI2_3DOF_GATE      16.2f            // ~99.5% for 3 DOF
+#define CHI2_3DOF_GATE      50.0f            // ~99.5% for 3 DOF
 #define R_GNSS_POS_VAR      4.0f             // base (m^2), scaled by HDOP^2
 #define FADE_IN_FACT_INIT   4.0f
 #define FADE_IN_STEPS       3
-
-// GNSS reacquisition helpers (after long outage, avoid "reject forever")
-#define REACQ_TRIGGER_S     10.0f   // start reacq mode if outage longer than this
-#define REACQ_STEPS         8       // number of GNSS epochs to keep reacq mode
-#define CHI2_3DOF_REACQ     100.0f  // looser NIS gate during reacq
-#define REACQ_RPOS_MULT     25.0f   // inflate Rpos during reacq (be conservative)
-
-// Optional snap-to-GNSS after very long outages (prevents permanent divergence)
-#define SNAP_OUTAGE_S       60.0f   // only consider snap if outage longer than this
-#define SNAP_NIS_MIN        500.0f  // snap if residual is huge (and reacq can't recover)
-#define SNAP_POS_VAR        25.0f   // position covariance after snap (m^2)
-#define SNAP_VEL_VAR        4.0f    // velocity covariance after snap ((m/s)^2)
 
 // Measurement noise
 #define RV_VEL_E            (0.09f)          // (0.30 m/s)^2
@@ -139,6 +135,11 @@
 
 // MPU6050 scale (assuming ±500 dps for gyro here; adjust to your config)
 #define GYRO_LSB_PER_DPS    65.5f
+
+#define aWGS        6378137.0
+#define fWGS        (1.0/298.257223563)
+#define bWGS        (6378137.0 * (1 - fWGS))
+#define  e2         ((aWGS*aWGS - bWGS*bWGS) / (aWGS*aWGS))
 
 // ------------------------- Small math utils -------------------------
 
@@ -248,18 +249,15 @@ static bool mat3_inv(const float A[9], float invA[9]) {
 typedef struct { double lat, lon, h; } lla_t;
 typedef struct { double x, y, z; } ecef_t;
 
-#define WGS84_A  6378137.0
-#define WGS84_F  (1.0/298.257223563)
-#define WGS84_B  6356752.314245179
-#define WGS84_E2 0.006694379990141316
+
 
 static ecef_t lla2ecef(lla_t L) {
     double s = sin(L.lat), c = cos(L.lat);
-    double N = WGS84_A / sqrt(1.0 - WGS84_E2*s*s);
+    double N = aWGS / sqrt(1.0 - e2*s*s);
     ecef_t e;
     e.x = (N + L.h)*c*cos(L.lon);
     e.y = (N + L.h)*c*sin(L.lon);
-    e.z = (N*(1-WGS84_E2) + L.h)*s;
+    e.z = (N*(1-e2) + L.h)*s;
     return e;
 }
 
@@ -327,6 +325,7 @@ typedef struct {
 static void ins15_init(ins15_t *S) {
     memset(S, 0, sizeof(*S));
     S->q = q_identity();
+    int i;
 
     // Conservative initial covariance (tune)
     const float p0 = 5.0f;          // m
@@ -335,39 +334,12 @@ static void ins15_init(ins15_t *S) {
     const float ba0 = 0.5f;         // m/s^2
     const float bg0 = 0.01f;        // rad/s
 
-    for (int i=0;i<15;i++) S->P[i*15+i] = 1e-6f;
-    for (int i=0;i<3;i++) S->P[(0+i)*15 + (0+i)] = p0*p0;
-    for (int i=0;i<3;i++) S->P[(3+i)*15 + (3+i)] = v0*v0;
-    for (int i=0;i<3;i++) S->P[(6+i)*15 + (6+i)] = th0*th0;
-    for (int i=0;i<3;i++) S->P[(9+i)*15 + (9+i)] = ba0*ba0;
-    for (int i=0;i<3;i++) S->P[(12+i)*15 + (12+i)] = bg0*bg0;
-}
-
-
-// Hard re-lock helper: snap INS position (and optionally velocity) to GNSS after very long outages.
-// This is a pragmatic "safety net" to prevent permanent divergence when the drift becomes huge.
-static void ins15_snap_to_gnss(ins15_t *S, vec3f zpos, bool have_vel, vec3f zvel) {
-    S->p = zpos;
-    if (have_vel) S->v = zvel;
-    else          S->v = v3(0.0f, 0.0f, 0.0f);
-
-    // Reset covariance to a conservative post-snap state.
-    // Keep attitude/bias covariances as-is? For simplicity, reset the full P diagonal.
-    for (int i=0;i<15;i++) {
-        for (int j=0;j<15;j++) S->P[i*15+j] = 0.0f;
-    }
-
-    // Position / velocity: trust GNSS moderately
-    for (int i=0;i<3;i++) S->P[(0+i)*15 + (0+i)] = SNAP_RPOS;
-    for (int i=0;i<3;i++) S->P[(3+i)*15 + (3+i)] = SNAP_RVEL;
-
-    // Attitude / biases: keep reasonable uncertainty (tune as needed)
-    const float th = (10.0f*DEG2RAD);
-    const float ba = 0.5f;
-    const float bg = 0.01f;
-    for (int i=0;i<3;i++) S->P[(6+i)*15 + (6+i)] = th*th;
-    for (int i=0;i<3;i++) S->P[(9+i)*15 + (9+i)] = ba*ba;
-    for (int i=0;i<3;i++) S->P[(12+i)*15 + (12+i)] = bg*bg;
+    for (i=0;i<15;i++) S->P[i*15+i] = 1e-6f;
+    for (i=0;i<3;i++) S->P[(0+i)*15 + (0+i)] = p0*p0;
+    for (i=0;i<3;i++) S->P[(3+i)*15 + (3+i)] = v0*v0;
+    for (i=0;i<3;i++) S->P[(6+i)*15 + (6+i)] = th0*th0;
+    for (i=0;i<3;i++) S->P[(9+i)*15 + (9+i)] = ba0*ba0;
+    for (i=0;i<3;i++) S->P[(12+i)*15 + (12+i)] = bg0*bg0;
 }
 
 static inline float compute_qscale(double outage_s) {
@@ -378,21 +350,24 @@ static inline float compute_qscale(double outage_s) {
 }
 
 static void mat15_mul(const float *A, const float *B, float *C) {
-    for (int r=0;r<15;r++) {
-        for (int c=0;c<15;c++) {
+    int r, c, k;
+    for (r=0;r<15;r++) {
+        for (c=0;c<15;c++) {
             float s=0;
-            for (int k=0;k<15;k++) s += A[r*15+k]*B[k*15+c];
+            for (k=0;k<15;k++) s += A[r*15+k]*B[k*15+c];
             C[r*15+c]=s;
         }
     }
 }
 static void mat15_T(const float *A, float *AT) {
-    for (int r=0;r<15;r++) for (int c=0;c<15;c++) AT[c*15+r]=A[r*15+c];
+    int r, c;
+    for (r=0;r<15;r++) for (c=0;c<15;c++) AT[c*15+r]=A[r*15+c];
 }
-static void mat15_add(float *A, const float *B) { for (int i=0;i<15*15;i++) A[i]+=B[i]; }
+static void mat15_add(float *A, const float *B) { int i; for (i=0;i<15*15;i++) A[i]+=B[i]; }
 
 // Mechanization + covariance propagation (discrete-time linearized, ENU, flat Earth)
 static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float dt, float q_scale, vec3f *out_aw) {
+    int i, r, c, k;
     // Remove estimated biases
     vec3f w = v3_sub(gyro_meas_b, S->bg);
     vec3f fb = v3_sub(acc_meas_b, S->ba);
@@ -425,7 +400,7 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
     // x = [dp dv dtheta ba bg]
     float F[15*15]; memset(F, 0, sizeof(F));
     // dp_dot = dv
-    for (int i=0;i<3;i++) F[(0+i)*15 + (3+i)] = 1.0f;
+    for (i=0;i<3;i++) F[(0+i)*15 + (3+i)] = 1.0f;
     // dv_dot = -R*skew(fb)*dtheta - R*ba
     // dtheta_dot = -skew(w)*dtheta - bg
     // ba_dot = 0 (random walk), bg_dot = 0 (random walk)
@@ -436,29 +411,29 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
                         fz,  0, -fx,
                        -fy, fx,  0 };
     float A[9]; // -R * skew(f)
-    for (int r=0;r<3;r++) for (int c=0;c<3;c++) {
+    for (r=0;r<3;r++) for (c=0;c<3;c++) {
         float s=0;
-        for (int k=0;k<3;k++) s += R[r*3+k]*skew_f[k*3+c];
+        for (k=0;k<3;k++) s += R[r*3+k]*skew_f[k*3+c];
         A[r*3+c] = -s;
     }
     // dv wrt dtheta
-    for (int r=0;r<3;r++) for (int c=0;c<3;c++) F[(3+r)*15 + (6+c)] = A[r*3+c];
+    for (r=0;r<3;r++) for (c=0;c<3;c++) F[(3+r)*15 + (6+c)] = A[r*3+c];
     // dv wrt ba: -R
-    for (int r=0;r<3;r++) for (int c=0;c<3;c++) F[(3+r)*15 + (9+c)] = -R[r*3+c];
+    for (r=0;r<3;r++) for (c=0;c<3;c++) F[(3+r)*15 + (9+c)] = -R[r*3+c];
 
     // dtheta wrt dtheta: -skew(w)
     float wx=w.x, wy=w.y, wz=w.z;
     float skew_w[9] = { 0, -wz,  wy,
                         wz,  0, -wx,
                        -wy, wx,  0 };
-    for (int r=0;r<3;r++) for (int c=0;c<3;c++) F[(6+r)*15 + (6+c)] = -skew_w[r*3+c];
+    for (r=0;r<3;r++) for (c=0;c<3;c++) F[(6+r)*15 + (6+c)] = -skew_w[r*3+c];
     // dtheta wrt bg: -I
-    for (int i=0;i<3;i++) F[(6+i)*15 + (12+i)] = -1.0f;
+    for (i=0;i<3;i++) F[(6+i)*15 + (12+i)] = -1.0f;
 
     // Discrete Phi ≈ I + F dt
     float Phi[15*15]; memset(Phi, 0, sizeof(Phi));
-    for (int i=0;i<15;i++) Phi[i*15+i] = 1.0f;
-    for (int r=0;r<15;r++) for (int c=0;c<15;c++) Phi[r*15+c] += F[r*15+c]*dt;
+    for (i=0;i<15;i++) Phi[i*15+i] = 1.0f;
+    for (r=0;r<15;r++) for (c=0;c<15;c++) Phi[r*15+c] += F[r*15+c]*dt;
 
     // Process noise (continuous densities, scaled during outages)
     // Tune these to your IMU
@@ -475,14 +450,14 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
     // Discrete Qd (simple diagonal approximation in error-state space)
     // dv driven by accel noise; dtheta driven by gyro noise
     float Q[15*15]; memset(Q, 0, sizeof(Q));
-    for (int i=0;i<3;i++) {
+    for (i=0;i<3;i++) {
         Q[(3+i)*15 + (3+i)] = sa2 * dt;     // dv
         Q[(6+i)*15 + (6+i)] = sg2 * dt;     // dtheta
         Q[(9+i)*15 + (9+i)] = sba2 * dt;    // ba RW
         Q[(12+i)*15 + (12+i)] = sbg2 * dt;  // bg RW
     }
     // also inject into dp via integration of dv noise (rough)
-    for (int i=0;i<3;i++) Q[(0+i)*15 + (0+i)] = sa2 * dt*dt*dt / 3.0f;
+    for (i=0;i<3;i++) Q[(0+i)*15 + (0+i)] = sa2 * dt*dt*dt / 3.0f;
 
     // P = Phi P Phi^T + Q
     float PhiP[15*15], PhiT[15*15], PhiPPhiT[15*15];
@@ -509,19 +484,20 @@ static void ins15_inject(ins15_t *S, const float dx[15]) {
 }
 
 static bool kf_update_3(ins15_t *S, const float H[3*15], const float z[3], const float h[3], const float Rdiag[3], float *out_NIS) {
+    int i, r, c, k, j;
     // S = H P H^T + R (3x3)
     float HP[3*15];
-    for (int r=0;r<3;r++) {
-        for (int c=0;c<15;c++) {
+    for (r=0;r<3;r++) {
+        for (c=0;c<15;c++) {
             float s=0;
-            for (int k=0;k<15;k++) s += H[r*15+k]*S->P[k*15+c];
+            for (k=0;k<15;k++) s += H[r*15+k]*S->P[k*15+c];
             HP[r*15+c]=s;
         }
     }
     float S33[9];
-    for (int r=0;r<3;r++) for (int c=0;c<3;c++) {
+    for (r=0;r<3;r++) for (c=0;c<3;c++) {
         float s=0;
-        for (int k=0;k<15;k++) s += HP[r*15+k]*H[c*15+k];
+        for (k=0;k<15;k++) s += HP[r*15+k]*H[c*15+k];
         if (r==c) s += Rdiag[r];
         S33[r*3+c]=s;
     }
@@ -532,39 +508,39 @@ static bool kf_update_3(ins15_t *S, const float H[3*15], const float z[3], const
 
     if (out_NIS) {
         float tmp[3]={0};
-        for (int i=0;i<3;i++) for (int j=0;j<3;j++) tmp[i] += nu[j]*Sinv[j*3+i];
+        for(i=0;i<3;i++) for (j=0;j<3;j++) tmp[i] += nu[j]*Sinv[j*3+i];
         *out_NIS = nu[0]*tmp[0] + nu[1]*tmp[1] + nu[2]*tmp[2];
     }
 
     // K = P H^T Sinv  (15x3)
     float PHt[15*3];
-    for (int r=0;r<15;r++) for (int c=0;c<3;c++) {
+    for (r=0;r<15;r++) for (c=0;c<3;c++) {
         float s=0;
-        for (int k=0;k<15;k++) s += S->P[r*15+k]*H[c*15+k];
+        for (k=0;k<15;k++) s += S->P[r*15+k]*H[c*15+k];
         PHt[r*3+c]=s;
     }
     float K[15*3];
-    for (int r=0;r<15;r++) for (int c=0;c<3;c++) {
+    for (r=0;r<15;r++) for (c=0;c<3;c++) {
         float s=0;
-        for (int k=0;k<3;k++) s += PHt[r*3+k]*Sinv[k*3+c];
+        for (k=0;k<3;k++) s += PHt[r*3+k]*Sinv[k*3+c];
         K[r*3+c]=s;
     }
 
     // dx = K nu
     float dx[15]={0};
-    for (int r=0;r<15;r++) dx[r] = K[r*3+0]*nu[0] + K[r*3+1]*nu[1] + K[r*3+2]*nu[2];
+    for (r=0;r<15;r++) dx[r] = K[r*3+0]*nu[0] + K[r*3+1]*nu[1] + K[r*3+2]*nu[2];
     ins15_inject(S, dx);
 
     // Joseph covariance update: P = (I-KH)P(I-KH)^T + K R K^T
     float KH[15*15]; memset(KH,0,sizeof(KH));
-    for (int r=0;r<15;r++) for (int c=0;c<15;c++) {
+    for (r=0;r<15;r++) for (c=0;c<15;c++) {
         float s=0;
-        for (int k=0;k<3;k++) s += K[r*3+k]*H[k*15+c];
+        for (k=0;k<3;k++) s += K[r*3+k]*H[k*15+c];
         KH[r*15+c]=s;
     }
     float I_KH[15*15]; memset(I_KH,0,sizeof(I_KH));
-    for (int i=0;i<15;i++) I_KH[i*15+i]=1.0f;
-    for (int i=0;i<15*15;i++) I_KH[i] -= KH[i];
+    for (i=0;i<15;i++) I_KH[i*15+i]=1.0f;
+    for (i=0;i<15*15;i++) I_KH[i] -= KH[i];
 
     float tmp[15*15], I_KH_T[15*15], P1[15*15];
     mat15_mul(I_KH, S->P, tmp);
@@ -572,24 +548,25 @@ static bool kf_update_3(ins15_t *S, const float H[3*15], const float z[3], const
     mat15_mul(tmp, I_KH_T, P1);
 
     float KRKt[15*15]; memset(KRKt,0,sizeof(KRKt));
-    for (int r=0;r<15;r++) {
-        for (int c=0;c<15;c++) {
+    for (r=0;r<15;r++) {
+        for (c=0;c<15;c++) {
             float s=0;
-            for (int k=0;k<3;k++) {
+            for (k=0;k<3;k++) {
                 float Rk = Rdiag[k];
                 s += K[r*3+k] * Rk * K[c*3+k];
             }
             KRKt[r*15+c]=s;
         }
     }
-    for (int i=0;i<15*15;i++) S->P[i] = P1[i] + KRKt[i];
+    for (i=0;i<15*15;i++) S->P[i] = P1[i] + KRKt[i];
     return true;
 }
 
 static bool ins15_update_gnss_pos(ins15_t *S, vec3f zpos, float Rpos, float *out_NIS) {
+    int i;
     float H[3*15]; memset(H,0,sizeof(H));
     // z = p + n  => nu uses nominal p, and H maps error δp
-    for (int i=0;i<3;i++) H[i*15 + (0+i)] = 1.0f;
+    for (i=0;i<3;i++) H[i*15 + (0+i)] = 1.0f;
 
     float z[3] = { zpos.x, zpos.y, zpos.z };
     float h[3] = { S->p.x, S->p.y, S->p.z };
@@ -598,16 +575,18 @@ static bool ins15_update_gnss_pos(ins15_t *S, vec3f zpos, float Rpos, float *out
 }
 
 static bool ins15_update_gnss_vel(ins15_t *S, vec3f zvel, const float Rvdiag[3], float *out_NIS) {
+    int i;
     float H[3*15]; memset(H,0,sizeof(H));
-    for (int i=0;i<3;i++) H[i*15 + (3+i)] = 1.0f; // δv
+    for (i=0;i<3;i++) H[i*15 + (3+i)] = 1.0f; // δv
     float z[3] = { zvel.x, zvel.y, zvel.z };
     float h[3] = { S->v.x, S->v.y, S->v.z };
     return kf_update_3(S, H, z, h, Rvdiag, out_NIS);
 }
 
 static void ins15_update_zupt(ins15_t *S) {
+    int i;
     // 3 sequential scalar updates on v components with z=0
-    for (int i=0;i<3;i++) {
+    for (i=0;i<3;i++) {
         float H[3*15]; memset(H,0,sizeof(H));
         H[0*15 + (3+i)] = 1.0f;
         float z[3]={0,0,0};
@@ -621,7 +600,32 @@ static void ins15_update_zupt(ins15_t *S) {
     }
 }
 
+static void ins15_update_zaru(ins15_t *S, vec3f gyro_meas_b ){
+    int i;
+    for( i=0; i<3; i++ ){
+        float H[3*15]; memset(H, 0, sizeof(H));
+        H[0*15 + (12+i)] = 1.0f;    //deltabg axis i
+
+        float z[3] = {0,0,0};
+        float h[3] = {0,0,0};
+
+        float meas = (i==0)? gyro_meas_b.x:(i==1) ? gyro_meas_b.y:gyro_meas_b.z;
+        float pred = (i==0)? S->bg.x:(i==1)?S->bg.y:S->bg.z;
+
+        z[0] = meas;
+        h[0] = pred;
+
+        // Tune: smaller means stronger bias locking when still
+        // Start conservative; adjust down if yaw still drifts at stops.
+
+        const float R_W = 1e-5f; /* rad/s^2*/
+        float Rdiag[3] = {R_W, 1e9f, 1e9f};
+        kf_update_3(S, H, z, h, Rdiag, NULL);
+    }
+}
+
 static void ins15_update_nhc(ins15_t *S) {
+    int c;
     // Measurement: [v_y^b, v_z^b] ~ 0
     float R[9]; R_from_q(S->q, R);
     // v_b = R^T v_enu
@@ -639,15 +643,33 @@ static void ins15_update_nhc(ins15_t *S) {
     // vb = RT * v => d(vb) = RT * δv
     float H[3*15]; memset(H,0,sizeof(H));
     // row0 -> vb.y
-    for (int c=0;c<3;c++) H[0*15 + (3+c)] = RT[3 + c];
+    for (c=0;c<3;c++) H[0*15 + (3+c)] = RT[3 + c];
     // row1 -> vb.z
-    for (int c=0;c<3;c++) H[1*15 + (3+c)] = RT[6 + c];
+    for (c=0;c<3;c++) H[1*15 + (3+c)] = RT[6 + c];
+
+    /**
+     * d(vb)/d(theta) = skew(vb)
+     * skew(vb) = [0 -vz vy
+     *              vz 0 -vx
+     *              -vy vx 0]
+     * row0 corresponds to vb.y -> [-vy vx 0]
+     */
+    H[0*15 + (6+0)] = vb.z;
+    H[0*15 + (6+1)] = 0.0f;
+    H[0*15 + (6+2)] = -vb.x;
+
+    // row 1 corresponds to vb.z -> [-vy, vx, 0]
+    H[1*15 + (6+0)] = -vb.y;
+    H[1*15 + (6+1)] = vb.x;
+    H[1*15 + (6+2)] = 0.0f;
 
     float z[3] = {0,0,0};
     float h[3] = { vb.y, vb.z, 0.0f };
     float Rdiag[3] = { R_NHC_VY, R_NHC_VZ, 1e9f };
     kf_update_3(S, H, z, h, Rdiag, NULL);
 }
+
+
 
 // ------------------------- GNSS helper (your ioctl pattern) -------------------------
 
@@ -695,6 +717,7 @@ typedef struct {
     int gnss_last_fix;
     double gnss_last_lat_deg, gnss_last_lon_deg, gnss_last_alt_m;
     float gnss_last_speed_mps, gnss_last_heading_deg, gnss_last_hdop;
+    float gnss_last_course_deg, gnss_last_yaw_enu_deg;
 
     // INS
     ins15_t ins;
@@ -707,42 +730,41 @@ typedef struct {
     // nav state
     bool nav_ready;
 
-    // GNSS outage tracking
-    double last_gnss_s;
-    bool gnss_valid;
-    bool gnss_just_returned;
-    int fade_in_left;
-    int reacq_left;
-    double outage_s;
-    float qscale;
-
+    // GNSS presence / outage / reacquisition tracking
+double last_gnss_meas_s;     // last time we RECEIVED a GNSS fix (raw measurement)
+double last_gnss_used_s;     // last time we ACCEPTED (used) GNSS position update
+bool   gnss_present;        // derived: (now - last_gnss_meas_s) <= GNSS_TIMEOUT_S
+bool   gnss_valid;          // legacy: last accepted pos update (kept for logs)
+int    reacq_left;          // >0 while in reacquisition mode (relaxed gating)
+bool   reacq_active;        // latched for 1 Hz logs
+bool   snap_applied;        // latched for 1 Hz logs
+double outage_s;            // seconds since last_gnss_meas_s (raw outage duration)
+float  qscale;              // process-noise scale (depends ONLY on gnss_present/outage_s)
     // ZUPT
     int zupt_count;
 
     // NIS for logging/diagnostics
-    float last_nis_pos;
-    float last_nis_vel;
+float last_nis_pos;
+float last_nis_vel;
 
+// Latched per-1Hz log interval
+int   last_gnss_used_pos;   // 1 if a GNSS pos update was accepted since last log line
+int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last log line
     // last computed world acceleration (ENU)
     vec3f last_aw;
 
     // logging
     FILE *logf;
     char log_filename[256];
+    FILE *dbglog;
+    char dbglog_filename[256];
     double last_log_s;
 
-    // ENU reference line logged to CSV once reference is known
-    bool enu_ref_logged;
+    int64_t last_gnss_fix_mono_ns;
 
-    // GNSS measurement timestamp (monotonic ns) for age computation
-    int64_t gnss_meas_tmono_ns;
-    double  gnss_meas_age_s;
-
-    // Diagnostics / decision flags (latched for logging)
-    int gnss_used_pos;
-    int gnss_used_vel;
-    int reacq_active;
-    int snap_applied;
+    vec3f gnss_enu_last;
+    bool gnss_enu_last_valid;
+    
 
     // threading
     pthread_mutex_t mtx;
@@ -780,15 +802,36 @@ static void make_log_file(ctx_t *C) {
         "ba_x,ba_y,ba_z,"
         "bg_x,bg_y,bg_z,"
         "imu_ax,imu_ay,imu_az,imu_gx,imu_gy,imu_gz,"
-        "gnss_meas_fix,gnss_meas_lat_deg,gnss_meas_lon_deg,gnss_meas_alt_m,gnss_meas_speed_mps,gnss_meas_heading_deg,gnss_meas_hdop,gnss_meas_age_s,"
-        "gnss_valid,outage_s,qscale,nis_pos,nis_vel,acc_var,gyro_var,zupt_count,"
-        "gnss_used_pos,gnss_used_vel,reacq_active,snap_applied\n"
-    ));
+        "gnss_fix,lat_deg,lon_deg,alt_m,speed_mps,course_deg,yaw_enu_deg,hdop,"
+        "gnss_E,gnss_N,gnss_U,err_E,err_N,err_H,"
+        "gnss_present,gnss_valid,gnss_used_pos,gnss_used_vel,reacq_active,snap_applied,"
+        "outage_s,qscale,nis_pos,nis_vel,gnss_meas_age_s\n"
+    );
     fflush(C->logf);
 
     fprintf(stderr, "Logging to %s\n", C->log_filename);
     C->last_log_s = 0.0;
 }
+
+static void make_debug_log_file(ctx_t *C){
+    /* Assume make_log_file already created nav_log folder */
+    time_t t = time(NULL);
+    struct tm tm;
+    localtime_r(&t, &tm);
+
+    snprintf(C->dbglog_filename, sizeof(C->dbglog_filename),
+            "/home/sijeo/nav_logs/debug_%04d%02d%02d_%02d%02d%02d.log",
+        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+    C->dbglog = fopen(C->dbglog_filename, "w");
+    if( !C->dbglog ){
+        perror("fopen dbglog ");
+        return;
+    }
+    setvbuf(C->dbglog, NULL, _IOLBF, 0); /* Line Buffered */
+}
+
+
 
 // ------------------------- IMU thread -------------------------
 
@@ -820,6 +863,27 @@ static void* imu_thread(void *arg) {
 
 // ------------------------- GNSS thread -------------------------
 
+static pthread_mutex_t dbglog_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+static void dbg_printf(ctx_t *C, const char *fmt, ... ){
+    if(!C || !C->dbglog ){
+        return;
+    }
+    pthread_mutex_lock(&dbglog_mtx);
+
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    fprintf(C->dbglog, "[%lld.%03lld]", (long long)ts.tv_sec, (long long)(ts.tv_nsec/1000000));
+
+    va_list ap;
+    va_start( ap, fmt );
+    vfprintf(C->dbglog, fmt, ap);
+    va_end(ap);
+
+    fputc('\n', C->dbglog);
+    pthread_mutex_unlock(&dbglog_mtx);
+}
+
 static void* gnss_thread(void *arg) {
     ctx_t *C = (ctx_t*)arg;
     int fd = open_gnss();
@@ -840,6 +904,17 @@ static void* gnss_thread(void *arg) {
 
         C->have_gnss = false;
         C->gnss_have_fix = f.have_fix ? 1 : 0;
+        double tmeas = now_sec();
+        C->last_gnss_meas_s = tmeas;
+        bool new_fix = true;
+        if( C->gnss_have_fix ){
+            if( C->last_gnss_fix_mono_ns == f.monotonic_ns ){
+                new_fix = false;
+
+            } else {
+                C->last_gnss_fix_mono_ns = f.monotonic_ns;
+            }
+        }
 
         if (C->gnss_have_fix) {
             double lat_deg = (double)f.lat_e7 / 1e7;
@@ -853,10 +928,10 @@ static void* gnss_thread(void *arg) {
 
 #if HAVE_GNSS_HDOP
             // Expected fields if you extended your driver:
-            //   f.hdop_valid (bool-like), f.hdop_x10 (uint16/uint8)
+            //   f.hdop_valid (bool-like), f.hdop_x100 (uint16/uint8)
             // If not present, set HAVE_GNSS_HDOP=0.
             if (f.hdop_valid) {
-                C->gnss_hdop = (float)f.hdop_x10 * 0.1f;
+                C->gnss_hdop = (float)f.hdop_x100 / 100.0f;
                 C->gnss_hdop_valid = true;
             } else {
                 C->gnss_hdop_valid = false;
@@ -867,16 +942,22 @@ static void* gnss_thread(void *arg) {
 
 #if HAVE_GNSS_HEADING
             // Expected fields if you extended your driver:
-            //   f.heading_valid (bool-like), f.heading_deg_e5 (int32, deg*1e5)
+            //   f.heading_valid (bool-like), f.course_deg_e5 (int32, deg*1e5)
             if (f.heading_valid && C->gnss_speed_mps > 0.5f) {
-                float heading_deg = (float)f.heading_deg_e5 / 1e5f;
-                C->gnss_heading_rad = heading_deg * DEG2RAD;
+                float heading_deg = (float)f.course_deg_e5 / 1e5f;
+                float yaw_enu = (0.5*M_PI)-(heading_deg * DEG2RAD);
+                yaw_enu = wrap_pi(yaw_enu);
+
+                C->gnss_heading_rad = yaw_enu;
                 C->gnss_heading_valid = true;
+
+                C->gnss_last_course_deg = heading_deg;
+                C->gnss_last_yaw_enu_deg = yaw_enu/DEG2RAD;
 
                 // derive ENU velocity (course over ground)
                 float spd = C->gnss_speed_mps;
                 float psi = C->gnss_heading_rad;
-                C->gnss_vel_enu = v3(spd*sinf(psi), spd*cosf(psi), 0.0f);
+                C->gnss_vel_enu = v3(spd*cosf(psi), spd*sinf(psi), 0.0f);
                 C->gnss_vel_valid = true;
             } else {
                 C->gnss_heading_valid = false;
@@ -887,9 +968,10 @@ static void* gnss_thread(void *arg) {
             C->gnss_vel_valid = false;
 #endif
 
-            C->have_gnss = true;
-            C->gnss_meas_tmono_ns = f.monotonic_ns;
-            C->gnss_meas_age_s = 0.0;
+            C->have_gnss = (C->gnss_have_fix && new_fix) ;
+// Mark GNSS measurement presence (independent of EKF gating)
+
+
 
             // Save for logging
             C->gnss_last_lat_deg = lat_deg;
@@ -906,15 +988,10 @@ static void* gnss_thread(void *arg) {
                 C->enu_ref_lla = (lla_t){C->gnss_lat_rad, C->gnss_lon_rad, C->gnss_alt_m};
                 C->enu_ref_ecef = lla2ecef(C->enu_ref_lla);
                 C->enu_ref_set = true;
-                if (C->logf && !C->enu_ref_logged) {
-                    fprintf(C->logf, "# ENU_REF lat=%.9f lon=%.9f alt=%.3f\n",
-                            C->enu_ref_lla.lat / DEG2RAD,
-                            C->enu_ref_lla.lon / DEG2RAD,
-                            C->enu_ref_lla.h);
-                    fflush(C->logf);
-                    C->enu_ref_logged = true;
-                }
-                fprintf(stderr, "ENU origin set from first GNSS fix.\n");
+                dbg_printf(C, "ENU_REF_SET lat=%.9f lon=%.9f alt=%.3f",
+                C->enu_ref_lla.lat * (180.0/M_PI), 
+                C->enu_ref_lla.lon * (180.0/M_PI),
+                C->enu_ref_lla.h); /* Print in Degrees for Sanity*/
             }
         } else {
             // No fix: still keep last values for logging
@@ -935,6 +1012,7 @@ static void* gnss_thread(void *arg) {
 // ------------------------- Fusion thread -------------------------
 
 static void* fusion_thread(void *arg) {
+    int i;
     ctx_t *C = (ctx_t*)arg;
     uint64_t last_tick_ns = monotonic_ns();
 
@@ -970,30 +1048,43 @@ static void* fusion_thread(void *arg) {
             if (C->enu_ref_set && C->have_gnss && C->gnss_have_fix) {
                 lla_t L = { C->gnss_lat_rad, C->gnss_lon_rad, C->gnss_alt_m };
                 ecef_t E = lla2ecef(L);
+                dbg_printf(C, "NAV_INIT using ENU_REF lat=%.9f lon=%.9f alt=%.3f",
+                C->enu_ref_lla.lat * (180.0/M_PI),
+                C->enu_ref_lla.lon * (180.0/M_PI),
+                C->enu_ref_lla.h);
                 double enu_d[3];
                 ecef2enu(E, C->enu_ref_lla, C->enu_ref_ecef, enu_d);
-
+                dbg_printf(C, "NAV_INIT zpos_ENU=(%.3f,%.3f,%.3f)", enu_d[0],enu_d[1],enu_d[2]);
                 ins15_init(&C->ins);
                 C->ins.p = v3((float)enu_d[0], (float)enu_d[1], (float)enu_d[2]);
                 C->ins.v = v3(0,0,0);
-                C->ins.q = q_identity();
+                //C->ins.q = q_identity();
+                float yaw0 = 0.0f;
+                if(C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN ) {
+                    yaw0 = C->gnss_heading_rad;
+                }
+                C->ins.q = q_normalize(q_from_yaw_delta(yaw0));
 
                 // Start biases at 0 (since you already calibrated raw -> SI).
                 C->ins.ba = v3(0,0,0);
                 C->ins.bg = v3(0,0,0);
 
                 C->nav_ready = true;
-                C->gnss_valid = true;
-                C->gnss_just_returned = false;
-                C->fade_in_left = 0;
-                C->outage_s = 0.0;
-                C->qscale = 1.0f;
-                C->last_gnss_s = now_sec();
+                // GNSS measurement just initialized navigation -> treat as present+used
+                double t0 = now_sec();
+                C->last_gnss_meas_s = t0;
+                C->last_gnss_used_s = t0;
+                C->gnss_present     = true;
+                C->gnss_valid       = true;   // legacy: last accepted update
+                C->reacq_left       = 0;
+                C->reacq_active     = false;
+                C->snap_applied     = false;
+                C->outage_s         = 0.0;
+                C->qscale           = 1.0f;
                 C->last_nis_pos = 0.0f;
                 C->last_nis_vel = 0.0f;
 
-                fprintf(stderr, "Nav initialized. ENU p=(%.2f,%.2f,%.2f)\n",
-                        C->ins.p.x, C->ins.p.y, C->ins.p.z);
+                dbg_printf(C, "NAV_READY ins.p=(%.3f,%.3f,%.3f)",C->ins.p.x, C->ins.p.y, C->ins.p.z);
 
                 C->have_gnss = false; // consume
             }
@@ -1002,18 +1093,31 @@ static void* fusion_thread(void *arg) {
             continue;
         }
 
-        // GNSS outage tracking
-        double tnow = now_sec();
-        if (!C->gnss_valid || (tnow - C->last_gnss_s) > GNSS_TIMEOUT_S) {
-            if (C->gnss_valid) {
-                C->gnss_valid = false;
-                C->gnss_just_returned = false;
-            }
-            C->outage_s += dt;
-        } else {
-            C->outage_s = 0.0;
-        }
-        C->qscale = C->gnss_valid ? 1.0f : compute_qscale(C->outage_s);
+        // GNSS presence/outage tracking (decoupled from gating)
+double tnow = now_sec();
+if (C->last_gnss_meas_s <= 0.0) {
+    // no GNSS measurement ever received yet (shouldn't happen after nav_ready, but keep safe)
+    C->gnss_present = false;
+    C->outage_s += dt;
+} else {
+    double age = tnow - C->last_gnss_meas_s;
+    if (age <= GNSS_TIMEOUT_S) {
+        C->gnss_present = true;
+        C->outage_s = 0.0;
+    } else {
+        C->gnss_present = false;
+        C->outage_s = age;
+    }
+}
+
+double nav_age = tnow - C->last_gnss_used_s;
+if (nav_age <= GNSS_TIMEOUT_S) {
+    C->outage_s = 0.0;
+    C->qscale = 1.0f;
+} else {
+    C->outage_s = nav_age;
+    C->qscale = compute_qscale(C->outage_s);
+}
 
         // Predict INS
         ins15_predict(&C->ins, acc_b, gyro_b, dt, C->qscale, &C->last_aw);
@@ -1033,99 +1137,111 @@ static void* fusion_thread(void *arg) {
 
         if (C->zupt_count >= ZUPT_COUNT_REQUIRED) {
             ins15_update_zupt(&C->ins);
+            ins15_update_zaru(&C->ins, gyro_b);
             C->zupt_count = 0;
         }
 
         // Velocity decay when *almost* stopped (helps fight tiny residuals)
         float vnorm = v3_norm(C->ins.v);
-        if (vnorm < VEL_EPS) {
+        const float VEL_DAMP_THR = 0.10f;
+        if (vnorm < VEL_DAMP_THR) {
             C->ins.v = v3_scale(C->ins.v, VEL_DECAY);
         }
 
         // GNSS fusion (pos + optional vel + optional yaw complementary)
-        // Latch diagnostic flags for this cycle (used by 1 Hz logger)
-        C->gnss_used_pos = 0;
-        C->gnss_used_vel = 0;
-        C->reacq_active  = 0;
-        C->snap_applied  = 0;
-
-        // GNSS measurement age (seconds) from driver monotonic timestamp
-        if (C->gnss_meas_tmono_ns != 0) {
-            double age = (double)((int64_t)monotonic_ns() - (int64_t)C->gnss_meas_tmono_ns) * 1e-9;
-            if (age < 0) age = 0;
-            C->gnss_meas_age_s = age;
-        } else {
-            C->gnss_meas_age_s = 0.0;
-        }
-
         if (C->have_gnss && C->gnss_have_fix) {
             lla_t L = { C->gnss_lat_rad, C->gnss_lon_rad, C->gnss_alt_m };
             ecef_t E = lla2ecef(L);
             double enu_d[3];
             ecef2enu(E, C->enu_ref_lla, C->enu_ref_ecef, enu_d);
             vec3f zpos = v3((float)enu_d[0], (float)enu_d[1], (float)enu_d[2]);
-
+            C->gnss_enu_last = zpos;
+            C->gnss_enu_last_valid = true;
+            dbg_printf(C, "GNSS_FUSE ENU_REF lat=%.9f lon=%.9f alt=%.3f meas_age=%.3f present=%d",
+            C->enu_ref_lla.lat * (180.0/M_PI),
+            C->enu_ref_lla.lon * (180.0/M_PI),
+            C->enu_ref_lla.h,
+            (float)(now_sec() - C->last_gnss_meas_s),
+            C->gnss_present ? 1 : 0);
+            dbg_printf(C, "GNSS_FUSE zpos_ENU=(%.3f,%.3f,%.3f) ins.p=(%.3f,%.3f,%.3f)",
+            zpos.x, zpos.y, zpos.z, 
+            C->ins.p.x, C->ins.p.y, C->ins.p.z);
             float hdop = (C->gnss_hdop_valid ? C->gnss_hdop : 1.0f);
             float Rpos = R_GNSS_POS_VAR * hdop * hdop;
 
-            if (!C->gnss_valid) {
-                C->gnss_just_returned = true;
-                C->fade_in_left = FADE_IN_STEPS;
-            }
-            if (C->gnss_just_returned) Rpos *= FADE_IN_FACT_INIT;
-
-            // Reacquisition mode: after long outage, relax gating so we can re-lock
-            if (!C->gnss_valid && C->outage_s > REACQ_TRIGGER_S) {
-                if (C->reacq_left <= 0) C->reacq_left = REACQ_STEPS;
+            // Reacquisition: if we haven't ACCEPTED GNSS for a while, relax gating and inflate R
+            double tnow2 = now_sec();
+            if ((tnow2 - C->last_gnss_used_s) > REACQ_MIN_OUTAGE_S && C->reacq_left <= 0) {
+                C->reacq_left = REACQ_STEPS;
             }
 
-            bool reacq = (C->reacq_left > 0);
-            float gate_th_pos = CHI2_3DOF_GATE;
-            if (reacq) {
-                C->reacq_active = 1;
-                Rpos *= REACQ_RPOS_MULT;
-                gate_th_pos = CHI2_3DOF_REACQ;
+            float gate_thr = CHI2_3DOF_GATE;
+            if (C->reacq_left > 0) {
+                 Rpos *= REACQ_R_MULT;
+                gate_thr = REACQ_CHI2_GATE;
+                C->reacq_active = true; // latched for 1 Hz logs
             }
 
-            float nis_pos = 0.0f;
-            bool ok_pos = ins15_update_gnss_pos(&C->ins, zpos, Rpos, &nis_pos);
-            bool gate_pos = ok_pos && (nis_pos < gate_th_pos);
-            C->gnss_used_pos = gate_pos ? 1 : 0;
-            C->last_nis_pos = nis_pos;
+            // Optional snap-to-GNSS safety net after long outage and large innovation
+            float innov_e = zpos.x - C->ins.p.x;
+            float innov_n = zpos.y - C->ins.p.y;
+            float innov_h = sqrtf(innov_e*innov_e + innov_n*innov_n);
+            dbg_printf(C, "GNSS_INNOV innov_ENU=(%.3f,%.3f) norm=%.3f hdop=%.2f qscale=%.2f",
+            innov_e, innov_n, innov_h, hdop, C->qscale);
+            bool allow_snap = ((tnow2 - C->last_gnss_used_s) > SNAP_MIN_OUTAGE_S);
+            if (allow_snap && (!C->gnss_hdop_valid || hdop <= SNAP_HDOP_MAX) && innov_h > SNAP_INNOV_M) {
+                // Snap position (and velocity if available) to GNSS to guarantee re-lock.
+                C->ins.p = zpos;
+                if (C->gnss_vel_valid) C->ins.v = C->gnss_vel_enu;
 
-            if (gate_pos) {
-                C->last_gnss_s = now_sec();
+                // Inflate position covariance a bit after snap
+                for (i=0;i<3;i++) {
+                int ii = i*15 + i;
+                    if (C->ins.P[ii] < (25.0f)) C->ins.P[ii] = 25.0f; // ~5 m std
+                }
+
+                C->last_gnss_used_s = tnow2;
                 C->gnss_valid = true;
-                C->outage_s = 0.0;
-                C->qscale = 1.0f;
+                C->last_gnss_used_pos = 1;
+                C->snap_applied = true;
+                C->last_nis_pos = 0.0f;
+                C->reacq_left = 0; // done
             } else {
-                // Reject: during very long outages, allow a one-shot snap to re-lock if residual is enormous.
-                if (C->outage_s > SNAP_OUTAGE_S && nis_pos > SNAP_NIS_MIN) {
-                    ins15_snap_to_gnss(&C->ins, zpos, C->gnss_vel_valid, C->gnss_vel_enu);
-                    C->snap_applied = 1;
+                float nis_pos = 0.0f;
+                bool ok_pos = ins15_update_gnss_pos(&C->ins, zpos, Rpos, &nis_pos);
+                bool gate_pos = ok_pos && (nis_pos < gate_thr);
+                C->last_nis_pos = nis_pos;
 
-                    // After snap, treat as "valid" and reset outage bookkeeping
-                    C->last_gnss_s = now_sec();
+                if (gate_pos) {
+                    C->last_gnss_used_s = tnow2;
                     C->gnss_valid = true;
-                    C->outage_s = 0.0;
-                    C->qscale = 1.0f;
+                    C->last_gnss_used_pos = 1;
+                }
 
-                    // Also count it as a used position update for logging
-                    C->gnss_used_pos = 1;
-
-                    // Exit reacq mode quickly after snap
-                    C->reacq_left = 0;
+                if (C->reacq_left > 0) {
+                    // count down each GNSS attempt during reacq, regardless of accept
+                    C->reacq_left--;
                 }
             }
 
             // Velocity update if valid
             if (C->gnss_vel_valid) {
                 float Rv[3] = { RV_VEL_E, RV_VEL_N, RV_VEL_U };
+
+                // Optional: Inflate velocity  noise when speed is low (course-based velocity gets noisy )
+                if( C->gnss_speed_mps < 1.0f ){
+                    Rv[0] *= 10.0f; Rv[1] *= 10.0f
+                }
                 float nis_vel = 0.0f;
                 bool ok_vel = ins15_update_gnss_vel(&C->ins, C->gnss_vel_enu, Rv, &nis_vel);
                 bool gate_vel = ok_vel && (nis_vel < CHI2_3DOF_GATE);
                 C->last_nis_vel = nis_vel;
-                (void)gate_vel;
+                
+                if( gate_vel ){
+                    C->last_gnss_used_vel = 1;
+                    C->last_gnss_used_s = tnow2;
+                    C->gnss_valid = true;
+                }
             } else {
                 C->last_nis_vel = 0.0f;
             }
@@ -1136,28 +1252,15 @@ static void* fusion_thread(void *arg) {
                 float yaw_gnss = C->gnss_heading_rad;
                 float dpsi = wrap_pi(yaw_gnss - yaw_est);
                 float dpsi_corr = YAW_FUSION_ALPHA * dpsi;
-                C->ins.q = q_normalize(q_mul(C->ins.q, q_from_yaw_delta(dpsi_corr)));
+                C->ins.q = q_normalize(q_mul(q_from_yaw_delta(dpsi_corr), C->ins.q));
             }
-
-            if (C->gnss_just_returned && gate_pos) {
-                C->fade_in_left--;
-                if (C->fade_in_left <= 0) C->gnss_just_returned = false;
-            }
-
-            if (gate_pos) {
-                fprintf(stderr, "GNSS pos upd OK: NIS=%.2f Rpos=%.2f hdop=%.2f\n", nis_pos, Rpos, hdop);
-            } else {
-                fprintf(stderr, "GNSS pos upd REJ: NIS=%.2f Rpos=%.2f hdop=%.2f\n", nis_pos, Rpos, hdop);
-            }
-
-            if (C->reacq_left > 0) C->reacq_left--;
             C->have_gnss = false; // consumed
         } else {
             // Dead-reckoning status prints at ~2 Hz
             static double t_last = 0.0;
             double t = now_sec();
             if (t - t_last > 0.5) {
-                fprintf(stderr, "DR: outage=%.1fs qS=%.1f p=(%.1f,%.1f,%.1f) v=(%.2f,%.2f,%.2f)\n",
+                dbg_printf(C, "DR: outage=%.1fs qS=%.1f p=(%.1f,%.1f,%.1f) v=(%.2f,%.2f,%.2f)\n",
                         C->outage_s, C->qscale,
                         C->ins.p.x, C->ins.p.y, C->ins.p.z,
                         C->ins.v.x, C->ins.v.y, C->ins.v.z);
@@ -1174,6 +1277,17 @@ static void* fusion_thread(void *arg) {
         if (tlog - C->last_log_s >= 1.0) {
             if (C->logf) {
                 float yaw_deg = yaw_from_q(C->ins.q) / DEG2RAD;
+                float gnss_meas_age_s = (C->last_gnss_meas_s > 0.0) ? (float)(tlog - C->last_gnss_meas_s) : -1.0f;
+                float gnssE = 0, gnssN=0, gnssU=0, errE=0, errN=0, errH=0;
+                if( C->gnss_enu_last_valid ){
+                    gnssE = C->gnss_enu_last.x;
+                    gnssN = C->gnss_enu_last.y;
+                    gnssU = C->gnss_enu_last.z;
+                    errE = C->ins.p.x - gnssE;
+                    errN = C->ins.p.y - gnssN;
+                    errH = sqrtf(errE*errE + errN*errN);
+                }
+
                 fprintf(C->logf,
                     "%.3f,"
                     "%.3f,%.3f,%.3f,"
@@ -1183,8 +1297,10 @@ static void* fusion_thread(void *arg) {
                     "%.6f,%.6f,%.6f,"
                     "%.6f,%.6f,%.6f,"
                     "%d,%d,%d,%d,%d,%d,"
-                    "%d,%.7f,%.7f,%.2f,%.3f,%.2f,%.2f,%.3f,"
-                    "%d,%.3f,%.2f,%.2f,%.2f,%.6f,%.6f,%d,%d,%d,%d,%d\n",
+                    "%d,%.7f,%.7f,%.2f,%.3f,%.2f,%.2f,%.2f,"
+                    "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,"
+                    "%d,%d,%d,%d,%d,%d,"
+                    "%.3f,%.2f,%.2f,%.2f,%.3f\n",
                     tlog,
                     C->ins.p.x, C->ins.p.y, C->ins.p.z,
                     C->ins.v.x, C->ins.v.y, C->ins.v.z,
@@ -1197,18 +1313,27 @@ static void* fusion_thread(void *arg) {
                     C->gnss_last_fix,
                     C->gnss_last_lat_deg, C->gnss_last_lon_deg, C->gnss_last_alt_m,
                     C->gnss_last_speed_mps,
-                    C->gnss_last_heading_deg,
+                    C->gnss_last_course_deg,
+                    C->gnss_last_yaw_enu_deg,
                     C->gnss_last_hdop,
-                    C->gnss_meas_age_s,
+                    gnssE, gnssN, gnssU, errE, errN, errH,
+                    C->gnss_present ? 1 : 0,
                     C->gnss_valid ? 1 : 0,
+                    C->last_gnss_used_pos,
+                    C->last_gnss_used_vel,
+                    C->reacq_active ? 1 : 0,
+                    C->snap_applied ? 1 : 0,
                     C->outage_s, C->qscale,
                     C->last_nis_pos, C->last_nis_vel,
-                    C->acc_variance, C->gyro_variance,
-                    C->zupt_count,
-                    C->gnss_used_pos, C->gnss_used_vel,
-                    C->reacq_active, C->snap_applied
+                    gnss_meas_age_s
                 );
                 fflush(C->logf);
+
+                // reset per-log latches
+                C->last_gnss_used_pos = 0;
+                C->last_gnss_used_vel = 0;
+                C->reacq_active = false;
+                C->snap_applied = false;
             }
             C->last_log_s = tlog;
         }
@@ -1239,24 +1364,25 @@ int main(void) {
     C.enu_ref_set = false;
     C.nav_ready = false;
     C.gnss_valid = false;
-    C.gnss_just_returned = false;
-    C.fade_in_left = 0;
-    C.reacq_left = 0;
-    C.outage_s = 0.0;
-    C.qscale = 1.0f;
-    C.zupt_count = 0;
-    C.enu_ref_logged = false;
-    C.gnss_meas_tmono_ns = 0;
-    C.gnss_meas_age_s = 0.0;
-    C.gnss_used_pos = 0;
-    C.gnss_used_vel = 0;
-    C.reacq_active = 0;
-    C.snap_applied = 0;
+C.gnss_present = false;
+C.last_gnss_meas_s = 0.0;
+C.last_gnss_used_s = 0.0;
+C.reacq_left = 0;
+C.reacq_active = false;
+C.snap_applied = false;
+C.outage_s = 0.0;
+C.qscale = 1.0f;
+C.zupt_count = 0;
     C.last_nis_pos = 0.0f;
     C.last_nis_vel = 0.0f;
     C.last_aw = v3(0,0,0);
+C.last_gnss_used_pos = 0;
+C.last_gnss_used_vel = 0;
+C.last_gnss_fix_mono_ns = -1;
+C.gnss_enu_last_valid = false;
 
     make_log_file(&C);
+    make_debug_log_file(&C);
 
     pthread_t th_imu, th_gnss, th_fuse;
     if (pthread_create(&th_imu, NULL, imu_thread, &C) != 0) { perror("imu_thread"); return 1; }
