@@ -600,6 +600,30 @@ static void ins15_update_zupt(ins15_t *S) {
     }
 }
 
+static void ins15_update_zaru(ins15_t *S, vec3f gyro_meas_b ){
+    int i;
+    for( i=0; i<3; i++ ){
+        float H[3*15]; memset(H, 0, sizeof(H));
+        H[0*15 + (12+i)] = 1.0f;    //deltabg axis i
+
+        float z[3] = {0,0,0};
+        float h[3] = {0,0,0};
+
+        float meas = (i==0)? gyro_meas_b.x:(i==1) ? gyro_meas_b.y:gyro_meas_b.z;
+        float pred = (i==0)? S->bg.x:(i==1)?S->bg.y:S->bg.z;
+
+        z[0] = meas;
+        h[0] = pred;
+
+        // Tune: smaller means stronger bias locking when still
+        // Start conservative; adjust down if yaw still drifts at stops.
+
+        const float R_W = 1e-5f; /* rad/s^2*/
+        float Rdiag[3] = {R_W, 1e9f, 1e9f};
+        kf_update_3(S, H, z, h, Rdiag, NULL);
+    }
+}
+
 static void ins15_update_nhc(ins15_t *S) {
     int c;
     // Measurement: [v_y^b, v_z^b] ~ 0
@@ -623,11 +647,29 @@ static void ins15_update_nhc(ins15_t *S) {
     // row1 -> vb.z
     for (c=0;c<3;c++) H[1*15 + (3+c)] = RT[6 + c];
 
+    /**
+     * d(vb)/d(theta) = skew(vb)
+     * skew(vb) = [0 -vz vy
+     *              vz 0 -vx
+     *              -vy vx 0]
+     * row0 corresponds to vb.y -> [-vy vx 0]
+     */
+    H[0*15 + (6+0)] = vb.z;
+    H[0*15 + (6+1)] = 0.0f;
+    H[0*15 + (6+2)] = -vb.x;
+
+    // row 1 corresponds to vb.z -> [-vy, vx, 0]
+    H[1*15 + (6+0)] = -vb.y;
+    H[1*15 + (6+1)] = vb.x;
+    H[1*15 + (6+2)] = 0.0f;
+
     float z[3] = {0,0,0};
     float h[3] = { vb.y, vb.z, 0.0f };
     float Rdiag[3] = { R_NHC_VY, R_NHC_VZ, 1e9f };
     kf_update_3(S, H, z, h, Rdiag, NULL);
 }
+
+
 
 // ------------------------- GNSS helper (your ioctl pattern) -------------------------
 
@@ -1095,12 +1137,14 @@ if (nav_age <= GNSS_TIMEOUT_S) {
 
         if (C->zupt_count >= ZUPT_COUNT_REQUIRED) {
             ins15_update_zupt(&C->ins);
+            ins15_update_zaru(&C->ins, gyro_b);
             C->zupt_count = 0;
         }
 
         // Velocity decay when *almost* stopped (helps fight tiny residuals)
         float vnorm = v3_norm(C->ins.v);
-        if (vnorm < VEL_EPS) {
+        const float VEL_DAMP_THR = 0.10f;
+        if (vnorm < VEL_DAMP_THR) {
             C->ins.v = v3_scale(C->ins.v, VEL_DECAY);
         }
 
@@ -1183,11 +1227,21 @@ if (nav_age <= GNSS_TIMEOUT_S) {
             // Velocity update if valid
             if (C->gnss_vel_valid) {
                 float Rv[3] = { RV_VEL_E, RV_VEL_N, RV_VEL_U };
+
+                // Optional: Inflate velocity  noise when speed is low (course-based velocity gets noisy )
+                if( C->gnss_speed_mps < 1.0f ){
+                    Rv[0] *= 10.0f; Rv[1] *= 10.0f
+                }
                 float nis_vel = 0.0f;
                 bool ok_vel = ins15_update_gnss_vel(&C->ins, C->gnss_vel_enu, Rv, &nis_vel);
                 bool gate_vel = ok_vel && (nis_vel < CHI2_3DOF_GATE);
                 C->last_nis_vel = nis_vel;
-                (void)gate_vel;
+                
+                if( gate_vel ){
+                    C->last_gnss_used_vel = 1;
+                    C->last_gnss_used_s = tnow2;
+                    C->gnss_valid = true;
+                }
             } else {
                 C->last_nis_vel = 0.0f;
             }
@@ -1198,7 +1252,7 @@ if (nav_age <= GNSS_TIMEOUT_S) {
                 float yaw_gnss = C->gnss_heading_rad;
                 float dpsi = wrap_pi(yaw_gnss - yaw_est);
                 float dpsi_corr = YAW_FUSION_ALPHA * dpsi;
-                C->ins.q = q_normalize(q_mul(C->ins.q, q_from_yaw_delta(dpsi_corr)));
+                C->ins.q = q_normalize(q_mul(q_from_yaw_delta(dpsi_corr), C->ins.q));
             }
             C->have_gnss = false; // consumed
         } else {
