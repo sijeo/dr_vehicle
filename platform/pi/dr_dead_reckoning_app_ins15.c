@@ -1230,7 +1230,7 @@ if (nav_age <= GNSS_TIMEOUT_S) {
 
                 // Optional: Inflate velocity  noise when speed is low (course-based velocity gets noisy )
                 if( C->gnss_speed_mps < 1.0f ){
-                    Rv[0] *= 10.0f; Rv[1] *= 10.0f
+                    Rv[0] *= 10.0f; Rv[1] *= 10.0f;
                 }
                 float nis_vel = 0.0f;
                 bool ok_vel = ins15_update_gnss_vel(&C->ins, C->gnss_vel_enu, Rv, &nis_vel);
