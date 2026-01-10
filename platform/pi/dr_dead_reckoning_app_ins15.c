@@ -141,6 +141,11 @@
 #define bWGS        (6378137.0 * (1 - fWGS))
 #define  e2         ((aWGS*aWGS - bWGS*bWGS) / (aWGS*aWGS))
 
+
+#define CAL_FILE_PATH   "/var/lib/dr/imu_cal.bin"
+#define CAL_MAGIC       0x43414C31u /* 'CAL1' */
+#define CAL_VERSION     1u
+
 // ------------------------- Small math utils -------------------------
 
 static inline uint64_t monotonic_ns(void) {
@@ -273,10 +278,30 @@ static void ecef2enu(ecef_t e, lla_t ref, ecef_t e0, double out[3]) {
     out[2] =  s1*c0*dx + s1*s0*dy + c1*dz;
 }
 
-// ------------------------- Calibration (from your current app) -------------------------
+// ------------------------- Calibration (persistent + online trims ) -------------------------
 // (Keep your LSQ accel matrix + offset; and gyro bias in raw counts.)
 
-static const float ACCEL_C[3][3] = {
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t crc32;
+
+    /* Baseline accel: SI = C* raw + O */
+    float accel_C[3][3];
+    float accel_O[3];
+
+    /* Baseline gyro: (raw - bias_counts) -> dps -> rad/s */
+    float gyro_bias_counts[3];
+
+    /* Optional single-axis trims learned online (start at 1.0 ) */
+    float gyro_z_scale;     /* yaw-rate scale correction (k) */
+    float accel_x_scale;    /* optional (leave 1.0 unless you enable it )*/
+
+    uint8_t calibrated_once; /* 0 -until first install stationary calibration successfully saved */
+    uint8_t _pad[3];
+} dr_cal_t;
+
+/* static const float ACCEL_C[3][3] = {
     {0.0005964462462844185f, -9.211739001666678e-07f, 1.5763305507490624e-05f},
     {-1.1573398643476584e-06f, 0.0006037351040586055f, 3.881537441769146e-07f},
     {-3.851697134466662e-05f, -3.2356391081574615e-05f, 0.0005895175306304627f}
@@ -285,26 +310,213 @@ static const float ACCEL_C[3][3] = {
 static const float ACCEL_O[3] = { -0.1329121010477303f, -0.047222673271787766f, 1.257425727446983f };
 
 // Gyro bias in raw counts (constant here; can be learned slowly in future)
-static const float GYRO_B[3] = { -153.461f, 69.446f, 992.782f };
+static const float GYRO_B[3] = { -153.461f, 69.446f, 992.782f };*/
+
+static dr_cal_t g_cal;
+
+/* ---- tincy CRC32 ( good enough for a small blob ) ---- */
+static uint32_t crc32_simple( const void *data, size_t nbytes ) {
+    size_t i;
+    int b;
+    const uint8_t *p = (const uint8_t*)data;
+    uint32_t crc = 0xFFFFFFFFu;
+    for( i=0; i<nbytes; i++ ){
+        crc ^= p[i];
+        for( b=0; b<8; b++ ){
+            uint32_t m = -(crc & 1u);
+            crc = (crc >> 1) ^ (0xEDB88320u & m);
+        }
+    }
+    return ~crc;
+}
+
+static void cal_set_defaults_from_lsq( void ) {
+    memset(&g_cal, 0, sizeof(g_cal));
+    g_cal.magic = CAL_MAGIC;
+    g_cal.version = CAL_VERSION;
+
+    /* Seed with your current LSQ Values (so the behavior deosn't regress )*/
+    g_cal.accel_C[0][0] = 0.0005964462462844185f; g_cal.accel_C[0][1] = -9.211739001666678e-07f; g_cal.accel_C[0][2] = 1.5763305507490624e-05f;
+    g_cal.accel_C[1][0] = -1.1573398643476584e-06f; g_cal.accel_C[1][1] = 0.0006037351040586055f; g_cal.accel_C[1][2] = 3.881537441769146e-07f;
+    g_cal.accel_C[2][0] = -3.851697134466662e-05f; g_cal.accel_C[2][1] = -3.2356391081574615e-05f; g_cal.accel_C[2][2] =  0.0005895175306304627f;
+
+    g_cal.accel_O[0] = -0.1329121010477303f;
+    g_cal.accel_O[1] = -0.047222673271787766f;
+    g_cal.accel_O[2] = 1.257425727446983f;
+
+    g_cal.gyro_bias_counts[0] = -153.461f;
+    g_cal.gyro_bias_counts[1] = 69.446f;
+    g_cal.gyro_bias_counts[2] = 992.782f;
+
+    g_cal.gyro_z_scale = 1.0f;
+    g_cal.accel_x_scale = 1.0f;
+    g_cal.calibrated_once = 0;
+}
+
+
+static void cal_ensure_dir(void) {
+    // Ensure /var/lib/dr exists
+    struct stat st;
+    if(stat("/var/lib", &st) !=0 ) {
+        /* /var/lib should exist on linux; ignore if not */
+        return ;
+
+    }
+    if(stat("/var/lib/dr", &st) == 0 ) {
+        if(S_ISDIR(st.st_mode)) return;
+        /* if its a file don't overwrite */
+        return;
+    }
+    (void)mkdir("/var/lib/dr", 0755);
+}
+
+
+
+static bool cal_load_from_file( void ) {
+    int fd = open( CAL_FILE_PATH, O_RDONLY | O_CLOEXEC );
+    if ( fd < 0 ) return false;
+
+    dr_cal_t tmp;
+    ssize_t rd = read( fd, &tmp, sizeof(tmp) );
+    close(fd);
+    if( rd != (ssize_t)sizeof(tmp)) return false;
+    if( tmp.magic != CAL_MAGIC || tmp.version != CAL_VERSION ) return false;
+
+    uint32_t saved_crc = tmp.crc32;
+    tmp.crc32 = 0;
+    uint32_t calc_crc = crc32_simple(&tmp, sizeof(tmp));
+    if( calc_crc != saved_crc ) return false;
+
+    tmp.crc32 = saved_crc;
+    g_cal = tmp;
+    return true;
+}
+
+static bool cal_save_to_file( void ){
+
+    cal_ensure_dir();
+
+    /* Update CRC */
+    g_cal.crc32 = 0;
+    g_cal.crc32 = crc32_simple(&g_cal, sizeof(g_cal));
+
+    /*Atomic Write: write temp then rename */
+    char tmp_path[256];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", CAL_FILE_PATH);
+
+    int fd = open(tmp_path, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+    if ( fd < 0 ) return false;
+
+    ssize_t wr = write(fd, &g_cal, sizeof(g_cal));
+    if( wr != (ssize_t)sizeof(g_cal)) { close(fd); unlink(tmp_path); return false; }
+
+    fsync(fd);
+    close(fd);
+    if( rename(tmp_path, CAL_FILE_PATH ) != 0) { unlink(tmp_path); return false; }
+    return true;
+}
 
 static void calib_accel(const struct mpu6050_sample *raw, vec3f *acc_mps2) {
     float a0 = (float)raw->ax, a1 = (float)raw->ay, a2 = (float)raw->az;
-    acc_mps2->x = ACCEL_C[0][0]*a0 + ACCEL_C[0][1]*a1 + ACCEL_C[0][2]*a2 + ACCEL_O[0];
-    acc_mps2->y = ACCEL_C[1][0]*a0 + ACCEL_C[1][1]*a1 + ACCEL_C[1][2]*a2 + ACCEL_O[1];
-    acc_mps2->z = ACCEL_C[2][0]*a0 + ACCEL_C[2][1]*a1 + ACCEL_C[2][2]*a2 + ACCEL_O[2];
+
+    float x = g_cal.accel_C[0][0]*a0 + g_cal.accel_C[0][1]*a1 + g_cal.accel_C[0][2]*a2 + g_cal.accel_O[0];
+    float y = g_cal.accel_C[1][0]*a0 + g_cal.accel_C[1][1]*a1 + g_cal.accel_C[1][2]*a2 + g_cal.accel_O[1];
+    float z = g_cal.accel_C[2][0]*a0 + g_cal.accel_C[2][1]*a1 + g_cal.accel_C[2][2]*a2 + g_cal.accel_O[2];
+
+    x *= g_cal.accel_x_scale; /**<< Optional tiny trim (leave at 1.0 unless enabled ) */
+
+    acc_mps2->x = x;
+    acc_mps2->y = y;
+    acc_mps2->z = z;
 }
 
+
 static void calib_gyro(const struct mpu6050_sample *raw, vec3f *gyro_radps) {
-    float g0 = (float)raw->gx - GYRO_B[0];
-    float g1 = (float)raw->gy - GYRO_B[1];
-    float g2 = (float)raw->gz - GYRO_B[2];
+    float g0 = (float)raw->gx - g_cal.gyro_bias_counts[0];
+    float g1 = (float)raw->gy - g_cal.gyro_bias_counts[1];
+    float g2 = (float)raw->gz - g_cal.gyro_bias_counts[2];
+    
     float dps0 = g0 / GYRO_LSB_PER_DPS;
     float dps1 = g1 / GYRO_LSB_PER_DPS;
-    float dps2 = g2 / GYRO_LSB_PER_DPS;
+    float dps2 = (g2 / GYRO_LSB_PER_DPS) * g_cal.gyro_z_scale;
+
     gyro_radps->x = dps0 * DEG2RAD;
     gyro_radps->y = dps1 * DEG2RAD;
     gyro_radps->z = dps2 * DEG2RAD;
 }
+
+/* ---------------- Stillness based calibration ( first install + runtime ) -------------------*/
+typedef struct {
+    bool active;
+    int N;
+    double t0;
+    double gyro_sum[3];     /* raw counts */
+    double acc_sum[3];      /* m/s^2 (after LSQ) */
+
+}still_accum_t;
+
+static void still_reset(still_accum_t *A ){
+    A->active = false;
+    A->N = 0;
+    A->t0 = 0.0;
+    A->gyro_sum[0] = A->gyro_sum[1] = A->gyro_sum[2] = 0.0;
+    A->acc_sum[0] = A->acc_sum[1] = A->acc_sum[2] = 0.0;
+
+}
+
+/** Returns true if a still-window completed and applied an update */
+static bool apply_stationary_calibration( still_accum_t *A, bool zupt_cond, 
+    const struct mpu6050_sample *raw, 
+    vec3f acc_b,
+    quatf q_be,                 // body->ENU attitude (needed for accel trim )
+    bool allow_accel_trim,      // false before nav_ready (gyro bias only)
+    float still_required_s,     // e.g. 4.0 first-install, 3.0 runtime
+    bool is_first_install,
+    double now_s ) {
+        if( !zupt_cond ){
+            still_reset(A);
+            return false;
+        }
+
+        if( !A->active ){
+            A->active = true;
+            A->t0 = now_s;
+            A->N = 0;
+            A->gyro_sum[0]=A->gyro_sum[1]=A->gyro_sum[2] = 0.0;
+            A->acc_sum[0]=A->acc_sum[1]=A->acc_sum[2] =0.0;
+        }
+
+        A->gyro_sum[0] += (double)raw->gx;
+        A->gyro_sum[1] += (double)raw->gy;
+        A->gyro_sum[2] += (double)raw->gz;
+
+        A->acc_sum[0] += (double)acc_b.x;
+        A->acc_sum[1] += (double)acc_b.y;
+        A->acc_sum[2] += (double)acc_b.z;
+
+        A->N++;
+
+        double dt = now_s - A->t0;
+        if( dt < (double)still_required_s ) return false;
+
+        double invN = 1.0/(double)A->N;
+
+        /** Gyro Bisa counts  */
+        float meas_bg[3] = {
+            (float)(A->gyro_sum[0] * invN),
+            (float)(A->gyro_sum[1] * invN),
+            (float)(A->gyro_sum[2] * invN)
+        };
+
+        // First Install: take mean directly. Runtime: gentle LPF update
+        const float k_bg = is_first_install ? 1.0f : 0.05f;
+        for( i=0; i<3; i++) {
+            g_cal.gyro_bias_counts[i] = (1.0f - k_bg)*g_cal.gyro_bias_counts[i] + k_bg * meas_bg[i];
+        }
+
+        
+    }
+
 
 // ------------------------- 15-state INS EKF -------------------------
 
@@ -1383,6 +1595,12 @@ C.gnss_enu_last_valid = false;
 
     make_log_file(&C);
     make_debug_log_file(&C);
+    cal_set_defaults_from_lsq();
+    if( cal_load_from_file () ) {
+        printf("[CAL] Loaded calibration from %s\n", CAL_FILE_PATH);
+    } else {
+        printf("[CAL] No valid saved calibration; using LSQ Defaults\n")
+    }
 
     pthread_t th_imu, th_gnss, th_fuse;
     if (pthread_create(&th_imu, NULL, imu_thread, &C) != 0) { perror("imu_thread"); return 1; }
