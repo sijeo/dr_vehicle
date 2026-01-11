@@ -146,6 +146,21 @@
 #define CAL_MAGIC       0x43414C31u /* 'CAL1' */
 #define CAL_VERSION     1u
 
+/**--------------------------GNSS yaw-rate learner tuning --------------------
+ * Learn gyro Z scale using GNSS course/heading during turns.
+ * Units rad/s, m/s, seconds
+ */
+#define YAW_LEARN_MIN_SPEED_MPS     2.0f
+#define YAW_LEARN_MAX_HDOP          2.5f
+#define YAW_LEARN_TURN_RATE_THR     0.03f   // ~ 1.7deg/s
+#define YAW_LEARN_MIN_TURN_DEG      20.0f
+#define YAW_LEARN_MIN_SEG_S         3.0f
+#define YAW_LEARN_MAX_SEG_S         40.0f
+#define YAW_LEARN_BETA_SCALE        0.05f   // LPF update for scale
+#define YAW_LEARN_SCALE_MIN         0.85f
+#define YAW_LEARN_SCALE_MAX         1.15f
+#define YAW_LEARN_PERSIST_PERIOD_S  60.0
+
 // ------------------------- Small math utils -------------------------
 
 static inline uint64_t monotonic_ns(void) {
@@ -514,8 +529,122 @@ static bool apply_stationary_calibration( still_accum_t *A, bool zupt_cond,
             g_cal.gyro_bias_counts[i] = (1.0f - k_bg)*g_cal.gyro_bias_counts[i] + k_bg * meas_bg[i];
         }
 
-        
+        // ---2) Accel offset trim vs gravity (only if we trust attitude )---
+        if( allow_accel_trim ){
+            float R[9];
+            R_from_q(q_be, R);
+
+            /* Expected body specific force when stationary: R^T * [0,0,g] */
+            vec3f fb_exp_b = v3(
+                R[0]*0 + R[3]*0 + R[6]*GRAVITY,
+                R[1]*0 + R[4]*0 + R[7]*GRAVITY,
+                R[2]*0 + R[5]*5 + R[8]*GRAVITY
+            );
+
+            vec3f r = v3_sub(acc_mean, fb_exp_b);
+
+            const float kO = is_first_install ? 0.30f : 0.05f; /* Conservative at runtime */
+            g_cal.accel_O[0] -= kO * r.x;
+            g_cal.accel_O[1] -= kO * r.y;
+            g_cal.accel_O[2] -= kO * r.z;
+        }
+
+        still_reset(A);
+        return true;
     }
+
+    /** ---------------------------------------GNSS yaw-rate learner (turn-segment) ----------------- 
+     * Goal: learn a small gyro z scale correction (g_cal.gyro_z_scale) using GNSS heading (COG) while moving
+     * Bias is learned via stillness (ZARU-like) using apply_stationary_calibration()
+     * 
+     * Approach: accumlate a "turn segment" while turning:
+     * delta_psi_gnss = wrap(yaw_end - yaw_start)
+     * delta_psi_gyro = integration of (gz_counts - bias_counts)*L dt (UNSCALED by gyro_z_scale)
+     * scale_est = delta_psi_gnss/delta_psi_gyro
+     * gyro_z_scale <- LPF(gyro_scale, scale_est)
+     * 
+     * This is robust because it uses integrated angle over seconds (reduces GNSS heading noise )
+    */
+   typedef struct {
+    bool have_gnss;
+    int64_t last_gnss_ns;
+    float last_gnss_yaw;
+
+    bool seg_active;
+    double seg_tO_s;
+    float seg_yaw_start;
+    float seg_yaw_end;
+    float seg_gyro_dpsi;
+    double seg_last_update_s;
+
+    double last_persist_s;
+   }  yaw_learn_t;
+
+   static void yaw_learn_reset_seg( yaw_learn_t *Y, double now_s ){
+    Y->seg_active = false;
+    Y->seg_tO = now_s;
+    Y->seg_yaw_start = 0.0f;
+    Y->seg_yaw_end = 0.0f;
+    Y->seg_gyro_dpsi = 0.0f;
+    Y->seg_last_update_s = now_s;
+   }
+
+   static void yaw_learn_on_gnss_fix( yaw_learn_t *Y, float yaw_enu_rad, int64_t fix_ns ) {
+    Y->have_gnss = true;
+    Y->last_gnss_ns = fix_ns;
+    Y->last_gnss_yaw = yaw_enu_rad;
+    if( Y->seg_active ){
+        Y->seg_yaw_end = yaw_enu_rad;
+    }
+   }
+
+   static void yaw_learn_try_finalize(yaw_learn_t *Y, double now_s ) {
+    if ( !Y->seg_active ) return;
+
+    double seg_dt = now_s - Y->seg_tO_s;
+    if( seg_dt < YAW_LEARN_MIN_SEG_S ) return;
+
+    // Finalize if too long 
+    if (seg_dt > YAW_LEARN_MAX_SEG_S ) {
+        yaw_learn_reset_seg(Y, now_s);
+        return;
+    }
+
+    float dpsi_gnss = wrap_pi(Y->seg_yaw_end - Y->seg_yaw_start );
+    float dpsi_gnss_deg = fabsf(dpsi_gnss)/DEG2RAD;
+
+    if( dpsi_gnss_deg < YAW_LEARN_MIN_TURN_DEG ) return;
+    if( fabsf(Y->seg_gyro_dpsi) < 0.10f ) return;
+
+    // Scale estimate
+    float scale_est = dpsi_gnss / Y->seg_gyro_dpsi;
+    //Reject crazy estimates (GNSS glitch or slip )
+    if (scale_est < 0.5f || scale_est > 1.5f ) {
+        yaw_learn_reset_seg(Y, now_s);
+        return;
+    }
+
+    //LPF update + clamp
+    float s = g_cal.gyro_z_scale;
+    s = (1.0f - YAW_LEARN_BETA_SCALE ) * s + (YAW_LEARN_BETA_SCALE) * scale_est;
+    s = clampf(s, YAW_LEARN_SCALE_MIN, YAW_LEARN_SCALE_MAX );
+    g_cal.gyro_z_scale = s;
+
+    yaw_learn_reset_seg(Y, now_s);
+   }
+
+   static void yaw_learn_on_imu(
+    yaw_learn_t *Y,
+    double now_s,
+    float dt,
+    const struct mpu6050_sample *raw,
+    bool gnss_ok, 
+    float gnss_speed_mps,
+    bool turning_ok
+   ){
+    // Always integrate gyro delta during an active segment.
+    
+   }
 
 
 // ------------------------- 15-state INS EKF -------------------------
@@ -982,6 +1111,10 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
     pthread_mutex_t mtx;
     pthread_cond_t cv;
     bool running;
+
+    // Calibration (first install + runtime stillness trims )
+    bool need_first_install_cal;
+    double cal_last_save_s;
 } ctx_t;
 
 static void make_log_file(ctx_t *C) {
@@ -1255,6 +1388,74 @@ static void* fusion_thread(void *arg) {
 
         float acc_norm = v3_norm(acc_b);
 
+        // ZUPT-like stillness condition (used for both constraints and calibration)
+         bool zupt_cond =
+            (fabsf(acc_norm - GRAVITY) < ZUPT_ACC_THR) &&
+            (fabsf(gyro_b.x) < ZUPT_GYRO_THR) &&
+            (fabsf(gyro_b.y) < ZUPT_GYRO_THR) &&
+            (fabsf(gyro_b.z) < ZUPT_GYRO_THR);
+
+        // Calibration: First Install (if needed ) + runtime stillness trims
+        static still_accum_t cal_accum_first;
+        static still_accum_t cal_accum_run;
+
+        double t_cal = now_sec();
+
+        // First-Install: If not cal file exists, capture gyro bias during stillness.
+        // Accel gravity trim is only enabled once nav_ready (attitude is meaningful)
+        if( C->need_first_install_cal ){
+            bool updated = apply_stationary_calibration(
+                &cal_accum_first,
+                zupt_cond,
+                &C->imu_raw,
+                acc_b,
+                C->ins.q,
+                C->nav_ready, 
+                4.0f,
+                true,
+                tcal_now
+            );
+
+            if( updated ){
+                g_cal.calibrated_once = 1;
+                if( cal_save_to_file() ) {
+                    printf("[CAL] First-Install stillness calibration saved.\\n");
+                    C->need_first_install_cal = false;
+                    C->cal_last_save_s = tcal_now;
+                } else {
+                    printf("[CAL] ERROR: Failed to save first-install calibration. Will retry.\\n")
+                }
+            }
+        }
+
+        /** Runtime stillness calibration: Whenever nav_ready and Stillness holds, 
+         * Gently refine gyro bias + accel offsets vs gravity and save occasionally
+         */
+        if( C->nav_ready ){
+            bool updated = apply_stationary_calibration(
+                &cal_accum_run,
+                zupt_cond,
+                &C->imu_raw,
+                acc_b,
+                C->ins.q,
+                true,
+                3.0f,
+                false,
+                tcal_now
+            );
+
+            if( updated ){
+                /* Rate limit persistence to protect storage */
+                if((tcal_now - C->cal_last_save_s ) > 60.0 ){
+                    (void)cal_save_to_file();
+                    C->cal_last_save_s = tcal_now;
+                }
+            }
+        }
+
+
+
+
         // Initialize nav on first GNSS fix (wait until ENU origin set AND have current GNSS fix)
         if (!C->nav_ready) {
             if (C->enu_ref_set && C->have_gnss && C->gnss_have_fix) {
@@ -1338,12 +1539,7 @@ if (nav_age <= GNSS_TIMEOUT_S) {
         ins15_update_nhc(&C->ins);
 
         // ZUPT detection
-        bool zupt_cond =
-            (fabsf(acc_norm - GRAVITY) < ZUPT_ACC_THR) &&
-            (fabsf(gyro_b.x) < ZUPT_GYRO_THR) &&
-            (fabsf(gyro_b.y) < ZUPT_GYRO_THR) &&
-            (fabsf(gyro_b.z) < ZUPT_GYRO_THR);
-
+       
         if (zupt_cond) C->zupt_count++;
         else C->zupt_count = 0;
 
@@ -1597,10 +1793,13 @@ C.gnss_enu_last_valid = false;
     make_debug_log_file(&C);
     cal_set_defaults_from_lsq();
     if( cal_load_from_file () ) {
-        printf("[CAL] Loaded calibration from %s\n", CAL_FILE_PATH);
+        printf("[CAL] Loaded calibration from %s (calibrated_once=%u)\n", CAL_FILE_PATH, (unsigned)g_cal.calibrated_once);
     } else {
-        printf("[CAL] No valid saved calibration; using LSQ Defaults\n")
+        printf("[CAL] No valid saved calibration; will perform first install stillness calibration when possible\n")
     }
+
+    C.need_first_install_cal = !cal_loaded;
+    C.cal_last_save_s = 0.0f;
 
     pthread_t th_imu, th_gnss, th_fuse;
     if (pthread_create(&th_imu, NULL, imu_thread, &C) != 0) { perror("imu_thread"); return 1; }
