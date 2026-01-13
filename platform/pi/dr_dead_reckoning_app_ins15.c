@@ -643,7 +643,47 @@ static bool apply_stationary_calibration( still_accum_t *A, bool zupt_cond,
     bool turning_ok
    ){
     // Always integrate gyro delta during an active segment.
-    
+    if( Y->seg_active ){
+        /* Convert raw counts -> rad/s (UNSCALED) */
+        const float L = (DEG2RAD / GYRO_LSB_PER_DPS ); // rad/s per count
+        float gz_unscaled = ((float)raw->gz - g_cal.gyro_bias_counts[2]) * L;
+        Y->seg_gyro_dpsi += gz_unscaled * dt;
+        Y->seg_last_update_s = now_s;
+
+        /*If GNSS went bad or speed low, finalize/reset gracefully */
+        if( !gnss_ok || gnss_speed_mps < YAW_LEARN_MIN_SPEED_MPS ){
+            yaw_learn_try_finalize(Y, now_s);
+            return;
+        }
+
+        /* If turning stopped, try finalize */
+        if( !turning_ok ){
+            yaw_learn_try_finalize(Y, now_s);
+        }
+        return;
+    }
+
+    /* Start a segment only when GNSS is good, moving, and turning meaningfully */
+    if(!gnss_ok) return;
+    if (gnss_speed_mps < YAW_LEARN_MIN_SPEED_MPS ) return;
+    if( !turning_ok )return;
+    if( !Y->have_gnss ) return;
+
+    Y->seg_active = true;
+    Y->seg_tO_s = now_s;
+    Y->seg_yaw_start = Y->last_gnss_yaw;
+    Y->seg_yaw_end = Y->last_gnss_yaw;
+    Y->seg_gyro_dpsi = 0.0f;
+    Y->seg_last_update_s = now_s;
+
+   }
+
+   static void yaw_learn_maybe_persist(yaw_learn_t *Y, double now_s ){
+    if((now_s - Y->last_persist_s ) <  YAW_LEARN_PERSIST_PERIOD_S ) return;
+    /* Persist slow terms: biases already learned by stillness calibration; scale learned here */
+    if( cal_save_to_file() ){
+        Y->last_persist_s = now_s;
+    }
    }
 
 
@@ -1359,6 +1399,7 @@ static void* gnss_thread(void *arg) {
 static void* fusion_thread(void *arg) {
     int i;
     ctx_t *C = (ctx_t*)arg;
+    static yaw_learn_t yawL = {0};
     uint64_t last_tick_ns = monotonic_ns();
 
     while (__atomic_load_n(&C->running, __ATOMIC_ACQUIRE)) {
@@ -1532,6 +1573,17 @@ if (nav_age <= GNSS_TIMEOUT_S) {
     C->qscale = compute_qscale(C->outage_s);
 }
 
+// GNSS Yaw rate learner: Feed IMU every step (turn-segment integration)
+// Compute GNSS quality gates
+bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_heading_valid &&
+                (C->gnss_speed_mps >= YAW_LEARN_MIN_SPEED_MPS) && 
+                (!C->gnss_hdop_valid || (C->gnss_hdop <= YAW_LEARN_MAX_HDOP)));
+        //Turning gate based on UNSCALED gyro-z (bias removed, before scale trim )
+        const float Lgz = (DEG2RAD / GYRO_LSB_PER_DPS ); // rad/s per count
+        float gz_unscaled_radps = ((float)C->imu_raw.gz - g_cal.gyro_bias_counts[2]) * Lgz;
+        bool turning_ok = fabsf(gz_unscaled_radps) > YAW_LEARN_TURN_RATE_THR;
+        yaw_learn_on_imu(&yawL, tnow, dt, &C->imu_raw, gnss_ok, C->gnss_speed_mps, turning_ok);
+
         // Predict INS
         ins15_predict(&C->ins, acc_b, gyro_b, dt, C->qscale, &C->last_aw);
 
@@ -1558,6 +1610,9 @@ if (nav_age <= GNSS_TIMEOUT_S) {
 
         // GNSS fusion (pos + optional vel + optional yaw complementary)
         if (C->have_gnss && C->gnss_have_fix) {
+            if( C->gnss_heading_valid ){
+                yaw_learn_on_gnss_fix(&yawL, C->gnss_heading_rad, C->last_gnss_fix_mono_ns);
+            }
             lla_t L = { C->gnss_lat_rad, C->gnss_lon_rad, C->gnss_alt_m };
             ecef_t E = lla2ecef(L);
             double enu_d[3];
