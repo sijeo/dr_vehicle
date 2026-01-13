@@ -161,6 +161,13 @@
 #define YAW_LEARN_SCALE_MAX         1.15f
 #define YAW_LEARN_PERSIST_PERIOD_S  60.0
 
+
+#define CAL_LED_GPIO        28      //BCM GPIO 28
+#define CAL_LED_BLINK_HZ    2.0     // 2.0Hz blink while calibration pending
+
+static int cal_led_exported = 0;
+static int cal_led_value_fd = -1
+
 // ------------------------- Small math utils -------------------------
 
 static inline uint64_t monotonic_ns(void) {
@@ -262,6 +269,74 @@ static bool mat3_inv(const float A[9], float invA[9]) {
     invA[7] = (b*g - a*h)*invdet;
     invA[8] = (a*e - b*d)*invdet;
     return true;
+}
+
+static void cal_led_init( void )
+{
+    char path[128];
+
+    /* Export GPIO */
+    int fd = open("/sys/class/gpio/export", O_WRONLY);
+    if( fd >= 0) {
+        dprintf(fd, "%d", CAL_LED_GPIO);
+        close(fd);
+    }
+
+    // Direction = Out
+    snprintf(path, sizeof(path), "/sys/class/gpio%d/direction", CAL_LED_GPIO);
+    fd = open(path, O_WRONLY);
+    if( fd >= 0 ){
+        write(fd, "out", 3);
+        close(fd);
+    }
+
+    //Open Value fd once(faster)
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", CAL_LED_GPIO);
+    cal_led_value_fd = open(path, O_WRONLY);
+    if( cal_led_value_fd >= 0 ){
+        cal_led_exported = 1;
+        write(cal_led_value_fd, "0", 1); //LED off initially 
+    }
+}
+
+static void cal_led_set(int on ){
+    if( !cal_led_exported ) return;
+    lseek(cal_led_value_fd, 0, SEEK_SET );
+    write(cal_led_value_fd, on ? "1" : "0", 1);
+}
+
+static void cal_led_deinit( void ){
+    if(cal_led_value_fd >= 0){
+        cal_led_set(0);
+        close(cal_led_value_fd);
+        cal_led_value_fd = -1;
+    }
+
+    int fd = open("/sys/class/gpio/unexport", O_WRONLY);
+    if( fd >= 0) {
+        dprintf(fd, "%d", CAL_LED_GPIO);
+        close(fd);
+    }
+}
+
+
+//---------------------------------NON blocking blink helper ----------------------
+static void cal_led_update(bool first_install_pending, double now_s){
+    static double last_toggle_s = 0.0f;
+    static int led_state = 0;
+
+    if(!first_install_pending ){
+        cal_led_set(0);
+        led_state = 0;
+        return;
+    }
+
+    double period = 1.0/CAL_LED_BLINK_HZ;
+    if((now_s - last_toggle_s) >= (period * 0.5)) {
+        led_state = !led_state;
+        cal_led_set(led_state);
+        last_toggle_s = now_s;
+    }
 }
 
 // ------------------------- WGS84 helpers (LLA/ECEF/ENU) -------------------------
@@ -1847,7 +1922,9 @@ C.gnss_enu_last_valid = false;
     make_log_file(&C);
     make_debug_log_file(&C);
     cal_set_defaults_from_lsq();
-    if( cal_load_from_file () ) {
+    bool cal_loaded = cal_load_from_file();
+
+    if( cal_loaded ) {
         printf("[CAL] Loaded calibration from %s (calibrated_once=%u)\n", CAL_FILE_PATH, (unsigned)g_cal.calibrated_once);
     } else {
         printf("[CAL] No valid saved calibration; will perform first install stillness calibration when possible\n")
@@ -1855,6 +1932,8 @@ C.gnss_enu_last_valid = false;
 
     C.need_first_install_cal = !cal_loaded;
     C.cal_last_save_s = 0.0f;
+
+    cal_led_init();
 
     pthread_t th_imu, th_gnss, th_fuse;
     if (pthread_create(&th_imu, NULL, imu_thread, &C) != 0) { perror("imu_thread"); return 1; }
