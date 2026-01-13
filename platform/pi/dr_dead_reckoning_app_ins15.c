@@ -1624,6 +1624,10 @@ static void* fusion_thread(void *arg) {
 
         // GNSS presence/outage tracking (decoupled from gating)
 double tnow = now_sec();
+
+// Update the calibration LED
+cal_led_update(C->need_first_iinstall_cal, tnow);
+
 if (C->last_gnss_meas_s <= 0.0) {
     // no GNSS measurement ever received yet (shouldn't happen after nav_ready, but keep safe)
     C->gnss_present = false;
