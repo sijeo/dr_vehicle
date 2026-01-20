@@ -52,6 +52,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <sys/stat.h>
 
 #include "mpu6050_ioctl.h"
 #include "neo6m_gnss_ioctl.h"
@@ -166,7 +167,7 @@
 #define CAL_LED_BLINK_HZ    2.0     // 2.0Hz blink while calibration pending
 
 static int cal_led_exported = 0;
-static int cal_led_value_fd = -1
+static int cal_led_value_fd = -1;
 
 // ------------------------- Small math utils -------------------------
 
@@ -563,6 +564,7 @@ static bool apply_stationary_calibration( still_accum_t *A, bool zupt_cond,
     float still_required_s,     // e.g. 4.0 first-install, 3.0 runtime
     bool is_first_install,
     double now_s ) {
+        int i;
         if( !zupt_cond ){
             still_reset(A);
             return false;
@@ -616,6 +618,12 @@ static bool apply_stationary_calibration( still_accum_t *A, bool zupt_cond,
                 R[2]*0 + R[5]*5 + R[8]*GRAVITY
             );
 
+            vec3f acc_mean  = v3(
+                R[0]*0 + R[3]*0 + R[6]*GRAVITY,
+                R[1]*0 + R[4]*0 + R[7]*GRAVITY,
+                R[2]*0 + R[5]*0 + R[8]*GRAVITY
+            );
+
             vec3f r = v3_sub(acc_mean, fb_exp_b);
 
             const float kO = is_first_install ? 0.30f : 0.05f; /* Conservative at runtime */
@@ -657,7 +665,7 @@ static bool apply_stationary_calibration( still_accum_t *A, bool zupt_cond,
 
    static void yaw_learn_reset_seg( yaw_learn_t *Y, double now_s ){
     Y->seg_active = false;
-    Y->seg_tO = now_s;
+    Y->seg_tO_s = now_s;
     Y->seg_yaw_start = 0.0f;
     Y->seg_yaw_end = 0.0f;
     Y->seg_gyro_dpsi = 0.0f;
@@ -1515,7 +1523,7 @@ static void* fusion_thread(void *arg) {
         static still_accum_t cal_accum_first;
         static still_accum_t cal_accum_run;
 
-        double t_cal = now_sec();
+        double tcal_now = now_sec();
 
         // First-Install: If not cal file exists, capture gyro bias during stillness.
         // Accel gravity trim is only enabled once nav_ready (attitude is meaningful)
@@ -1539,7 +1547,7 @@ static void* fusion_thread(void *arg) {
                     C->need_first_install_cal = false;
                     C->cal_last_save_s = tcal_now;
                 } else {
-                    printf("[CAL] ERROR: Failed to save first-install calibration. Will retry.\\n")
+                    printf("[CAL] ERROR: Failed to save first-install calibration. Will retry.\\n");
                 }
             }
         }
@@ -1626,7 +1634,7 @@ static void* fusion_thread(void *arg) {
 double tnow = now_sec();
 
 // Update the calibration LED
-cal_led_update(C->need_first_iinstall_cal, tnow);
+cal_led_update(C->need_first_install_cal, tnow);
 
 if (C->last_gnss_meas_s <= 0.0) {
     // no GNSS measurement ever received yet (shouldn't happen after nav_ready, but keep safe)
@@ -1817,6 +1825,7 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
         // 1 Hz CSV logging
         double tlog = now_sec();
         if (tlog - C->last_log_s >= 1.0) {
+            yaw_learn_maybe_persist(&yawL, tlog);
             if (C->logf) {
                 float yaw_deg = yaw_from_q(C->ins.q) / DEG2RAD;
                 float gnss_meas_age_s = (C->last_gnss_meas_s > 0.0) ? (float)(tlog - C->last_gnss_meas_s) : -1.0f;
@@ -1931,7 +1940,7 @@ C.gnss_enu_last_valid = false;
     if( cal_loaded ) {
         printf("[CAL] Loaded calibration from %s (calibrated_once=%u)\n", CAL_FILE_PATH, (unsigned)g_cal.calibrated_once);
     } else {
-        printf("[CAL] No valid saved calibration; will perform first install stillness calibration when possible\n")
+        printf("[CAL] No valid saved calibration; will perform first install stillness calibration when possible\n");
     }
 
     C.need_first_install_cal = !cal_loaded;
@@ -1954,8 +1963,8 @@ C.gnss_enu_last_valid = false;
 
     pthread_mutex_destroy(&C.mtx);
     pthread_cond_destroy(&C.cv);
-
+    
     if (C.logf) fclose(C.logf);
-
+    cal_led_deinit();
     return 0;
 }
