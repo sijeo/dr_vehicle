@@ -1596,6 +1596,9 @@ static void* fusion_thread(void *arg) {
                 C->ins.p = v3((float)enu_d[0], (float)enu_d[1], (float)enu_d[2]);
                 C->ins.v = v3(0,0,0);
                 //C->ins.q = q_identity();
+                if( C->gnss_heading_valid ){
+                    yaw_learn_on_gnss_fix(&yawL, C->gnss_heading_rad, C->last_gnss_fix_mono_ns);
+                }
                 float yaw0 = 0.0f;
                 if(C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN ) {
                     yaw0 = C->gnss_heading_rad;
