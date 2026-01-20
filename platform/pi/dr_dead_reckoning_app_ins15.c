@@ -143,7 +143,7 @@
 #define  e2         ((aWGS*aWGS - bWGS*bWGS) / (aWGS*aWGS))
 
 
-#define CAL_FILE_PATH   "home/sijeo/dr_vehicle/imu_cal.bin"
+#define CAL_FILE_PATH   "/home/sijeo/dr_vehicle/imu_cal.bin"
 #define CAL_MAGIC       0x43414C31u /* 'CAL1' */
 #define CAL_VERSION     1u
 
