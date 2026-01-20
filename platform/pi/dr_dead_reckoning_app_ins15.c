@@ -163,7 +163,7 @@
 #define YAW_LEARN_PERSIST_PERIOD_S  60.0
 
 
-#define CAL_LED_GPIO        28      //BCM GPIO 28
+#define CAL_LED_GPIO        29      //BCM GPIO 29
 #define CAL_LED_BLINK_HZ    2.0     // 2.0Hz blink while calibration pending
 
 static int cal_led_exported = 0;
