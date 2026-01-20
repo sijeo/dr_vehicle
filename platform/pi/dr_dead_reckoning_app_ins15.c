@@ -1942,6 +1942,7 @@ C.gnss_enu_last_valid = false;
     cal_set_defaults_from_lsq();
     bool cal_loaded = cal_load_from_file();
 
+ 
     if( cal_loaded ) {
         printf("[CAL] Loaded calibration from %s (calibrated_once=%u)\n", CAL_FILE_PATH, (unsigned)g_cal.calibrated_once);
     } else {
