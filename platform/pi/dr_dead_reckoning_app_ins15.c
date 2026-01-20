@@ -143,7 +143,7 @@
 #define  e2         ((aWGS*aWGS - bWGS*bWGS) / (aWGS*aWGS))
 
 
-#define CAL_FILE_PATH   "/var/lib/dr/imu_cal.bin"
+#define CAL_FILE_PATH   "home/sijeo/dr_vehicle/imu_cal.bin"
 #define CAL_MAGIC       0x43414C31u /* 'CAL1' */
 #define CAL_VERSION     1u
 
@@ -163,7 +163,7 @@
 #define YAW_LEARN_PERSIST_PERIOD_S  60.0
 
 
-#define CAL_LED_GPIO        29      //BCM GPIO 29
+#define CAL_LED_GPIO        13     //BCM GPIO 13
 #define CAL_LED_BLINK_HZ    2.0     // 2.0Hz blink while calibration pending
 
 static int cal_led_exported = 0;
@@ -444,7 +444,7 @@ static void cal_set_defaults_from_lsq( void ) {
     g_cal.calibrated_once = 0;
 }
 
-
+#if 0
 static void cal_ensure_dir(void) {
     // Ensure /var/lib/dr exists
     struct stat st;
@@ -453,13 +453,15 @@ static void cal_ensure_dir(void) {
         return ;
 
     }
-    if(stat("/var/lib/dr", &st) == 0 ) {
+    if(stat("dr", &st) == 0 ) {
         if(S_ISDIR(st.st_mode)) return;
         /* if its a file don't overwrite */
         return;
     }
-    (void)mkdir("/var/lib/dr", 0755);
+    (void)mkdir("dr", 0755);
 }
+#endif 
+
 
 
 
@@ -485,7 +487,7 @@ static bool cal_load_from_file( void ) {
 
 static bool cal_save_to_file( void ){
 
-    cal_ensure_dir();
+    /*cal_ensure_dir();*/
 
     /* Update CRC */
     g_cal.crc32 = 0;
