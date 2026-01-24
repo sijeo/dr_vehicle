@@ -413,6 +413,7 @@ static const float GYRO_B[3] = { -153.461f, 69.446f, 992.782f };*/
 static dr_cal_t g_cal;
 
 /* ---- tincy CRC32 ( good enough for a small blob ) ---- */
+#if 0
 static uint32_t crc32_simple( const void *data, size_t nbytes ) {
     size_t i;
     int b;
@@ -427,6 +428,7 @@ static uint32_t crc32_simple( const void *data, size_t nbytes ) {
     }
     return ~crc;
 }
+#endif
 
 static void cal_set_defaults_from_lsq( void ) {
     memset(&g_cal, 0, sizeof(g_cal));
@@ -467,9 +469,6 @@ static void cal_ensure_dir(void) {
     }
     (void)mkdir("dr", 0755);
 }
-#endif 
-
-
 
 
 static bool cal_load_from_file( void ) {
@@ -515,7 +514,7 @@ static bool cal_save_to_file( void ){
     if( rename(tmp_path, CAL_FILE_PATH ) != 0) { unlink(tmp_path); return false; }
     return true;
 }
-
+#endif 
 static void calib_accel(const struct mpu6050_sample *raw, vec3f *acc_mps2) {
     float a0 = (float)raw->ax, a1 = (float)raw->ay, a2 = (float)raw->az;
 
