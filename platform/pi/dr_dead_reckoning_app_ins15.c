@@ -284,7 +284,7 @@ static void cal_led_init( void )
     }
 
     // Direction = Out
-    snprintf(path, sizeof(path), "/sys/class/gpio%d/direction", CAL_LED_GPIO);
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/direction", CAL_LED_GPIO);
     fd = open(path, O_WRONLY);
     if( fd >= 0 ){
         write(fd, "out", 3);
@@ -322,18 +322,25 @@ static void cal_led_deinit( void ){
 
 
 //---------------------------------NON blocking blink helper ----------------------
-static void cal_led_update(bool first_install_pending, double now_s){
-    static double last_toggle_s = 0.0f;
+static void cal_led_update(bool cal_in_progress, bool cal_done, double now_s){
+    static double last_toggle_s = 0.0;
     static int led_state = 0;
 
-    if(!first_install_pending ){
+    if( cal_done )
+    {
+        cal_led_set(1);
+        led_state = 1;
+        return;
+    }
+
+    if(!cal_in_progress ){
         cal_led_set(0);
         led_state = 0;
         return;
     }
 
-    double period = 1.0/CAL_LED_BLINK_HZ;
-    if((now_s - last_toggle_s) >= (period * 0.5)) {
+    double half_period = 0.5/CAL_LED_BLINK_HZ;
+    if( (now_s - last_toggle_s) >= half_period ){
         led_state = !led_state;
         cal_led_set(led_state);
         last_toggle_s = now_s;
@@ -557,6 +564,71 @@ static void still_reset(still_accum_t *A ){
 
 }
 
+static bool apply_poweron_calibration(still_accum_t *A, 
+    const struct mpu6050_sample *raw,
+    vec3f acc_b_lsq, 
+    float still_required_s, 
+    double now_s )
+{
+    /* Start accumulation on first call */
+    if( !A->active ){
+        A->active = true;
+        A->t0 = now_s;
+        A->N = 0;
+        A->gyro_sum[0] = A->gyro_sum[1] = A->gyro_sum[2] = 0.0;
+        A->acc_sum[0] = A->acc_sum[1] = A->acc_sum[2] = 0.0;
+    }
+
+    /* Accumulate raw gyro counts */
+    A->gyro_sum[0] += (double)raw->gx;
+    A->gyro_sum[1] += (double)raw->gy;
+    A->gyro_sum[2] += (double)raw->gz;
+
+    /*Accumulate LSQ-corrected accle(m/s2)*/
+    A->acc_sum[0] += (double)acc_b_lsq.x;
+    A->acc_sum[1] += (double)acc_b_lsq.y;
+    A->acc_sum[2] += (double)acc_b_lsq.z;
+    
+    A->N++;
+
+    /* Check time condition only */
+    if((now_s - A->t0) < (double)still_required_s)
+        return false;
+    
+    /*--------------------Finalize calibration ----------------------*/
+
+    double invN = 1.0 / (double)A->N;
+
+    /*1) Gyro bias in raw counts */
+    g_cal.gyro_bias_counts[0] = (float)(A->gyro_sum[0] * invN);
+    g_cal.gyro_bias_counts[1] = (float)(A->gyro_sum[1] * invN);
+    g_cal.gyro_bias_counts[2] = (float)(A->gyro_sum[2] * invN);
+
+    /**
+     * 2) Accel bias trim (no attitude needed )
+     * Enforce |acc| = g along measured gravity direction 
+     */
+    vec3f acc_mean = v3((float)(A->acc_sum[0] * invN),
+                        (float)(A->acc_sum[1] * invN),
+                        (float)(A->acc_sum[2] * invN));
+
+    float n = v3_norm(acc_mean);
+    if( n > 1e-3f ){
+        vec3f g_dir = v3_scale(acc_mean, 1.0f/n);   // measured gravity direction 
+        vec3f acc_exp = v3_scale(g_dir, GRAVITY);   // Expected Gravity vector
+        vec3f resid = v3_sub(acc_mean, acc_exp);    // bias-like residual
+
+        /* accel_b = C *  raw + O */
+        g_cal.accel_O[0] -= resid.x;
+        g_cal.accel_O[1] -= resid.y;
+        g_cal.accel_O[2] -= resid.z;
+    }
+    still_reset(A);
+    return true;
+ 
+}
+
+#if 0
 /** Returns true if a still-window completed and applied an update */
 static bool apply_stationary_calibration( still_accum_t *A, bool zupt_cond, 
     const struct mpu6050_sample *raw, 
@@ -617,7 +689,7 @@ static bool apply_stationary_calibration( still_accum_t *A, bool zupt_cond,
             vec3f fb_exp_b = v3(
                 R[0]*0 + R[3]*0 + R[6]*GRAVITY,
                 R[1]*0 + R[4]*0 + R[7]*GRAVITY,
-                R[2]*0 + R[5]*5 + R[8]*GRAVITY
+                R[2]*0 + R[5]*0 + R[8]*GRAVITY
             );
 
             vec3f acc_mean  = v3(
@@ -637,6 +709,7 @@ static bool apply_stationary_calibration( still_accum_t *A, bool zupt_cond,
         still_reset(A);
         return true;
     }
+#endif 
 
     /** ---------------------------------------GNSS yaw-rate learner (turn-segment) ----------------- 
      * Goal: learn a small gyro z scale correction (g_cal.gyro_z_scale) using GNSS heading (COG) while moving
@@ -766,9 +839,7 @@ static bool apply_stationary_calibration( still_accum_t *A, bool zupt_cond,
    static void yaw_learn_maybe_persist(yaw_learn_t *Y, double now_s ){
     if((now_s - Y->last_persist_s ) <  YAW_LEARN_PERSIST_PERIOD_S ) return;
     /* Persist slow terms: biases already learned by stillness calibration; scale learned here */
-    if( cal_save_to_file() ){
         Y->last_persist_s = now_s;
-    }
    }
 
 
@@ -1237,9 +1308,11 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
     pthread_cond_t cv;
     bool running;
 
-    // Calibration (first install + runtime stillness trims )
-    bool need_first_install_cal;
-    double cal_last_save_s;
+    // Calibration on Power On
+    bool imu_cal_in_progress;
+    bool imu_cal_done;
+    double imu_cal_start_s;
+    
 } ctx_t;
 
 static void make_log_file(ctx_t *C) {
@@ -1521,64 +1594,37 @@ static void* fusion_thread(void *arg) {
             (fabsf(gyro_b.y) < ZUPT_GYRO_THR) &&
             (fabsf(gyro_b.z) < ZUPT_GYRO_THR);
 
-        // Calibration: First Install (if needed ) + runtime stillness trims
-        static still_accum_t cal_accum_first;
-        static still_accum_t cal_accum_run;
-
+        /* -------------------Power on IMU calibration (once per boot; no file persistence )-----------------------*/
+        static still_accum_t cal_accum_boot;
         double tcal_now = now_sec();
 
-        // First-Install: If not cal file exists, capture gyro bias during stillness.
-        // Accel gravity trim is only enabled once nav_ready (attitude is meaningful)
-        if( C->need_first_install_cal ){
-            bool updated = apply_stationary_calibration(
-                &cal_accum_first,
-                zupt_cond,
-                &C->imu_raw,
-                acc_b,
-                C->ins.q,
-                C->nav_ready, 
-                4.0f,
-                true,
-                tcal_now
-            );
-
-            if( updated ){
-                g_cal.calibrated_once = 1;
-                if( cal_save_to_file() ) {
-                    printf("[CAL] First-Install stillness calibration saved.\\n");
-                    C->need_first_install_cal = false;
-                    C->cal_last_save_s = tcal_now;
-                } else {
-                    printf("[CAL] ERROR: Failed to save first-install calibration. Will retry.\\n");
-                }
+        if( !C->imu_cal_done ){
+            if(!C->imu_cal_in_progress ){
+                C->imu_cal_in_progress = true;
+                C->imu_cal_start_s = tcal_now;
+                still_reset(&cal_accum_boot);
+                printf("[CAL] Power on IMU Calibration started: Keep vehicle still... \n");
             }
-        }
 
-        /** Runtime stillness calibration: Whenever nav_ready and Stillness holds, 
-         * Gently refine gyro bias + accel offsets vs gravity and save occasionally
-         */
-        if( C->nav_ready ){
-            bool updated = apply_stationary_calibration(
-                &cal_accum_run,
-                zupt_cond,
-                &C->imu_raw,
-                acc_b,
-                C->ins.q,
-                true,
-                3.0f,
-                false,
-                tcal_now
-            );
+            // Blink LED while calibration 
+            cal_led_update(true, false, tcal_now);
 
-            if( updated ){
-                /* Rate limit persistence to protect storage */
-                if((tcal_now - C->cal_last_save_s ) > 60.0 ){
-                    (void)cal_save_to_file();
-                    C->cal_last_save_s = tcal_now;
-                }
+            bool done = apply_poweron_calibration(&cal_accum_boot, &C->imu_raw, acc_b, 4.0f, tcal_now );
+            if(done) {
+                C->imu_cal_done = true;
+                C->imu_cal_in_progress = false;
+                cal_led_update(false, true, tcal_now); // stead ON
+                printf("[CAL] Power-On IMU calibration complete. \n");
+                printf("       gyro_bias_counts = [%.3f, %.3f, %.3f]\n", g_cal.gyro_bias_counts[0], g_cal.gyro_bias_counts[1],
+                g_cal.gyro_bias_counts[2]);
+                printf("       accel_O = [%.6f, %.6f, %.6f]\n", g_cal.accel_O[0], g_cal.accel_O[1], g_cal.accel_O[2]);
             }
-        }
 
+            continue;
+        } else {
+            // Steady On Indicates IMU ready
+            cal_led_update(false, true, tcal_now);
+        }
 
 
 
@@ -1637,9 +1683,6 @@ static void* fusion_thread(void *arg) {
 
         // GNSS presence/outage tracking (decoupled from gating)
 double tnow = now_sec();
-
-// Update the calibration LED
-cal_led_update(C->need_first_install_cal, tnow);
 
 if (C->last_gnss_meas_s <= 0.0) {
     // no GNSS measurement ever received yet (shouldn't happen after nav_ready, but keep safe)
@@ -1940,17 +1983,12 @@ C.gnss_enu_last_valid = false;
     make_log_file(&C);
     make_debug_log_file(&C);
     cal_set_defaults_from_lsq();
-    bool cal_loaded = cal_load_from_file();
 
- 
-    if( cal_loaded ) {
-        printf("[CAL] Loaded calibration from %s (calibrated_once=%u)\n", CAL_FILE_PATH, (unsigned)g_cal.calibrated_once);
-    } else {
-        printf("[CAL] No valid saved calibration; will perform first install stillness calibration when possible\n");
-    }
+    printf("[CAL] Power-on IMU calibration will run on every boot (no file persistence).\n");
 
-    C.need_first_install_cal = !cal_loaded;
-    C.cal_last_save_s = 0.0f;
+    C.imu_cal_done =false;
+    C.imu_cal_in_progress = false;
+    C.imu_cal_start_s = 0.0;
 
     cal_led_init();
 
