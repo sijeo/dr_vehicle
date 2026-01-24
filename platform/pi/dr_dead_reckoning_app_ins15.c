@@ -164,7 +164,9 @@
 
 
 #define CAL_LED_GPIO        13     //BCM GPIO 13
-#define CAL_LED_BLINK_HZ    2.0     // 2.0Hz blink while calibration pending
+#define CAL_LED_BLINK_HZ    1.0     // 2.0Hz blink while calibration pending
+
+#define BOOT_CAL_N_SAMPLES  500     // e.g. 500 samples (tune based on IMU rate )
 
 static int cal_led_exported = 0;
 static int cal_led_value_fd = -1;
@@ -275,12 +277,20 @@ static bool mat3_inv(const float A[9], float invA[9]) {
 static void cal_led_init( void )
 {
     char path[128];
+    int i;
 
     /* Export GPIO */
     int fd = open("/sys/class/gpio/export", O_WRONLY);
     if( fd >= 0) {
         dprintf(fd, "%d", CAL_LED_GPIO);
         close(fd);
+    }
+
+    /*Waiti for sysfs node to appear */
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d", CAL_LED_GPIO);
+    for(i = 0; i < 50; i++){
+        if(access(path, F_OK) == 0) break;
+        usleep(2000);
     }
 
     // Direction = Out
@@ -1608,7 +1618,7 @@ static void* fusion_thread(void *arg) {
             // Blink LED while calibration 
             cal_led_update(true, false, tcal_now);
 
-            bool done = apply_poweron_calibration(&cal_accum_boot, &C->imu_raw, acc_b, 4.0f, tcal_now );
+            bool done = apply_poweron_calibration(&cal_accum_boot, &C->imu_raw, acc_b, 10.0f, tcal_now );
             if(done) {
                 C->imu_cal_done = true;
                 C->imu_cal_in_progress = false;
