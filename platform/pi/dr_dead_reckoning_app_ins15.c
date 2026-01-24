@@ -349,8 +349,7 @@ static void cal_led_update(bool cal_in_progress, bool cal_done, double now_s){
         return;
     }
 
-    double half_period = 0.5/CAL_LED_BLINK_HZ;
-    if( (now_s - last_toggle_s) >= half_period ){
+    if( (now_s - last_toggle_s) >= 0.5 ){
         led_state = !led_state;
         cal_led_set(led_state);
         last_toggle_s = now_s;
@@ -1607,7 +1606,7 @@ static void* fusion_thread(void *arg) {
         static still_accum_t cal_accum_boot;
         double tcal_now = now_sec();
 
-        if( !C->imu_cal_done ){
+        while ( !C->imu_cal_done ){
             if(!C->imu_cal_in_progress ){
                 C->imu_cal_in_progress = true;
                 C->imu_cal_start_s = tcal_now;
@@ -1629,11 +1628,9 @@ static void* fusion_thread(void *arg) {
                 printf("       accel_O = [%.6f, %.6f, %.6f]\n", g_cal.accel_O[0], g_cal.accel_O[1], g_cal.accel_O[2]);
             }
 
-            continue;
-        } else {
-            // Steady On Indicates IMU ready
-            cal_led_update(false, true, tcal_now);
-        }
+        } 
+    cal_led_update(false, true, tcal_now);
+
 
 
 
