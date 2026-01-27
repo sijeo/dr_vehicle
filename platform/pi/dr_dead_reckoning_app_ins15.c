@@ -1606,30 +1606,30 @@ static void* fusion_thread(void *arg) {
         static still_accum_t cal_accum_boot;
         double tcal_now = now_sec();
 
-        while ( !C->imu_cal_done ){
-            if(!C->imu_cal_in_progress ){
+        if (!C->imu_cal_done) {
+            if (!C->imu_cal_in_progress) {
                 C->imu_cal_in_progress = true;
                 C->imu_cal_start_s = tcal_now;
                 still_reset(&cal_accum_boot);
                 printf("[CAL] Power on IMU Calibration started: Keep vehicle still... \n");
             }
 
-            // Blink LED while calibration 
+            // Blink LED while calibration
             cal_led_update(true, false, tcal_now);
 
-            bool done = apply_poweron_calibration(&cal_accum_boot, &C->imu_raw, acc_b, 10.0f, tcal_now );
-            if(done) {
+            bool done = apply_poweron_calibration(&cal_accum_boot, &C->imu_raw, acc_b, 10.0f, tcal_now);
+            if (done) {
                 C->imu_cal_done = true;
                 C->imu_cal_in_progress = false;
-                cal_led_update(false, true, tcal_now); // stead ON
+                cal_led_update(false, true, tcal_now); // steady ON
                 printf("[CAL] Power-On IMU calibration complete. \n");
                 printf("       gyro_bias_counts = [%.3f, %.3f, %.3f]\n", g_cal.gyro_bias_counts[0], g_cal.gyro_bias_counts[1],
-                g_cal.gyro_bias_counts[2]);
+                       g_cal.gyro_bias_counts[2]);
                 printf("       accel_O = [%.6f, %.6f, %.6f]\n", g_cal.accel_O[0], g_cal.accel_O[1], g_cal.accel_O[2]);
             }
-
-        } 
-    cal_led_update(false, true, tcal_now);
+        } else {
+            cal_led_update(false, true, tcal_now);
+        }
 
 
 
