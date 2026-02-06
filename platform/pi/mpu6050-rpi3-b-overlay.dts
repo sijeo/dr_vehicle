@@ -11,15 +11,18 @@
             #size-cells = <0>;
             status = "okay";
 
-            mpu6050@68 {
-                compatible = "invensense,mpu6050-custom";
-                reg = <0x68>;
-                
+            ism330dlctr@6a {
+                compatible = "stm,ism330dlctr";
+                reg = <0x6a>;
+
+                /*INT1 wired to Pi GPIO (example GPIO25)*/
+                interrupt-parent = <&gpio>;
+                interrupts = <25 2>;   /*<GPIO rising edge>*/
 
                 // Optional defaults (match your driver's DT parsing)
-                invensense,accel-fsr-g = <4>;   //2/4/8/16 g
-                invensense,gyro-fsr-dps = <500>;    // 250/500/1000/2000 dps
-                invensense,odr-hz = <20>;          //effective ODR with DLPF = On 
+                st,accel-fsr-g = <4>;   //2/4/8/16 g
+                st,gyro-fsr-dps = <500>;    // 250/500/1000/2000 dps
+                st,odr-hz = <200>;          //effective ODR with DLPF = On 
             };
         };
     };
