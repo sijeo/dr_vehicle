@@ -72,7 +72,7 @@
 #define ISM_REG_STATUS_REG         0x1E
 #define ISM_REG_OUT_TEMP_L        0x20 /* 14 bytes: TEMP(2), G(6), XL(6)*/
 
-#define ISM_WHO_AM_I_ID            0x6A
+#define ISM_WHO_AM_I_ID            0x71
 
 #define ISM_CTRL3_SW_RESET        BIT(0)
 #define ISM_CTRL3_IF_INC          BIT(2)

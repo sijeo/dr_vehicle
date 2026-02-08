@@ -81,4 +81,4 @@ MODULE_INFO(depends, "regmap-i2c");
 
 MODULE_ALIAS("i2c:ism330dlctr");
 
-MODULE_INFO(srcversion, "1E4449A850C8A847B32BB7C");
+MODULE_INFO(srcversion, "21DB37B2BAB9160D4962AEE");

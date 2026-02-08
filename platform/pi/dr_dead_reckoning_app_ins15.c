@@ -135,7 +135,7 @@
 #define LOG_DIR             "/home/sijeo/nav_logs"
 
 // MPU6050 scale (assuming ±500 dps for gyro here; adjust to your config)
-#define GYRO_LSB_PER_DPS    65.5f
+#define GYRO_LSB_PER_DPS    57.143f
 
 #define aWGS        6378137.0
 #define fWGS        (1.0/298.257223563)
