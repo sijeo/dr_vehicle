@@ -445,17 +445,17 @@ static void cal_set_defaults_from_lsq( void ) {
     g_cal.version = CAL_VERSION;
 
     /* Seed with your current LSQ Values (so the behavior deosn't regress )*/
-    g_cal.accel_C[0][0] = 0.0005964462462844185f; g_cal.accel_C[0][1] = -9.211739001666678e-07f; g_cal.accel_C[0][2] = 1.5763305507490624e-05f;
-    g_cal.accel_C[1][0] = -1.1573398643476584e-06f; g_cal.accel_C[1][1] = 0.0006037351040586055f; g_cal.accel_C[1][2] = 3.881537441769146e-07f;
-    g_cal.accel_C[2][0] = -3.851697134466662e-05f; g_cal.accel_C[2][1] = -3.2356391081574615e-05f; g_cal.accel_C[2][2] =  0.0005895175306304627f;
+    g_cal.accel_C[0][0] =  -2.2750481313183215e-05f; g_cal.accel_C[0][1] =  5.765265695963156e-06f; g_cal.accel_C[0][2] = 0.0005988349971499568f;
+    g_cal.accel_C[1][0] = -2.3509856530055813e-05f; g_cal.accel_C[1][1] =  0.0006000767045318638f; g_cal.accel_C[1][2] = -3.3823576680918605e-06f;
+    g_cal.accel_C[2][0] = 0.0005917895662743669f; g_cal.accel_C[2][1] = 5.579396736232053e-05f; g_cal.accel_C[2][2] =   5.296175035094069e-06f;
 
-    g_cal.accel_O[0] = -0.1329121010477303f;
-    g_cal.accel_O[1] = -0.047222673271787766f;
-    g_cal.accel_O[2] = 1.257425727446983f;
+    g_cal.accel_O[0] = -0.04324381676101664f;
+    g_cal.accel_O[1] = 0.16600572009786152f;
+    g_cal.accel_O[2] = 0.5714660018044386f;
 
-    g_cal.gyro_bias_counts[0] = -153.461f;
-    g_cal.gyro_bias_counts[1] = 69.446f;
-    g_cal.gyro_bias_counts[2] = 992.782f;
+    g_cal.gyro_bias_counts[0] = -38.741f;
+    g_cal.gyro_bias_counts[1] = 57.638f;
+    g_cal.gyro_bias_counts[2] = -16.246f;
 
     g_cal.gyro_z_scale = 1.0f;
     g_cal.accel_x_scale = 1.0f;
