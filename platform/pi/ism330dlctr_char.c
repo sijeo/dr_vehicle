@@ -291,6 +291,7 @@ static irqreturn_t ism_irq_thread(int irq, void *data)
 {
     struct ism330_priv *p = data;
     struct mpu6050_sample s;
+    unsigned long flags;
     if (!p->irq_mode)
         return IRQ_NONE;
 
@@ -367,10 +368,10 @@ static long ism330_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned 
 }
 
 
-static ssize_t ism330_read_file(struct file *f, char __user *buf, size_t count, loff_t *ppos)
+static ssize_t ism330_read_file(struct file *f, char __user *buf, size_t len, loff_t *ppos)
 {
     struct ism330_priv *p = f->private_data;
-    size_t count = len / sizeof(struct mpu6050_sample);
+    size_t count = len/sizeof(struct mpu6050_sample);
     size_t done = 0;
 
     if (count == 0)
@@ -387,13 +388,13 @@ static ssize_t ism330_read_file(struct file *f, char __user *buf, size_t count, 
                     return done ? (ssize_t)(done * sizeof(s)) : -ERESTARTSYS;
                 }
             }
-            spin_lock_irqsave(&p->fifo_lock, flags);
+            spin_lock(&p->fifo_lock);
             if(!kfifo_out(&p->sample_fifo, &s, 1))
             {
-                spin_unlock_irqrestore(&p->fifo_lock, flags);
+                spin_unlock(&p->fifo_lock);
                 continue;
             }
-            spin_unlock_irqrestore(&p->fifo_lock, flags);
+            spin_unlock(&p->fifo_lock);
             if( copy_to_user(buf + done * sizeof(s), &s, sizeof(s)))
                 return -EFAULT;
             done++;
@@ -401,6 +402,7 @@ static ssize_t ism330_read_file(struct file *f, char __user *buf, size_t count, 
         } else {
             /* Snapshot mode */
             struct mpu6050_sample s; int ret;
+            size_t off = done * sizeof(struct mpu6050_sample);
 
             memset(&s, 0, sizeof(s)); /* ABI leak fix: clear full struct including float bytes */
             mutex_lock(&p->io_lock);
@@ -408,7 +410,6 @@ static ssize_t ism330_read_file(struct file *f, char __user *buf, size_t count, 
             mutex_unlock(&p->io_lock);
             if (ret)
                 return done ? (ssize_t)(done * sizeof(s)) : ret;
-            size_t off = done * sizeof(struct mpu6050_sample);
             if (copy_to_user((void __user *)(buf + off), &s, sizeof(s)))
                 return -EFAULT;
             done++;
@@ -559,9 +560,9 @@ static int ism330_hw_init(struct ism330_priv *p)
         dev_err(p->dev, "Failed to read WHO_AM_I: %d\n", ret);
         return ret;
     }
-    if ((v & 0xFF) != ISM_WHO_AM_I_VAL) {
+    if ((v & 0xFF) != ISM_WHO_AM_I_ID) {
         dev_err(p->dev, "WHO_AM_I mismatch: expected 0x%02X, got 0x%02X\n",
-                ISM_WHO_AM_I_VAL, v & 0xFF);
+                ISM_WHO_AM_I_ID, v & 0xFF);
         return -ENODEV;
     }
 
@@ -745,7 +746,7 @@ static struct i2c_driver ism330_driver = {
         .name = DRIVER_NAME,
         .of_match_table = ism330_of_match,
     },
-    .probe = ism330_probe,
+    .probe_new = ism330_probe,
     .remove = ism330_remove,
     .id_table = ism330_i2c_id,
 };
