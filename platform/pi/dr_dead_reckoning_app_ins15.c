@@ -90,13 +90,13 @@
 #endif
 
 // Yaw dead-band for near-stationary conditions (limits gyro z noise from integrating into yaw)
-#define YAW_DEADBAND_RAD    (0.03f)           // ~1.7 deg/s
-#define ACC_STILL_TOL       (0.10f*GRAVITY)
-#define GYRO_STILL_TOL_RAD  (3.0f * DEG2RAD)
+#define YAW_DEADBAND_RAD    (0.01f)           // ~1.7 deg/s
+#define ACC_STILL_TOL       (0.04f*GRAVITY)
+#define GYRO_STILL_TOL_RAD  (1.0f * DEG2RAD)
 
 // ZUPT detection thresholds
-#define ZUPT_ACC_THR        (0.40f)           // | |a|-g | < thr
-#define ZUPT_GYRO_THR       (5.0f * DEG2RAD)
+#define ZUPT_ACC_THR        (0.175f)           // | |a|-g | < thr
+#define ZUPT_GYRO_THR       (2.0f * DEG2RAD)
 #define ZUPT_COUNT_REQUIRED 5
 
 // Mild velocity decay (helps bound drift when filter is "almost stopped")
@@ -107,10 +107,10 @@
 #define TIER_A  2.0f
 #define TIER_B  10.0f
 #define TIER_C  60.0f
-#define QSCL_A  2.0f
-#define QSCL_B  5.0f
-#define QSCL_C  10.0f
-#define QSCL_D  20.0f
+#define QSCL_A  1.5f
+#define QSCL_B  3.0f
+#define QSCL_C  6.0f
+#define QSCL_D  15.0f
 
 // GNSS gating and fade-in
 #define CHI2_3DOF_GATE      50.0f            // ~99.5% for 3 DOF
@@ -167,6 +167,18 @@
 #define CAL_LED_BLINK_HZ    1.0     // 2.0Hz blink while calibration pending
 
 #define BOOT_CAL_N_SAMPLES  500     // e.g. 500 samples (tune based on IMU rate )
+
+/* Noise Figures of IMU (Tune the Below parameters)*/
+# define IMU_SIGMA_ACCEL        (0.09f)     // ~0.09 m/s^2/√Hz for good MEMS accel; adjust to your sensor
+# define IMU_SIGMA_GYRO         (0.003f)    // ~0.015 (rad/s)/√Hz for good MEMS gyro; adjust to your sensor
+#define IMU_SIGMA_ACCEL_BIAS    (0.004f)   // gyro bias instability (rad/s^2/√Hz); adjust to your sensor
+#define IMU_SIGMA_GYRO_BIAS     (0.0015f)   // accel bias instability (m/s^2/√Hz); adjust to your sensor
+#define IMU_COVAR_POS   2.0f
+#define IMU_COVAR_VEL   1.0f;          // m/s       
+#define IMU_COVAR_ATT   2.0f*DEG2RAD;  // rad       
+#define IMU_COVAR_BA    0.075f;        // m/s^2         
+#define IMU_COVAR_BG    0.004f;        // rad/s     
+
 
 static int cal_led_exported = 0;
 static int cal_led_value_fd = -1;
@@ -873,11 +885,11 @@ static void ins15_init(ins15_t *S) {
     int i;
 
     // Conservative initial covariance (tune)
-    const float p0 = 5.0f;          // m
-    const float v0 = 1.0f;          // m/s
-    const float th0 = 5.0f*DEG2RAD; // rad
-    const float ba0 = 0.5f;         // m/s^2
-    const float bg0 = 0.01f;        // rad/s
+    const float p0 = IMU_COVAR_POS;          // m          
+    const float v0 = IMU_COVAR_VEL;          // m/s       
+    const float th0 = IMU_COVAR_ATT; // rad       
+    const float ba0 = IMU_COVAR_BA;         // m/s^2      
+    const float bg0 = IMU_COVAR_BG;        // rad/s    
 
     for (i=0;i<15;i++) S->P[i*15+i] = 1e-6f;
     for (i=0;i<3;i++) S->P[(0+i)*15 + (0+i)] = p0*p0;
@@ -982,10 +994,10 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
 
     // Process noise (continuous densities, scaled during outages)
     // Tune these to your IMU
-    const float sigma_a = 0.50f;     // m/s^2
-    const float sigma_g = 0.010f;    // rad/s
-    const float sigma_ba = 0.010f;   // m/s^2/sqrt(s)
-    const float sigma_bg = 0.005f;   // rad/s/sqrt(s)
+    const float sigma_a = IMU_SIGMA_ACCEL;     // m/s^2
+    const float sigma_g = IMU_SIGMA_GYRO;    // rad/s
+    const float sigma_ba = IMU_SIGMA_ACCEL_BIAS;   // m/s^2/sqrt(s)
+    const float sigma_bg = IMU_SIGMA_GYRO_BIAS;   // rad/s/sqrt(s)
 
     float sa2 = (sigma_a*sigma_a) * q_scale;
     float sg2 = (sigma_g*sigma_g) * q_scale;

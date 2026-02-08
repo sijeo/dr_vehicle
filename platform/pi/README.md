@@ -349,9 +349,89 @@ sudo journalctl -u dr_stack.service -f
 
 ## Key Columns for Troubleshooting
 1. Heading Mismatch: Compare column K (yaw_deg) with column AC (heading_deg)
-    > If K stays 0 while AC changes to 90 or 180, Initialization is failing 
+    > If K stays 0 while AC changes to 90 or 180, Initialization is failing
 2. Filter Rejection: Check Column AM (nis_pos)
     > If this value is consistently > 16.2 (or red/high), the filter is rejecting GNSS data
 3. Vertical Instability: Check column (V_U) and Column N (ba_z)
     > If G runs away to -10 or 10 m/s, your Z axis is dampening is insufficient.
 '''
+
+---
+
+# IMU Migration: MPU6050 → ISM330 — Noise Parameter Update Guide
+
+When switching the IMU from MPU6050 to ISM330 (ISM330DHCX/DLC), the following noise-related
+parameters in `dr_dead_reckoning_app_ins15.c` must be reviewed and updated. The ISM330 is
+roughly 5–8x better on noise density and bias stability.
+
+## 1. EKF Process Noise (lines 984–988) — Most Critical
+
+These directly drive filter performance. Lowering them tells the filter to trust the IMU more
+and rely less on GNSS corrections.
+
+| Parameter  | Current (MPU6050)    | Suggested (ISM330)    | Rationale                                                                 |
+|------------|----------------------|-----------------------|---------------------------------------------------------------------------|
+| `sigma_a`  | `0.50 m/s²`         | `~0.08–0.12 m/s²`    | ISM330 accel noise density ~60–80 µg/√Hz vs MPU6050 ~400 µg/√Hz          |
+| `sigma_g`  | `0.010 rad/s`        | `~0.002–0.004 rad/s`  | ISM330 gyro noise density ~3.8 mdps/√Hz vs MPU6050 ~10 mdps/√Hz          |
+| `sigma_ba` | `0.010 m/s²/√s`     | `~0.002–0.005 m/s²/√s`| ISM330 bias stability ~30 µg vs MPU6050 ~500 µg                           |
+| `sigma_bg` | `0.005 rad/s/√s`    | `~0.001–0.002 rad/s/√s`| ISM330 gyro bias stability ~1–3 dps vs MPU6050 ~5–20 dps                 |
+
+## 2. Initial Covariance P₀ (lines 876–880)
+
+| Parameter | Current | Suggested (ISM330) | Notes                                                    |
+|-----------|---------|---------------------|----------------------------------------------------------|
+| `ba0`     | `0.5 m/s²` | `~0.05–0.10 m/s²` | Reflects tighter accel bias bounds                       |
+| `bg0`     | `0.01 rad/s`| `~0.003–0.005 rad/s`| Reflects tighter gyro bias bounds                       |
+| `p0`      | `5.0 m`    | no change           | Geometry/application-dependent, not sensor-dependent     |
+| `v0`      | `1.0 m/s`  | no change           | Geometry/application-dependent, not sensor-dependent     |
+| `th0`     | `5.0 deg`  | no change           | Geometry/application-dependent, not sensor-dependent     |
+
+## 3. Stillness Detection Thresholds (lines 93–99)
+
+The ISM330's lower noise floor allows tightening these for better ZUPT/ZARU detection.
+
+| Parameter          | Current              | Suggested (ISM330)    | Notes                                     |
+|--------------------|----------------------|-----------------------|-------------------------------------------|
+| `YAW_DEADBAND_RAD` | `0.03 rad/s (~1.7°/s)` | `~0.01 rad/s (~0.6°/s)` | Tighter deadband feasible with lower noise |
+| `ACC_STILL_TOL`    | `0.10g (~0.98 m/s²)` | `~0.03–0.05g`         | Fewer false positives during gentle driving |
+| `GYRO_STILL_TOL_RAD`| `3.0°/s`            | `~1.0°/s`             | Better stillness discrimination            |
+| `ZUPT_ACC_THR`     | `0.40 m/s²`          | `~0.15–0.20 m/s²`    | Tighter zero-velocity detection            |
+| `ZUPT_GYRO_THR`    | `5.0°/s`             | `~2.0°/s`             | Tighter zero-velocity detection            |
+
+## 4. Gyro Scale Constant (line 138)
+
+```c
+#define GYRO_LSB_PER_DPS    65.5f    // MPU6050 @ ±500 dps
+```
+
+**Must** change to match the ISM330 full-scale setting:
+
+| ISM330 FS   | LSB/dps |
+|-------------|---------|
+| ±125 dps    | 228.571 |
+| ±250 dps    | 114.286 |
+| ±500 dps    | 57.143  |
+| ±1000 dps   | 28.571  |
+| ±2000 dps   | 14.286  |
+
+If using the same ±500 dps, the value stays 65.5. Otherwise update accordingly.
+
+## 5. Outage-Tiered Q Inflation (lines 110–113)
+
+With a better IMU the filter drifts less during GNSS outages, so these multipliers can be reduced.
+Best validated with real outage test data on the ISM330.
+
+| Parameter | Current | Suggested (ISM330) |
+|-----------|---------|--------------------|
+| `QSCL_A`  | 2.0     | 1.5                |
+| `QSCL_B`  | 5.0     | 3.0                |
+| `QSCL_C`  | 10.0    | 5.0–7.0            |
+| `QSCL_D`  | 20.0    | 10.0–15.0          |
+
+## Priority Order for Tuning
+
+1. **`sigma_a`, `sigma_g`, `sigma_ba`, `sigma_bg`** (lines 985–988) — largest impact on filter behavior
+2. **`GYRO_LSB_PER_DPS`** (line 138) — must match ISM330 full-scale config or raw conversion is wrong
+3. **Stillness thresholds** (lines 93–99) — tighten for better ZUPT/ZARU
+4. **Initial P₀ bias terms** (lines 879–880) — reflect tighter bias bounds
+5. **Q inflation tiers** (lines 110–113) — optional, tune empirically
