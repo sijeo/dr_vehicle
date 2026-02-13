@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dr_dead_reckoning_app_ins15.c — Complete Application Analysis</title>
+<style>
+  @page { size: A4; margin: 18mm 15mm; }
+  @media print {
+    body { font-size: 10pt; }
+    h1 { font-size: 18pt; }
+    h2 { font-size: 14pt; break-before: page; }
+    h3 { font-size: 12pt; }
+    pre { font-size: 8pt; }
+    .no-print { display: none; }
+    table { page-break-inside: auto; }
+    tr { page-break-inside: avoid; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", Calibri, Arial, sans-serif;
+    max-width: 900px; margin: 0 auto; padding: 20px;
+    line-height: 1.55; color: #222;
+  }
+  h1 { color: #1a365d; border-bottom: 3px solid #2b6cb0; padding-bottom: 8px; }
+  h2 { color: #2b6cb0; border-bottom: 2px solid #bee3f8; padding-bottom: 4px; margin-top: 32px; }
+  h3 { color: #2c5282; margin-top: 20px; }
+  h4 { color: #4a5568; margin-top: 14px; }
+  code { background: #edf2f7; padding: 1px 5px; border-radius: 3px; font-family: Consolas, "Courier New", monospace; font-size: 0.92em; }
+  pre { background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; overflow-x: auto; font-family: Consolas, "Courier New", monospace; font-size: 0.88em; line-height: 1.45; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.92em; }
+  th, td { border: 1px solid #cbd5e0; padding: 6px 10px; text-align: left; }
+  th { background: #ebf4ff; color: #2a4365; }
+  tr:nth-child(even) { background: #f7fafc; }
+  .meta { color: #718096; font-size: 0.9em; margin-bottom: 24px; }
+  .sig { background: #ebf8ff; border-left: 4px solid #3182ce; padding: 8px 12px; margin: 10px 0; font-family: Consolas, monospace; font-size: 0.88em; }
+  .note { background: #fffff0; border-left: 4px solid #d69e2e; padding: 8px 12px; margin: 10px 0; font-size: 0.92em; }
+  .section-intro { color: #4a5568; font-style: italic; margin-bottom: 12px; }
+  ul, ol { margin: 6px 0; padding-left: 24px; }
+  li { margin-bottom: 4px; }
+  .toc { background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px 24px; margin: 20px 0; }
+  .toc a { text-decoration: none; color: #2b6cb0; }
+  .toc a:hover { text-decoration: underline; }
+  .toc ol { counter-reset: toc-counter; list-style: none; padding-left: 0; }
+  .toc ol li { counter-increment: toc-counter; margin-bottom: 4px; }
+  .toc ol li::before { content: counter(toc-counter) ". "; font-weight: bold; color: #2b6cb0; }
+  .btn-print { display: inline-block; background: #2b6cb0; color: #fff; padding: 10px 28px; border: none; border-radius: 6px; font-size: 15px; cursor: pointer; margin: 20px 0; }
+  .btn-print:hover { background: #2c5282; }
+  .flow-box { background: #f0fff4; border: 1px solid #c6f6d5; border-radius: 6px; padding: 14px; margin: 12px 0; }
+  .flow-box h4 { margin-top: 0; color: #276749; }
+</style>
+</head>
+<body>
+
+<button class="btn-print no-print" onclick="window.print()">Print / Save as PDF</button>
+
+<h1>dr_dead_reckoning_app_ins15.c</h1>
+<h2 style="border:none;break-before:avoid;margin-top:4px;color:#4a5568;font-size:1.1em;">Complete Application Analysis</h2>
+
+<div class="meta">
+  <strong>File:</strong> platform/pi/dr_dead_reckoning_app_ins15.c (~2176 lines)<br>
+  <strong>Platform:</strong> Raspberry Pi 3B<br>
+  <strong>Sensors:</strong> ISM330 IMU (6-axis) + NEO-6M GNSS<br>
+  <strong>Language:</strong> C (POSIX pthreads, -lm -lpthread)<br>
+  <strong>Build:</strong> <code>gcc -O2 -pthread -lm -o dr_ins15 dr_dead_reckoning_app_ins15.c</code><br>
+  <strong>Generated:</strong> 2026-02-13
+</div>
+
+<div class="toc">
+<strong>Table of Contents</strong>
+<ol>
+  <li><a href="#s1">Application Overview</a></li>
+  <li><a href="#s2">Configuration and Constants</a></li>
+  <li><a href="#s3">Data Types and Structures</a></li>
+  <li><a href="#s4">Math Utility Functions</a></li>
+  <li><a href="#s5">Calibration LED Functions</a></li>
+  <li><a href="#s6">WGS-84 / Coordinate Conversion Functions</a></li>
+  <li><a href="#s7">Calibration System</a></li>
+  <li><a href="#s8">Stillness-Based Calibration Functions</a></li>
+  <li><a href="#s9">GNSS Yaw-Rate Learner</a></li>
+  <li><a href="#s10">15-State INS/EKF Core</a></li>
+  <li><a href="#s11">EKF Measurement Update Functions</a></li>
+  <li><a href="#s12">Device I/O Helper Functions</a></li>
+  <li><a href="#s13">Context Structure (ctx_t)</a></li>
+  <li><a href="#s14">Logging System</a></li>
+  <li><a href="#s15">Threading Architecture</a></li>
+  <li><a href="#s16">IMU Thread</a></li>
+  <li><a href="#s17">GNSS Thread</a></li>
+  <li><a href="#s18">Fusion Thread (Main Processing Loop)</a></li>
+  <li><a href="#s19">Main Function and Signal Handling</a></li>
+  <li><a href="#s20">Complete Data Flow Summary</a></li>
+</ol>
+</div>
+
+<!-- ==================== SECTION 1 ==================== -->
+<h2 id="s1">1. Application Overview</h2>
+
+<p>This application implements a <strong>15-state Error-State Extended Kalman Filter (ES-EKF)</strong> for vehicular dead-reckoning navigation. It fuses data from an ISM330 IMU (accelerometer + gyroscope at ~100 Hz) with a NEO-6M GNSS receiver (~1 Hz) to produce continuous position, velocity, and attitude estimates in an East-North-Up (ENU) coordinate frame.</p>
+
+<h3>State Vector</h3>
+<p>The <strong>nominal state</strong> consists of:</p>
+<ul>
+  <li><strong>p<sup>e</sup></strong> (3): Position in ENU (meters)</li>
+  <li><strong>v<sup>e</sup></strong> (3): Velocity in ENU (m/s)</li>
+  <li><strong>q<sup>e</sup><sub>b</sub></strong> (4): Attitude quaternion body&rarr;ENU (unit quaternion)</li>
+</ul>
+
+<p>The <strong>error-state EKF</strong> estimates a 15-element correction vector:</p>
+<pre>&delta;x = [&delta;p(3), &delta;v(3), &delta;&theta;(3), b<sub>a</sub>(3), b<sub>g</sub>(3)]</pre>
+
+<h3>Measurements Used</h3>
+<table>
+<tr><th>Measurement</th><th>Rate</th><th>Description</th></tr>
+<tr><td>GNSS Position</td><td>~1 Hz</td><td>z<sub>p</sub> = p<sup>e</sup> + noise (ENU from LLA via WGS-84)</td></tr>
+<tr><td>GNSS Velocity</td><td>~1 Hz</td><td>z<sub>v</sub> = v<sup>e</sup> + noise (derived from speed + course)</td></tr>
+<tr><td>GNSS Heading</td><td>~1 Hz</td><td>Course over ground (scalar yaw update)</td></tr>
+<tr><td>NHC</td><td>100 Hz</td><td>Non-holonomic constraints: v<sub>y</sub><sup>b</sup> &asymp; 0, v<sub>z</sub><sup>b</sup> &asymp; 0</td></tr>
+<tr><td>ZUPT</td><td>100 Hz (when still)</td><td>Zero-velocity update: v<sup>e</sup> &asymp; 0</td></tr>
+<tr><td>ZARU</td><td>100 Hz (when still)</td><td>Zero angular-rate update: &omega; &asymp; b<sub>g</sub></td></tr>
+</table>
+
+<h3>Key Design Features</h3>
+<ul>
+  <li><strong>GNSS outage handling:</strong> Tiered process noise inflation; NHC/ZUPT/velocity-decay to bound drift</li>
+  <li><strong>Reacquisition mode:</strong> Relaxed gating and inflated R when GNSS returns after outage</li>
+  <li><strong>Snap-to-GNSS:</strong> Safety net for extreme drift after prolonged outage (&gt;15s, &gt;120m innovation)</li>
+  <li><strong>NIS gating:</strong> Normalized Innovation Squared test (Chi-squared) before accepting GNSS updates</li>
+  <li><strong>Joseph-form covariance:</strong> Numerically stable covariance update</li>
+  <li><strong>Power-on calibration:</strong> 10-second stillness calibration at each boot</li>
+  <li><strong>Online yaw-rate learning:</strong> Learns gyro Z-axis scale from GNSS heading during turns</li>
+</ul>
+
+
+<!-- ==================== SECTION 2 ==================== -->
+<h2 id="s2">2. Configuration and Constants</h2>
+<p class="section-intro">Lines 60&ndash;184. All tuning parameters are compile-time <code>#define</code> constants.</p>
+
+<h3>2.1 Device Paths &amp; Timing</h3>
+<table>
+<tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+<tr><td><code>IMU_DEVICE_PATH</code></td><td><code>/dev/mpu6050-0</code></td><td>Character device for IMU reads</td></tr>
+<tr><td><code>NEO6M_DEVICE_PATH</code></td><td><code>/dev/neo6m0</code></td><td>Character device for GNSS ioctl</td></tr>
+<tr><td><code>IMU_HZ</code></td><td>100.0</td><td>IMU sample rate (Hz)</td></tr>
+<tr><td><code>DT_IMU_DEFAULT</code></td><td>0.01</td><td>Fallback dt when timing is abnormal</td></tr>
+<tr><td><code>GNSS_TIMEOUT_S</code></td><td>2.0</td><td>Seconds before declaring GNSS outage</td></tr>
+</table>
+
+<h3>2.2 Reacquisition / Snap Parameters</h3>
+<table>
+<tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+<tr><td><code>REACQ_MIN_OUTAGE_S</code></td><td>3.0</td><td>Minimum outage before entering reacquisition mode</td></tr>
+<tr><td><code>REACQ_STEPS</code></td><td>8</td><td>Number of GNSS attempts with relaxed gating</td></tr>
+<tr><td><code>REACQ_R_MULT</code></td><td>100.0</td><td>Inflate measurement noise during reacquisition</td></tr>
+<tr><td><code>REACQ_CHI2_GATE</code></td><td>200.0</td><td>Relaxed NIS gate during reacquisition</td></tr>
+<tr><td><code>SNAP_MIN_OUTAGE_S</code></td><td>15.0</td><td>Minimum outage before snap is allowed</td></tr>
+<tr><td><code>SNAP_INNOV_M</code></td><td>120.0</td><td>Horizontal innovation threshold for snap (m)</td></tr>
+<tr><td><code>SNAP_HDOP_MAX</code></td><td>3.0</td><td>Maximum HDOP for snap</td></tr>
+</table>
+
+<h3>2.3 Stillness / ZUPT Detection</h3>
+<table>
+<tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+<tr><td><code>YAW_DEADBAND_RAD</code></td><td>0.01 rad/s</td><td>Gyro-Z deadband to suppress yaw random walk when stationary</td></tr>
+<tr><td><code>ACC_STILL_TOL</code></td><td>0.04g</td><td>Accelerometer tolerance for stillness detection</td></tr>
+<tr><td><code>GYRO_STILL_TOL_RAD</code></td><td>1.0 deg/s</td><td>Gyro tolerance for stillness detection</td></tr>
+<tr><td><code>ZUPT_ACC_THR</code></td><td>0.175 m/s&sup2;</td><td>| |a| - g | threshold for zero-velocity detection</td></tr>
+<tr><td><code>ZUPT_GYRO_THR</code></td><td>2.0 deg/s</td><td>Gyro threshold for zero-velocity detection</td></tr>
+<tr><td><code>ZUPT_COUNT_REQUIRED</code></td><td>5</td><td>Consecutive samples before ZUPT fires</td></tr>
+</table>
+
+<h3>2.4 Outage Q-Inflation Tiers</h3>
+<table>
+<tr><th>Outage Duration</th><th>Multiplier</th><th>Effect</th></tr>
+<tr><td>&lt; 2 s (TIER_A)</td><td>QSCL_A = 1.5</td><td>Mild inflation</td></tr>
+<tr><td>&lt; 10 s (TIER_B)</td><td>QSCL_B = 3.0</td><td>Moderate inflation</td></tr>
+<tr><td>&lt; 60 s (TIER_C)</td><td>QSCL_C = 6.0</td><td>High inflation</td></tr>
+<tr><td>&ge; 60 s</td><td>QSCL_D = 15.0</td><td>Maximum inflation</td></tr>
+</table>
+
+<h3>2.5 GNSS Measurement Noise</h3>
+<table>
+<tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+<tr><td><code>R_GNSS_POS_VAR</code></td><td>4.0 m&sup2;</td><td>Base position variance, scaled by HDOP&sup2;</td></tr>
+<tr><td><code>RV_VEL_E, RV_VEL_N</code></td><td>0.09 m&sup2;/s&sup2;</td><td>Horizontal velocity variance (0.30 m/s)&sup2;</td></tr>
+<tr><td><code>RV_VEL_U</code></td><td>0.36 m&sup2;/s&sup2;</td><td>Vertical velocity variance (0.60 m/s)&sup2;</td></tr>
+<tr><td><code>R_NHC_VY</code></td><td>0.01</td><td>NHC lateral velocity noise (m/s)&sup2;</td></tr>
+<tr><td><code>R_NHC_VZ</code></td><td>0.04</td><td>NHC vertical velocity noise (m/s)&sup2;</td></tr>
+<tr><td><code>R_ZUPT_V</code></td><td>0.0004</td><td>ZUPT velocity noise (m/s)&sup2;</td></tr>
+<tr><td><code>CHI2_3DOF_GATE</code></td><td>50.0</td><td>NIS gate threshold (~99.5% for 3-DOF Chi-squared)</td></tr>
+</table>
+
+<h3>2.6 IMU Noise Figures (ISM330)</h3>
+<table>
+<tr><th>Constant</th><th>Value</th><th>Description</th></tr>
+<tr><td><code>IMU_SIGMA_ACCEL</code></td><td>0.004 m/s&sup2;/&radic;Hz</td><td>~5x ISM330 datasheet (80 &mu;g/&radic;Hz)</td></tr>
+<tr><td><code>IMU_SIGMA_GYRO</code></td><td>0.00035 rad/s/&radic;Hz</td><td>~5x ISM330 datasheet (3.8 mdps/&radic;Hz)</td></tr>
+<tr><td><code>IMU_SIGMA_ACCEL_BIAS</code></td><td>0.001 m/s&sup2;/&radic;Hz</td><td>Accel bias instability</td></tr>
+<tr><td><code>IMU_SIGMA_GYRO_BIAS</code></td><td>0.0005 rad/s/&radic;Hz</td><td>Gyro bias instability</td></tr>
+<tr><td><code>GYRO_LSB_PER_DPS</code></td><td>57.143</td><td>ISM330 &plusmn;500 dps full-scale sensitivity</td></tr>
+</table>
+
+<h3>2.7 WGS-84 Ellipsoid Constants</h3>
+<table>
+<tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+<tr><td><code>aWGS</code></td><td>6378137.0 m</td><td>Semi-major axis</td></tr>
+<tr><td><code>fWGS</code></td><td>1/298.257223563</td><td>Flattening</td></tr>
+<tr><td><code>bWGS</code></td><td>derived</td><td>Semi-minor axis</td></tr>
+<tr><td><code>e2</code></td><td>derived</td><td>First eccentricity squared</td></tr>
+</table>
+
+
+<!-- ==================== SECTION 3 ==================== -->
+<h2 id="s3">3. Data Types and Structures</h2>
+
+<h3>3.1 Mathematical Types (lines 210&ndash;211)</h3>
+<div class="sig"><code>typedef struct { float w, x, y, z; } quatf;</code></div>
+<p>Unit quaternion representing rotation (body &rarr; ENU). Convention: scalar-first (w, x, y, z).</p>
+
+<div class="sig"><code>typedef struct { float x, y, z; } vec3f;</code></div>
+<p>3-component float vector used for positions, velocities, accelerations, angular rates, and biases.</p>
+
+<h3>3.2 Geodetic Types (lines 391&ndash;392)</h3>
+<div class="sig"><code>typedef struct { double lat, lon, h; } lla_t;</code></div>
+<p>Latitude/Longitude/Altitude in radians and meters.</p>
+
+<div class="sig"><code>typedef struct { double x, y, z; } ecef_t;</code></div>
+<p>Earth-Centered Earth-Fixed coordinates in meters.</p>
+
+<h3>3.3 Calibration Structure (lines 421&ndash;439)</h3>
+<div class="sig"><code>typedef struct { ... } dr_cal_t;</code></div>
+<table>
+<tr><th>Field</th><th>Type</th><th>Purpose</th></tr>
+<tr><td><code>magic</code></td><td>uint32_t</td><td>Magic number 'CAL1' for file validation</td></tr>
+<tr><td><code>version</code></td><td>uint32_t</td><td>Calibration format version</td></tr>
+<tr><td><code>crc32</code></td><td>uint32_t</td><td>Integrity check for persistent storage</td></tr>
+<tr><td><code>accel_C[3][3]</code></td><td>float</td><td>LSQ affine calibration matrix (raw &rarr; m/s&sup2;)</td></tr>
+<tr><td><code>accel_O[3]</code></td><td>float</td><td>Affine offset vector (m/s&sup2;)</td></tr>
+<tr><td><code>gyro_bias_counts[3]</code></td><td>float</td><td>Gyro bias in raw ADC counts</td></tr>
+<tr><td><code>gyro_z_scale</code></td><td>float</td><td>Yaw-rate scale correction (online-learned)</td></tr>
+<tr><td><code>accel_x_scale</code></td><td>float</td><td>Optional X-axis accel trim (default 1.0)</td></tr>
+<tr><td><code>calibrated_once</code></td><td>uint8_t</td><td>Flag: first calibration completed</td></tr>
+</table>
+
+<h3>3.4 Stillness Accumulator (lines 587&ndash;594)</h3>
+<div class="sig"><code>typedef struct { ... } still_accum_t;</code></div>
+<p>Accumulates gyro counts and accelerometer readings over a stillness window for bias estimation. Fields: <code>active</code> (bool), <code>N</code> (sample count), <code>t0</code> (start time), <code>gyro_sum[3]</code>, <code>acc_sum[3]</code>.</p>
+
+<h3>3.5 Yaw Learner (lines 764&ndash;777)</h3>
+<div class="sig"><code>typedef struct { ... } yaw_learn_t;</code></div>
+<p>Tracks turn segments for online gyro-Z scale learning. Fields include GNSS heading state, segment start/end angles, integrated gyro angle, and persistence timing.</p>
+
+<h3>3.6 INS State (lines 886&ndash;898)</h3>
+<div class="sig"><code>typedef struct { ... } ins15_t;</code></div>
+<table>
+<tr><th>Field</th><th>Type</th><th>Purpose</th></tr>
+<tr><td><code>p</code></td><td>vec3f</td><td>Position in ENU (m)</td></tr>
+<tr><td><code>v</code></td><td>vec3f</td><td>Velocity in ENU (m/s)</td></tr>
+<tr><td><code>q</code></td><td>quatf</td><td>Attitude quaternion body&rarr;ENU</td></tr>
+<tr><td><code>ba</code></td><td>vec3f</td><td>Accelerometer bias estimate (m/s&sup2;)</td></tr>
+<tr><td><code>bg</code></td><td>vec3f</td><td>Gyroscope bias estimate (rad/s)</td></tr>
+<tr><td><code>P[15*15]</code></td><td>float</td><td>Error-state covariance matrix (15&times;15)</td></tr>
+</table>
+
+
+<!-- ==================== SECTION 4 ==================== -->
+<h2 id="s4">4. Math Utility Functions</h2>
+<p class="section-intro">Lines 192&ndash;304. Inline helper functions for timing, vector/quaternion math, and matrix inversion.</p>
+
+<h3>4.1 Timing</h3>
+
+<h4><code>monotonic_ns()</code> &mdash; Line 192</h4>
+<div class="sig"><code>static inline uint64_t monotonic_ns(void)</code></div>
+<p>Returns the current monotonic clock time in nanoseconds using <code>CLOCK_MONOTONIC</code>. Used for precise dt computation independent of wall-clock adjustments.</p>
+
+<h4><code>now_sec()</code> &mdash; Line 198</h4>
+<div class="sig"><code>static inline double now_sec(void)</code></div>
+<p>Convenience wrapper: returns <code>monotonic_ns() * 1e-9</code> as a double-precision seconds value.</p>
+
+<h3>4.2 Scalar Helpers</h3>
+
+<h4><code>clampf()</code> &mdash; Line 200</h4>
+<div class="sig"><code>static inline float clampf(float x, float lo, float hi)</code></div>
+<p>Clamps a float value to the range [lo, hi]. Used to bound learned parameters (e.g., gyro_z_scale).</p>
+
+<h4><code>wrap_pi()</code> &mdash; Line 204</h4>
+<div class="sig"><code>static inline float wrap_pi(float a)</code></div>
+<p>Wraps an angle to the range (&minus;&pi;, &pi;]. Critical for computing angular innovations (e.g., yaw difference) without wrap-around errors.</p>
+
+<h3>4.3 Vector Operations</h3>
+<table>
+<tr><th>Function</th><th>Line</th><th>Description</th></tr>
+<tr><td><code>v3(x,y,z)</code></td><td>213</td><td>Construct a vec3f</td></tr>
+<tr><td><code>v3_norm(a)</code></td><td>215</td><td>Euclidean norm &radic;(x&sup2;+y&sup2;+z&sup2;)</td></tr>
+<tr><td><code>v3_add(a,b)</code></td><td>217</td><td>Component-wise addition</td></tr>
+<tr><td><code>v3_sub(a,b)</code></td><td>218</td><td>Component-wise subtraction</td></tr>
+<tr><td><code>v3_scale(a,s)</code></td><td>219</td><td>Scalar multiplication</td></tr>
+<tr><td><code>v3_cross(a,b)</code></td><td>221</td><td>Cross product</td></tr>
+<tr><td><code>v3_dot(a,b)</code></td><td>225</td><td>Dot product</td></tr>
+</table>
+
+<h3>4.4 Quaternion Operations</h3>
+<table>
+<tr><th>Function</th><th>Line</th><th>Description</th></tr>
+<tr><td><code>q_identity()</code></td><td>227</td><td>Returns {1,0,0,0} (no rotation)</td></tr>
+<tr><td><code>q_normalize(q)</code></td><td>229</td><td>Normalizes to unit quaternion; returns identity if |q|&asymp;0</td></tr>
+<tr><td><code>q_mul(a,b)</code></td><td>236</td><td>Hamilton product (rotation composition)</td></tr>
+<tr><td><code>q_from_small_angle(d&theta;)</code></td><td>245</td><td>Small-angle approximation: q &asymp; [1, 0.5&middot;d&theta;], then normalize</td></tr>
+<tr><td><code>R_from_q(q,R)</code></td><td>250</td><td>Converts quaternion to 3&times;3 rotation matrix (body&rarr;world)</td></tr>
+<tr><td><code>yaw_from_q(q)</code></td><td>259</td><td>Extracts yaw angle (rotation about +Z in ENU) from quaternion</td></tr>
+<tr><td><code>q_from_yaw_delta(d&psi;)</code></td><td>266</td><td>Creates quaternion from pure yaw rotation</td></tr>
+<tr><td><code>q_from_euler(r,p,y)</code></td><td>273</td><td>Euler angles (ZYX convention) to quaternion body&rarr;ENU</td></tr>
+</table>
+
+<h3>4.5 Matrix Operations</h3>
+
+<h4><code>mat3_inv()</code> &mdash; Line 285</h4>
+<div class="sig"><code>static bool mat3_inv(const float A[9], float invA[9])</code></div>
+<p>Computes the inverse of a 3&times;3 matrix using cofactor expansion. Returns <code>false</code> if singular (|det| &lt; 1e-12). Used in the Kalman update to invert the innovation covariance S = HPH<sup>T</sup> + R.</p>
+
+
+<!-- ==================== SECTION 5 ==================== -->
+<h2 id="s5">5. Calibration LED Functions</h2>
+<p class="section-intro">Lines 307&ndash;387. GPIO-based LED indicator for calibration status on RPi3B (BCM GPIO 13).</p>
+
+<h4><code>cal_led_init()</code> &mdash; Line 307</h4>
+<div class="sig"><code>static void cal_led_init(void)</code></div>
+<p>Exports GPIO 13 via <code>/sys/class/gpio/export</code>, sets direction to output, opens the value file descriptor for fast writes. Waits up to 100ms for sysfs node to appear. LED starts OFF.</p>
+
+<h4><code>cal_led_set()</code> &mdash; Line 343</h4>
+<div class="sig"><code>static void cal_led_set(int on)</code></div>
+<p>Writes "1" or "0" to the pre-opened GPIO value fd to turn the LED on or off.</p>
+
+<h4><code>cal_led_deinit()</code> &mdash; Line 349</h4>
+<div class="sig"><code>static void cal_led_deinit(void)</code></div>
+<p>Turns LED off, closes fd, and unexports the GPIO pin. Called during clean shutdown.</p>
+
+<h4><code>cal_led_update()</code> &mdash; Line 365</h4>
+<div class="sig"><code>static void cal_led_update(bool cal_in_progress, bool cal_done, double now_s)</code></div>
+<p>Non-blocking LED state machine:
+<ul>
+  <li><strong>Calibration done:</strong> LED steady ON</li>
+  <li><strong>Calibration in progress:</strong> Blink at ~1 Hz (toggle every 0.5s)</li>
+  <li><strong>No calibration:</strong> LED OFF</li>
+</ul>
+</p>
+
+
+<!-- ==================== SECTION 6 ==================== -->
+<h2 id="s6">6. WGS-84 / Coordinate Conversion Functions</h2>
+<p class="section-intro">Lines 389&ndash;416. Convert GNSS lat/lon/alt to local ENU coordinates.</p>
+
+<h4><code>lla2ecef()</code> &mdash; Line 396</h4>
+<div class="sig"><code>static ecef_t lla2ecef(lla_t L)</code></div>
+<p>Converts geodetic coordinates (latitude, longitude, height) to Earth-Centered Earth-Fixed (ECEF) Cartesian coordinates using the WGS-84 ellipsoid model. The prime vertical radius of curvature N is computed as:</p>
+<pre>N = a / sqrt(1 - e&sup2; sin&sup2;(&phi;))</pre>
+<p>Then: X = (N+h)cos&phi; cos&lambda;, Y = (N+h)cos&phi; sin&lambda;, Z = (N(1-e&sup2;)+h)sin&phi;</p>
+
+<h4><code>ecef2enu()</code> &mdash; Line 406</h4>
+<div class="sig"><code>static void ecef2enu(ecef_t e, lla_t ref, ecef_t e0, double out[3])</code></div>
+<p>Converts the ECEF difference vector (e - e0) into a local East-North-Up frame centered at the reference point <code>ref</code>. Uses the standard rotation matrix:</p>
+<pre>E =  -sin(&lambda;)&middot;&Delta;X + cos(&lambda;)&middot;&Delta;Y
+N = -sin(&phi;)cos(&lambda;)&middot;&Delta;X - sin(&phi;)sin(&lambda;)&middot;&Delta;Y + cos(&phi;)&middot;&Delta;Z
+U =  cos(&phi;)cos(&lambda;)&middot;&Delta;X + cos(&phi;)sin(&lambda;)&middot;&Delta;Y + sin(&phi;)&middot;&Delta;Z</pre>
+<p>The ENU reference is established from the first valid GNSS fix and remains fixed for the entire session.</p>
+
+
+<!-- ==================== SECTION 7 ==================== -->
+<h2 id="s7">7. Calibration System</h2>
+<p class="section-intro">Lines 418&ndash;584. Sensor calibration: LSQ defaults, persistent file storage, and runtime calibration functions.</p>
+
+<h4><code>cal_set_defaults_from_lsq()</code> &mdash; Line 472</h4>
+<div class="sig"><code>static void cal_set_defaults_from_lsq(void)</code></div>
+<p>Initializes the global calibration structure <code>g_cal</code> with factory/lab-determined Least-Squares calibration values. These are the baseline values used when no calibration file is loaded. Sets:</p>
+<ul>
+  <li><code>accel_C[3][3]</code>: 3&times;3 affine matrix mapping raw ADC counts to m/s&sup2; (accounts for scale, cross-axis coupling, and misalignment)</li>
+  <li><code>accel_O[3]</code>: Offset vector (m/s&sup2;)</li>
+  <li><code>gyro_bias_counts[3]</code>: Initial gyro bias in raw ADC counts</li>
+  <li><code>gyro_z_scale = 1.0</code>, <code>accel_x_scale = 1.0</code>: Online trims start at unity</li>
+</ul>
+
+<h4><code>calib_accel()</code> &mdash; Line 557</h4>
+<div class="sig"><code>static void calib_accel(const struct mpu6050_sample *raw, vec3f *acc_mps2)</code></div>
+<p><strong>Calibration model:</strong> <code>acc = C &times; raw_counts + O</code></p>
+<p>Applies the full 3&times;3 affine calibration matrix to raw accelerometer counts, producing calibrated acceleration in m/s&sup2;. The matrix C handles scale factors, cross-axis coupling, and misalignment in a single operation. An optional <code>accel_x_scale</code> trim is applied to the X-axis output.</p>
+
+<h4><code>calib_gyro()</code> &mdash; Line 572</h4>
+<div class="sig"><code>static void calib_gyro(const struct mpu6050_sample *raw, vec3f *gyro_radps)</code></div>
+<p><strong>Pipeline:</strong></p>
+<ol>
+  <li>Subtract bias in raw count domain: <code>g_corrected = raw - bias_counts</code></li>
+  <li>Convert counts to deg/s: <code>dps = g_corrected / GYRO_LSB_PER_DPS</code></li>
+  <li>Apply Z-axis scale correction (online-learned): only Z-axis gets <code>gyro_z_scale</code></li>
+  <li>Convert deg/s to rad/s: <code>radps = dps &times; DEG2RAD</code></li>
+</ol>
+
+
+<!-- ==================== SECTION 8 ==================== -->
+<h2 id="s8">8. Stillness-Based Calibration Functions</h2>
+<p class="section-intro">Lines 586&ndash;749. Power-on and runtime calibration that runs while the vehicle is stationary.</p>
+
+<h4><code>still_reset()</code> &mdash; Line 596</h4>
+<div class="sig"><code>static void still_reset(still_accum_t *A)</code></div>
+<p>Zeroes out the stillness accumulator: sets active=false, N=0, and all sums to zero. Called after calibration completes or when stillness is broken.</p>
+
+<h4><code>apply_poweron_calibration()</code> &mdash; Line 605</h4>
+<div class="sig"><code>static bool apply_poweron_calibration(still_accum_t *A, const struct mpu6050_sample *raw, vec3f acc_b_lsq, float still_required_s, double now_s)</code></div>
+<p>Runs once at every boot. Accumulates IMU samples over a 10-second stillness window. When complete:</p>
+<ol>
+  <li><strong>Gyro bias:</strong> Computes mean of raw gyro counts &rarr; updates <code>g_cal.gyro_bias_counts</code></li>
+  <li><strong>Accel offset trim:</strong> Computes mean of calibrated accel, finds the residual vs expected gravity along the measured direction, and adjusts <code>g_cal.accel_O</code> to eliminate the residual:
+  <pre>g_dir = mean_acc / |mean_acc|
+residual = mean_acc - g &times; g_dir
+accel_O -= residual</pre></li>
+</ol>
+<p>Returns <code>true</code> when calibration is complete, <code>false</code> while accumulating.</p>
+
+<h4><code>apply_stationary_calibration()</code> &mdash; Lines 671&ndash;749 (currently <code>#if 0</code>)</h4>
+<p>Runtime calibration (disabled). Would update gyro bias via LPF and optionally trim accel offsets using the current attitude estimate for the expected gravity direction. Uses gentle update coefficients (<code>k_bg = 0.05</code>) at runtime vs direct replacement at first install.</p>
+
+
+<!-- ==================== SECTION 9 ==================== -->
+<h2 id="s9">9. GNSS Yaw-Rate Learner</h2>
+<p class="section-intro">Lines 752&ndash;881. Learns a gyro Z-axis scale correction by comparing integrated gyro yaw with GNSS course changes during turns.</p>
+
+<h3>Concept</h3>
+<p>During turns, the system integrates the <em>unscaled</em> gyro-Z angular rate and compares the total angle with the GNSS heading change. The ratio provides a scale correction factor:</p>
+<pre>scale_est = &Delta;&psi;<sub>GNSS</sub> / &Delta;&psi;<sub>gyro_unscaled</sub></pre>
+
+<h4><code>yaw_learn_reset_seg()</code> &mdash; Line 779</h4>
+<div class="sig"><code>static void yaw_learn_reset_seg(yaw_learn_t *Y, double now_s)</code></div>
+<p>Resets the turn-segment state: clears accumulated GNSS and gyro angle, marks segment inactive.</p>
+
+<h4><code>yaw_learn_on_gnss_fix()</code> &mdash; Line 788</h4>
+<div class="sig"><code>static void yaw_learn_on_gnss_fix(yaw_learn_t *Y, float yaw_enu_rad, int64_t fix_ns)</code></div>
+<p>Called on each GNSS fix. Records latest heading. If a turn segment is active, updates the segment end heading.</p>
+
+<h4><code>yaw_learn_try_finalize()</code> &mdash; Line 797</h4>
+<div class="sig"><code>static void yaw_learn_try_finalize(yaw_learn_t *Y, double now_s)</code></div>
+<p>Attempts to finalize a turn segment. Validates:</p>
+<ul>
+  <li>Segment duration: 3&ndash;40 seconds</li>
+  <li>Minimum GNSS heading change: 20&deg;</li>
+  <li>Minimum integrated gyro angle: 0.10 rad</li>
+  <li>Scale estimate in [0.5, 1.5] (rejects GNSS glitches)</li>
+</ul>
+<p>If valid, applies LPF update: <code>scale = 0.95&times;old + 0.05&times;estimate</code>, clamped to [0.85, 1.15].</p>
+
+<h4><code>yaw_learn_on_imu()</code> &mdash; Line 832</h4>
+<div class="sig"><code>static void yaw_learn_on_imu(yaw_learn_t *Y, double now_s, float dt, const struct mpu6050_sample *raw, bool gnss_ok, float gnss_speed_mps, bool turning_ok)</code></div>
+<p>Called every IMU step (~100 Hz). If a segment is active, integrates unscaled gyro-Z. If GNSS quality degrades or turning stops, attempts finalization. If no segment is active and all conditions are met (GNSS good, speed &gt; 2 m/s, turning), starts a new segment.</p>
+
+<h4><code>yaw_learn_maybe_persist()</code> &mdash; Line 877</h4>
+<div class="sig"><code>static void yaw_learn_maybe_persist(yaw_learn_t *Y, double now_s)</code></div>
+<p>Periodically (every 60s) marks persistence timing. File persistence is currently disabled (<code>#if 0</code>).</p>
+
+
+<!-- ==================== SECTION 10 ==================== -->
+<h2 id="s10">10. 15-State INS/EKF Core</h2>
+<p class="section-intro">Lines 884&ndash;1047. The heart of the navigation filter.</p>
+
+<h4><code>ins15_init()</code> &mdash; Line 900</h4>
+<div class="sig"><code>static void ins15_init(ins15_t *S)</code></div>
+<p>Initializes the INS state. Zeros nominal state, sets quaternion to identity, and sets diagonal initial covariance P<sub>0</sub>:</p>
+<table>
+<tr><th>State Block</th><th>Indices</th><th>Initial &sigma;</th><th>P<sub>0</sub> diagonal</th></tr>
+<tr><td>Position &delta;p</td><td>0&ndash;2</td><td>2.0 m</td><td>4.0 m&sup2;</td></tr>
+<tr><td>Velocity &delta;v</td><td>3&ndash;5</td><td>1.0 m/s</td><td>1.0 m&sup2;/s&sup2;</td></tr>
+<tr><td>Attitude &delta;&theta;</td><td>6&ndash;8</td><td>2.0&deg;</td><td>~0.0012 rad&sup2;</td></tr>
+<tr><td>Accel bias b<sub>a</sub></td><td>9&ndash;11</td><td>0.075 m/s&sup2;</td><td>~0.0056 m&sup2;/s&sup4;</td></tr>
+<tr><td>Gyro bias b<sub>g</sub></td><td>12&ndash;14</td><td>0.004 rad/s</td><td>~1.6e-5 rad&sup2;/s&sup2;</td></tr>
+</table>
+
+<h4><code>compute_qscale()</code> &mdash; Line 920</h4>
+<div class="sig"><code>static inline float compute_qscale(double outage_s)</code></div>
+<p>Returns the process noise inflation factor based on GNSS outage duration. Maps outage time to one of four tiers (QSCL_A through QSCL_D).</p>
+
+<h4>Matrix Helpers &mdash; Lines 927&ndash;941</h4>
+<table>
+<tr><th>Function</th><th>Description</th></tr>
+<tr><td><code>mat15_mul(A,B,C)</code></td><td>15&times;15 matrix multiplication: C = A&times;B</td></tr>
+<tr><td><code>mat15_T(A,AT)</code></td><td>15&times;15 matrix transpose</td></tr>
+<tr><td><code>mat15_add(A,B)</code></td><td>In-place 15&times;15 matrix addition: A += B</td></tr>
+</table>
+
+<h4><code>ins15_predict()</code> &mdash; Line 944</h4>
+<div class="sig"><code>static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float dt, float q_scale, vec3f *out_aw)</code></div>
+<p>The INS mechanization + error-state covariance propagation. This is the most critical function, called at ~100 Hz.</p>
+
+<p><strong>Step 1: Remove estimated biases</strong></p>
+<pre>&omega; = gyro_meas - b<sub>g</sub>
+f<sub>b</sub> = accel_meas - b<sub>a</sub></pre>
+
+<p><strong>Step 2: Yaw deadband</strong><br>
+When near-still (|a| &asymp; g and |&omega;<sub>z</sub>| &lt; deadband), forces &omega;<sub>z</sub> = 0 to suppress yaw random walk.</p>
+
+<p><strong>Step 3: Attitude integration</strong></p>
+<pre>dq = q_from_small_angle(&omega; &times; dt)
+q &larr; normalize(q &times; dq)</pre>
+
+<p><strong>Step 4: Specific force rotation &amp; gravity removal</strong></p>
+<pre>f<sub>ENU</sub> = R(q) &times; f<sub>b</sub>
+a<sub>ENU</sub> = f<sub>ENU</sub> - [0, 0, g]</pre>
+
+<p><strong>Step 5: Kinematic integration</strong></p>
+<pre>p &larr; p + v&middot;dt + &frac12;&middot;a&middot;dt&sup2;
+v &larr; v + a&middot;dt</pre>
+
+<p><strong>Step 6: Error-state dynamics (linearization)</strong><br>
+Builds the 15&times;15 Jacobian F matrix:</p>
+<ul>
+  <li>&delta;p&#775; = &delta;v &rarr; F[0:3, 3:6] = I</li>
+  <li>&delta;v&#775; = &minus;R&middot;[f<sub>b</sub>&times;]&middot;&delta;&theta; &minus; R&middot;&delta;b<sub>a</sub></li>
+  <li>&delta;&theta;&#775; = &minus;[&omega;&times;]&middot;&delta;&theta; &minus; &delta;b<sub>g</sub></li>
+  <li>b<sub>a</sub>&#775; = 0, b<sub>g</sub>&#775; = 0 (random walk)</li>
+</ul>
+
+<p><strong>Step 7: State transition matrix</strong></p>
+<pre>&Phi; &asymp; I + F&middot;dt (first-order Euler discretization)</pre>
+
+<p><strong>Step 8: Process noise matrix Q</strong></p>
+<pre>Q = diag([&sigma;<sub>a</sub>&sup2;&middot;dt&sup3;/3 + &sigma;<sub>p</sub>&sup2;&middot;dt,  &sigma;<sub>a</sub>&sup2;&middot;dt,  &sigma;<sub>g</sub>&sup2;&middot;dt,  &sigma;<sub>ba</sub>&sup2;&middot;dt,  &sigma;<sub>bg</sub>&sup2;&middot;dt]) &times; q_scale</pre>
+
+<p><strong>Step 9: Covariance propagation</strong></p>
+<pre>P &larr; &Phi;&middot;P&middot;&Phi;<sup>T</sup> + Q</pre>
+
+<h4><code>ins15_inject()</code> &mdash; Line 1049</h4>
+<div class="sig"><code>static void ins15_inject(ins15_t *S, const float dx[15])</code></div>
+<p>Applies the estimated error-state correction to the nominal state:</p>
+<pre>p += &delta;p,  v += &delta;v,  q &larr; q &otimes; q_from_small_angle(&delta;&theta;),  b<sub>a</sub> += &delta;b<sub>a</sub>,  b<sub>g</sub> += &delta;b<sub>g</sub></pre>
+
+
+<!-- ==================== SECTION 11 ==================== -->
+<h2 id="s11">11. EKF Measurement Update Functions</h2>
+<p class="section-intro">Lines 1064&ndash;1343. All measurement update paths using the 3&times;15 observation model.</p>
+
+<h4><code>kf_compute_nis_3()</code> &mdash; Line 1065</h4>
+<div class="sig"><code>static bool kf_compute_nis_3(const ins15_t *S, const float H[3*15], const float z[3], const float h[3], const float Rdiag[3], float *out_NIS)</code></div>
+<p><strong>Read-only NIS computation.</strong> Computes the Normalized Innovation Squared without modifying state or covariance. Used as a pre-check before applying updates.</p>
+<pre>S<sub>33</sub> = H&middot;P&middot;H<sup>T</sup> + R
+&nu; = z - h
+NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
+<p>If NIS &lt; gate threshold (Chi-squared), the measurement is accepted.</p>
+
+<h4><code>kf_update_3()</code> &mdash; Line 1094</h4>
+<div class="sig"><code>static bool kf_update_3(ins15_t *S, const float H[3*15], const float z[3], const float h[3], const float Rdiag[3], float *out_NIS)</code></div>
+<p>The core 3-measurement Kalman update. Steps:</p>
+<ol>
+  <li>Compute innovation covariance: S = H P H<sup>T</sup> + R</li>
+  <li>Invert S (3&times;3)</li>
+  <li>Compute Kalman gain: K = P H<sup>T</sup> S<sup>-1</sup> (15&times;3)</li>
+  <li>Compute correction: dx = K &times; &nu;</li>
+  <li>Inject correction into nominal state</li>
+  <li><strong>Joseph-form covariance update:</strong> P = (I-KH)P(I-KH)<sup>T</sup> + KRK<sup>T</sup> (numerically stable)</li>
+</ol>
+
+<h4><code>ins15_update_gnss_pos()</code> &mdash; Line 1173</h4>
+<div class="sig"><code>static bool ins15_update_gnss_pos(ins15_t *S, vec3f zpos, float Rpos, float *out_NIS)</code></div>
+<p>GNSS position update. H = [I<sub>3</sub> | 0<sub>3x12</sub>] maps error-state &delta;p. The measurement noise R = Rpos&middot;I<sub>3</sub> is isotropic, scaled by HDOP&sup2;.</p>
+
+<h4><code>ins15_update_gnss_vel()</code> &mdash; Line 1185</h4>
+<div class="sig"><code>static bool ins15_update_gnss_vel(ins15_t *S, vec3f zvel, const float Rvdiag[3], float *out_NIS)</code></div>
+<p>GNSS velocity update. H = [0<sub>3x3</sub> | I<sub>3</sub> | 0<sub>3x9</sub>] maps error-state &delta;v. The GNSS velocity is derived from speed &times; cos/sin(course) for E/N components.</p>
+
+<h4><code>ins15_nis_gnss_pos()</code> / <code>ins15_nis_gnss_vel()</code> &mdash; Lines 1195&ndash;1212</h4>
+<p>Read-only NIS wrappers for GNSS position and velocity. Used for gating decisions before committing updates.</p>
+
+<h4><code>ins15_update_zupt()</code> &mdash; Line 1214</h4>
+<div class="sig"><code>static void ins15_update_zupt(ins15_t *S)</code></div>
+<p>Zero-Velocity Update. When the vehicle is detected as stationary, applies 3 sequential scalar updates constraining each velocity component to zero (z=0). Uses the generic <code>kf_update_3</code> with large dummy noise (1e9) on unused dimensions.</p>
+
+<h4><code>ins15_update_zaru()</code> &mdash; Line 1231</h4>
+<div class="sig"><code>static void ins15_update_zaru(ins15_t *S, vec3f gyro_meas_b)</code></div>
+<p>Zero Angular-Rate Update. When stationary, constrains gyro bias to match the measured angular rate (which should be near-zero when still). This directly observes the gyro bias states (indices 12&ndash;14) with very tight noise (R = 1e-5 rad&sup2;/s&sup2;), providing strong bias locking.</p>
+
+<h4><code>ins15_update_nhc()</code> &mdash; Line 1255</h4>
+<div class="sig"><code>static void ins15_update_nhc(ins15_t *S)</code></div>
+<p>Non-Holonomic Constraint. For a ground vehicle, lateral and vertical body-frame velocities are approximately zero. Transforms the velocity to body frame (v<sub>b</sub> = R<sup>T</sup> v<sub>ENU</sub>), then constrains v<sub>y</sub><sup>b</sup> &asymp; 0 and v<sub>z</sub><sup>b</sup> &asymp; 0. The observation matrix H includes both the velocity Jacobian (R<sup>T</sup> applied to &delta;v) and the attitude coupling terms (skew(v<sub>b</sub>) applied to &delta;&theta;).</p>
+<div class="note"><strong>Note:</strong> NHC is only activated after heading has been observed from GNSS. Applying NHC with an incorrect heading causes rapid divergence.</div>
+
+<h4><code>ins15_update_heading()</code> &mdash; Line 1304</h4>
+<div class="sig"><code>static void ins15_update_heading(ins15_t *S, float z_yaw, float R_hdg)</code></div>
+<p>Scalar heading update through the EKF. The measurement is the GNSS course-over-ground (converted to ENU yaw). The observation matrix H has a single nonzero element: H[8] = 1.0 (maps &delta;&theta;<sub>z</sub>). Uses an optimized scalar Kalman update with Joseph-form covariance. Measurement noise varies with speed: (5&deg;)&sup2; at low speed, (2&deg;)&sup2; above 5 m/s.</p>
+
+
+<!-- ==================== SECTION 12 ==================== -->
+<h2 id="s12">12. Device I/O Helper Functions</h2>
+<p class="section-intro">Lines 1347&ndash;1359.</p>
+
+<h4><code>open_imu()</code> &mdash; Line 1347</h4>
+<div class="sig"><code>static int open_imu(void)</code></div>
+<p>Opens <code>/dev/mpu6050-0</code> read-only with <code>O_CLOEXEC</code>. Returns fd on success, -errno on failure.</p>
+
+<h4><code>open_gnss()</code> &mdash; Line 1351</h4>
+<div class="sig"><code>static int open_gnss(void)</code></div>
+<p>Opens <code>/dev/neo6m0</code> read-only with <code>O_CLOEXEC</code>. Returns fd on success, -errno on failure.</p>
+
+<h4><code>get_gnss_fix_ioctl()</code> &mdash; Line 1356</h4>
+<div class="sig"><code>static int get_gnss_fix_ioctl(int fd, struct neo6m_gnss_fix *f)</code></div>
+<p>Issues <code>ioctl(NEO6M_GNSS_IOC_GET_FIX)</code> to retrieve the latest GNSS fix from the kernel driver.</p>
+
+
+<!-- ==================== SECTION 13 ==================== -->
+<h2 id="s13">13. Context Structure (ctx_t)</h2>
+<p class="section-intro">Lines 1363&ndash;1452. The shared application context, protected by a mutex.</p>
+
+<p>The <code>ctx_t</code> structure contains all shared state between threads:</p>
+<table>
+<tr><th>Category</th><th>Fields</th><th>Purpose</th></tr>
+<tr><td>IMU Data</td><td><code>imu_raw</code>, <code>have_imu</code></td><td>Latest raw IMU sample and availability flag</td></tr>
+<tr><td>GNSS Data</td><td><code>have_gnss</code>, <code>gnss_have_fix</code>, lat/lon/alt/speed, heading, hdop</td><td>Latest GNSS fix data and quality indicators</td></tr>
+<tr><td>GNSS Velocity</td><td><code>gnss_vel_valid</code>, <code>gnss_vel_enu</code></td><td>ENU velocity derived from GNSS speed + course</td></tr>
+<tr><td>INS State</td><td><code>ins</code> (ins15_t)</td><td>Complete EKF state including covariance</td></tr>
+<tr><td>ENU Reference</td><td><code>enu_ref_set</code>, <code>enu_ref_lla</code>, <code>enu_ref_ecef</code></td><td>ENU origin set from first GNSS fix</td></tr>
+<tr><td>Nav Status</td><td><code>nav_ready</code>, <code>heading_observed</code></td><td>Navigation initialization flags</td></tr>
+<tr><td>Outage Tracking</td><td><code>last_gnss_meas_s</code>, <code>last_gnss_used_s</code>, <code>gnss_present</code>, <code>outage_s</code>, <code>qscale</code></td><td>GNSS outage detection and process noise scaling</td></tr>
+<tr><td>Reacquisition</td><td><code>reacq_left</code>, <code>reacq_active</code>, <code>snap_applied</code></td><td>Post-outage GNSS re-lock state machine</td></tr>
+<tr><td>ZUPT</td><td><code>zupt_count</code></td><td>Consecutive stillness sample counter</td></tr>
+<tr><td>Diagnostics</td><td><code>last_nis_pos</code>, <code>last_nis_vel</code></td><td>Latest NIS values for logging</td></tr>
+<tr><td>Logging</td><td><code>logf</code>, <code>dbglog</code>, filenames, <code>last_log_s</code></td><td>CSV and debug log file handles</td></tr>
+<tr><td>Calibration</td><td><code>imu_cal_in_progress</code>, <code>imu_cal_done</code>, <code>boot_acc_mean</code></td><td>Power-on calibration state</td></tr>
+<tr><td>Threading</td><td><code>mtx</code>, <code>cv</code>, <code>running</code></td><td>Mutex, condition variable, and stop flag</td></tr>
+</table>
+
+
+<!-- ==================== SECTION 14 ==================== -->
+<h2 id="s14">14. Logging System</h2>
+<p class="section-intro">Lines 1454&ndash;1511.</p>
+
+<h4><code>make_log_file()</code> &mdash; Line 1454</h4>
+<div class="sig"><code>static void make_log_file(ctx_t *C)</code></div>
+<p>Creates the log directory (<code>/home/sijeo/nav_logs/</code>) and opens a timestamped CSV file (e.g., <code>navlog_2026-02-13_14-30-00.csv</code>). Writes the CSV header with 47 columns covering: time, ENU position/velocity/acceleration, yaw, biases, raw IMU, GNSS fields, outage/reacquisition status, NIS, and diagnostic fields.</p>
+
+<h4><code>make_debug_log_file()</code> &mdash; Line 1495</h4>
+<div class="sig"><code>static void make_debug_log_file(ctx_t *C)</code></div>
+<p>Opens a separate timestamped debug log (line-buffered) for detailed event-level messages (ENU reference set, nav init, GNSS fusion decisions, dead-reckoning status).</p>
+
+<h4><code>dbg_printf()</code> &mdash; Line 1547</h4>
+<div class="sig"><code>static void dbg_printf(ctx_t *C, const char *fmt, ...)</code></div>
+<p>Thread-safe printf to the debug log file. Prepends a wall-clock timestamp <code>[seconds.milliseconds]</code>. Protected by a dedicated mutex (<code>dbglog_mtx</code>) separate from the main context mutex.</p>
+
+
+<!-- ==================== SECTION 15 ==================== -->
+<h2 id="s15">15. Threading Architecture</h2>
+
+<p>The application uses three POSIX threads communicating through the shared <code>ctx_t</code> structure:</p>
+
+<div class="flow-box">
+<pre>
+  +------------------+     +------------------+     +------------------+
+  |   IMU Thread     |     |   GNSS Thread    |     |  Fusion Thread   |
+  |  (100 Hz read)   |     | (~10 Hz poll)    |     | (100 Hz process) |
+  +--------+---------+     +--------+---------+     +--------+---------+
+           |                        |                        |
+           |   pthread_mutex_lock   |                        |
+           +--------->  ctx_t  <--------+                    |
+           |  have_imu = true       |  have_gnss = true      |
+           |  pthread_cond_signal   |  pthread_cond_signal    |
+           |                        |                        |
+           |                        |         pthread_cond_timedwait
+           |                        |                |
+           |                        |         [Calibrate IMU]
+           |                        |         [Predict INS]
+           |                        |         [NHC / ZUPT / ZARU]
+           |                        |         [GNSS Fusion]
+           |                        |         [Logging]
+           +------------------------+---------->  Output ENU
+</pre>
+</div>
+
+<p>Synchronization: The fusion thread waits on the condition variable with a 5ms timeout. When either the IMU or GNSS thread signals new data, the fusion thread wakes and processes it. The mutex protects all shared state reads and writes.</p>
+
+
+<!-- ==================== SECTION 16 ==================== -->
+<h2 id="s16">16. IMU Thread</h2>
+<p class="section-intro">Lines 1517&ndash;1541.</p>
+
+<h4><code>imu_thread()</code> &mdash; Line 1517</h4>
+<div class="sig"><code>static void* imu_thread(void *arg)</code></div>
+<p><strong>Purpose:</strong> Continuously reads IMU samples from the character device at ~100 Hz.</p>
+<p><strong>Operation:</strong></p>
+<ol>
+  <li>Opens <code>/dev/mpu6050-0</code></li>
+  <li>Loop: <code>read(fd, &amp;sample, sizeof(sample))</code> &mdash; blocks until a new sample is available (driven by the kernel driver's data-ready interrupt)</li>
+  <li>On successful read: locks mutex, copies sample to <code>C-&gt;imu_raw</code>, sets <code>have_imu = true</code>, signals condition variable</li>
+  <li>On read failure: sleeps 1ms and retries</li>
+  <li>Runs until <code>C-&gt;running</code> is set to false (atomic load)</li>
+</ol>
+
+
+<!-- ==================== SECTION 17 ==================== -->
+<h2 id="s17">17. GNSS Thread</h2>
+<p class="section-intro">Lines 1566&ndash;1689.</p>
+
+<h4><code>gnss_thread()</code> &mdash; Line 1566</h4>
+<div class="sig"><code>static void* gnss_thread(void *arg)</code></div>
+<p><strong>Purpose:</strong> Polls the GNSS driver at ~10 Hz, decodes fix data, and converts to application format.</p>
+<p><strong>Operation:</strong></p>
+<ol>
+  <li>Opens <code>/dev/neo6m0</code></li>
+  <li>Loop: calls <code>get_gnss_fix_ioctl()</code> every ~100ms</li>
+  <li>If fix is valid and new (monotonic_ns differs from last):
+    <ul>
+      <li>Converts lat/lon from integer scaled format (deg &times; 1e7) to radians</li>
+      <li>Converts altitude from mm to meters</li>
+      <li>Converts speed from mm/s to m/s</li>
+      <li>If HDOP available: converts from &times;100 integer to float</li>
+      <li>If heading available and speed &gt; 0.5 m/s: converts course (CW from north) to ENU yaw (CCW from east): <code>yaw_enu = &pi;/2 - heading_rad</code>. Derives ENU velocity: v<sub>E</sub> = speed&middot;cos(yaw), v<sub>N</sub> = speed&middot;sin(yaw)</li>
+    </ul>
+  </li>
+  <li>Deduplicates fixes using <code>monotonic_ns</code> comparison</li>
+  <li>Sets ENU reference on first ever fix (origin for the entire session)</li>
+  <li>Saves all fields for 1 Hz logging regardless of fix validity</li>
+</ol>
+
+
+<!-- ==================== SECTION 18 ==================== -->
+<h2 id="s18">18. Fusion Thread (Main Processing Loop)</h2>
+<p class="section-intro">Lines 1693&ndash;2105. The core processing pipeline, running at IMU rate (~100 Hz).</p>
+
+<h4><code>fusion_thread()</code> &mdash; Line 1693</h4>
+<div class="sig"><code>static void* fusion_thread(void *arg)</code></div>
+
+<p>This is the largest and most complex function. Here is the complete processing pipeline for each iteration:</p>
+
+<h3>Phase 1: Wait for Data (lines 1700&ndash;1717)</h3>
+<ul>
+  <li>Locks mutex and waits on condition variable with 5ms timeout</li>
+  <li>Computes actual dt from monotonic clock difference (clamped to [0, 1s])</li>
+  <li>Skips iteration if no IMU data available</li>
+</ul>
+
+<h3>Phase 2: IMU Calibration (lines 1720&ndash;1731)</h3>
+<ul>
+  <li>Applies <code>calib_accel()</code> and <code>calib_gyro()</code> to raw samples</li>
+  <li>Computes ZUPT stillness condition: |a| &asymp; g AND all gyro rates below threshold</li>
+</ul>
+
+<h3>Phase 3: Power-On Calibration (lines 1733&ndash;1767)</h3>
+<ul>
+  <li>Runs once at boot for 10 seconds</li>
+  <li>Blinks LED during calibration, steady ON when complete</li>
+  <li>Updates gyro bias and accel offset in <code>g_cal</code></li>
+  <li>Saves corrected gravity vector for initial tilt estimation</li>
+</ul>
+
+<h3>Phase 4: Navigation Initialization (lines 1772&ndash;1835)</h3>
+<ul>
+  <li>Waits for: (a) ENU reference set, (b) current GNSS fix available</li>
+  <li>Converts first GNSS position to ENU coordinates</li>
+  <li>Initializes INS state: position from GNSS, zero velocity, attitude from accelerometer tilt + GNSS heading (if available)</li>
+  <li>Computes initial roll/pitch from boot accelerometer gravity: pitch = atan2(-a<sub>x</sub>, &radic;(a<sub>y</sub>&sup2; + a<sub>z</sub>&sup2;)), roll = atan2(a<sub>y</sub>, a<sub>z</sub>)</li>
+</ul>
+
+<h3>Phase 5: GNSS Outage Tracking (lines 1837&ndash;1862)</h3>
+<ul>
+  <li>Computes time since last raw GNSS measurement and last accepted GNSS update</li>
+  <li>Declares GNSS present if age &le; 2s (GNSS_TIMEOUT_S)</li>
+  <li>Computes outage duration and corresponding process noise scale (qscale)</li>
+</ul>
+
+<h3>Phase 6: Yaw-Rate Learner (lines 1864&ndash;1873)</h3>
+<ul>
+  <li>Feeds current IMU sample to the yaw-rate learner</li>
+  <li>Determines if turning is above threshold using unscaled gyro-Z</li>
+</ul>
+
+<h3>Phase 7: INS Prediction (line 1876)</h3>
+<ul>
+  <li>Calls <code>ins15_predict()</code> with calibrated accel, gyro, dt, and qscale</li>
+  <li>Updates nominal state (p, v, q) and propagates error-state covariance P</li>
+</ul>
+
+<h3>Phase 8: Constraint Updates (lines 1878&ndash;1900)</h3>
+<ul>
+  <li><strong>NHC:</strong> Applied every step if heading has been observed (constrains lateral/vertical body velocity to zero)</li>
+  <li><strong>ZUPT:</strong> After 5 consecutive still samples, constrains velocity to zero and applies ZARU (locks gyro bias)</li>
+  <li><strong>Velocity decay:</strong> When speed &lt; 0.10 m/s, applies 0.98x damping to bound residual drift</li>
+</ul>
+
+<h3>Phase 9: GNSS Fusion (lines 1902&ndash;2016)</h3>
+<p>When a new GNSS fix is available:</p>
+<ol>
+  <li><strong>Position conversion:</strong> LLA &rarr; ECEF &rarr; ENU</li>
+  <li><strong>Measurement noise:</strong> R<sub>pos</sub> = R_GNSS_POS_VAR &times; HDOP&sup2;</li>
+  <li><strong>Reacquisition check:</strong> If outage &gt; 3s, enter reacq mode (inflate R &times;100, relax gate to 200)</li>
+  <li><strong>Snap-to-GNSS:</strong> If outage &gt; 15s AND innovation &gt; 120m AND HDOP &le; 3, force position to GNSS and inflate P</li>
+  <li><strong>NIS gating:</strong> Compute NIS (read-only), accept position update only if NIS &lt; gate threshold</li>
+  <li><strong>Position update:</strong> <code>ins15_update_gnss_pos()</code></li>
+  <li><strong>Velocity update:</strong> If GNSS velocity valid, inflate noise at low speed (&lt;1 m/s &times;10), NIS gate, then <code>ins15_update_gnss_vel()</code></li>
+  <li><strong>Heading update:</strong> If speed &gt; 1 m/s and HDOP &le; 4, apply scalar yaw update via <code>ins15_update_heading()</code></li>
+</ol>
+
+<h3>Phase 10: Output &amp; Logging (lines 2030&ndash;2098)</h3>
+<ul>
+  <li>Outputs ENU position to stdout at IMU rate (100 Hz)</li>
+  <li>1 Hz CSV log with 47 fields covering all state, measurements, and diagnostics</li>
+  <li>Resets per-log latches (gnss_used_pos, gnss_used_vel, reacq_active, snap_applied)</li>
+</ul>
+
+
+<!-- ==================== SECTION 19 ==================== -->
+<h2 id="s19">19. Main Function and Signal Handling</h2>
+<p class="section-intro">Lines 2107&ndash;2175.</p>
+
+<h4><code>on_sigint()</code> &mdash; Line 2110</h4>
+<div class="sig"><code>static void on_sigint(int sig)</code></div>
+<p>Signal handler for SIGINT and SIGTERM. Sets the global <code>g_stop</code> flag.</p>
+
+<h4><code>main()</code> &mdash; Line 2112</h4>
+<div class="sig"><code>int main(void)</code></div>
+<p><strong>Initialization sequence:</strong></p>
+<ol>
+  <li>Install signal handlers (SIGINT, SIGTERM)</li>
+  <li>Zero-initialize context structure <code>ctx_t</code></li>
+  <li>Initialize pthread mutex and condition variable</li>
+  <li>Initialize INS state (<code>ins15_init</code>)</li>
+  <li>Set all flags and counters to initial values</li>
+  <li>Create log files (CSV + debug)</li>
+  <li>Load LSQ calibration defaults (<code>cal_set_defaults_from_lsq</code>)</li>
+  <li>Initialize calibration LED GPIO</li>
+  <li>Spawn three threads: imu_thread, gnss_thread, fusion_thread</li>
+  <li>Block on <code>pause()</code> until SIGINT/SIGTERM</li>
+</ol>
+
+<p><strong>Shutdown sequence:</strong></p>
+<ol>
+  <li>Set <code>running = false</code> (atomic store with release semantics)</li>
+  <li>Join all three threads</li>
+  <li>Destroy mutex and condition variable</li>
+  <li>Close log file</li>
+  <li>De-initialize LED GPIO</li>
+</ol>
+
+
+<!-- ==================== SECTION 20 ==================== -->
+<h2 id="s20">20. Complete Data Flow Summary</h2>
+
+<div class="flow-box">
+<h4>Boot Sequence</h4>
+<pre>
+main()
+  &rarr; cal_set_defaults_from_lsq()     Load factory LSQ calibration
+  &rarr; cal_led_init()                  Setup GPIO LED
+  &rarr; spawn imu_thread                Start reading IMU at 100 Hz
+  &rarr; spawn gnss_thread               Start polling GNSS at 10 Hz
+  &rarr; spawn fusion_thread             Start processing
+</pre>
+</div>
+
+<div class="flow-box">
+<h4>Phase 1: Power-On Calibration (~10 seconds)</h4>
+<pre>
+fusion_thread loop:
+  &rarr; calib_accel/gyro (using LSQ defaults)
+  &rarr; apply_poweron_calibration()
+      Accumulate 10s of stationary IMU data
+      &rarr; Update gyro_bias_counts (mean of raw gyro)
+      &rarr; Update accel_O (remove residual vs gravity)
+  &rarr; LED blinks during, steady ON when done
+  &rarr; Save boot_acc_mean for initial tilt
+</pre>
+</div>
+
+<div class="flow-box">
+<h4>Phase 2: Wait for GNSS Fix</h4>
+<pre>
+fusion_thread loop:
+  &rarr; Wait for enu_ref_set (first GNSS fix sets ENU origin)
+  &rarr; Wait for have_gnss (current fix available)
+  &rarr; Convert LLA &rarr; ECEF &rarr; ENU
+  &rarr; Initialize INS: position from GNSS, tilt from accel, heading from GNSS
+  &rarr; Set nav_ready = true
+</pre>
+</div>
+
+<div class="flow-box">
+<h4>Phase 3: Steady-State Navigation (100 Hz)</h4>
+<pre>
+fusion_thread loop (every ~10ms):
+  1. Calibrate:  raw IMU &rarr; calib_accel() &rarr; m/s&sup2;
+                 raw IMU &rarr; calib_gyro()  &rarr; rad/s
+
+  2. Predict:    ins15_predict(acc, gyro, dt, qscale)
+                 &rarr; Attitude integration (quaternion)
+                 &rarr; Velocity/position integration (ENU)
+                 &rarr; Covariance propagation (P = &Phi;P&Phi;<sup>T</sup> + Q)
+
+  3. Constrain:  ins15_update_nhc()    (every step, if heading observed)
+                 ins15_update_zupt()   (when still for 5+ samples)
+                 ins15_update_zaru()   (when still, locks gyro bias)
+                 velocity_decay()      (when |v| &lt; 0.1 m/s)
+
+  4. GNSS Fuse:  (when new fix arrives, ~1 Hz)
+                 LLA &rarr; ECEF &rarr; ENU
+                 NIS gate &rarr; ins15_update_gnss_pos()
+                 NIS gate &rarr; ins15_update_gnss_vel()
+                 ins15_update_heading()
+                 yaw_learn_on_gnss_fix()
+
+  5. Output:     printf("%.3f,%.3f,%.3f\n", E, N, U)  (100 Hz)
+                 CSV log (1 Hz, 47 columns)
+
+  6. Learn:      yaw_learn_on_imu() (online gyro-Z scale)
+</pre>
+</div>
+
+<div class="flow-box">
+<h4>GNSS Outage Behavior</h4>
+<pre>
+When GNSS is lost:
+  1. outage_s increases &rarr; qscale increases (1.5x to 15x)
+  2. Process noise inflated &rarr; P grows &rarr; filter uncertainty increases
+  3. NHC constrains lateral drift
+  4. ZUPT/ZARU lock velocity and gyro bias when stopped
+  5. Velocity decay bounds creep at near-zero speed
+
+When GNSS returns:
+  1. If outage was 3&ndash;15s: Reacquisition mode
+     &rarr; Inflate R &times;100, relax gate to 200
+     &rarr; Gradually accept GNSS over 8 fixes
+  2. If outage &gt;15s AND innovation &gt;120m: Snap-to-GNSS
+     &rarr; Force position = GNSS, inflate P to (5m)&sup2;
+  3. Normal: NIS &lt; 50 &rarr; accept update
+</pre>
+</div>
+
+<hr>
+<p style="color:#718096;font-size:0.85em;text-align:center;margin-top:32px;">
+  Generated by Claude Code &mdash; Complete analysis of dr_dead_reckoning_app_ins15.c (~2176 lines)
+</p>
+
+<button class="btn-print no-print" onclick="window.print()">Print / Save as PDF</button>
+
+</body>
+</html>
