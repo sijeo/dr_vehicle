@@ -168,16 +168,20 @@
 
 #define BOOT_CAL_N_SAMPLES  500     // e.g. 500 samples (tune based on IMU rate )
 
-/* Noise Figures of IMU (Tune the Below parameters)*/
-# define IMU_SIGMA_ACCEL        (0.09f)     // ~0.09 m/s^2/√Hz for good MEMS accel; adjust to your sensor
-# define IMU_SIGMA_GYRO         (0.003f)    // ~0.015 (rad/s)/√Hz for good MEMS gyro; adjust to your sensor
-#define IMU_SIGMA_ACCEL_BIAS    (0.004f)   // gyro bias instability (rad/s^2/√Hz); adjust to your sensor
-#define IMU_SIGMA_GYRO_BIAS     (0.0015f)   // accel bias instability (m/s^2/√Hz); adjust to your sensor
+/* Noise Figures of IMU — ISM330DLC datasheet + practical margin
+ * Datasheet typical: accel 80 µg/√Hz = 7.85e-4 m/s²/√Hz
+ *                    gyro  3.8 mdps/√Hz = 6.63e-5 rad/s/√Hz
+ * Using ~5x datasheet to account for vibration, mounting, vehicle dynamics.
+ */
+#define IMU_SIGMA_ACCEL         (0.004f)    // m/s²/√Hz  (~5x ISM330 datasheet 80µg/√Hz)
+#define IMU_SIGMA_GYRO          (0.00035f)  // rad/s/√Hz (~5x ISM330 datasheet 3.8mdps/√Hz)
+#define IMU_SIGMA_ACCEL_BIAS    (0.001f)    // accel bias instability (m/s²/√Hz)
+#define IMU_SIGMA_GYRO_BIAS     (0.0005f)   // gyro bias instability (rad/s/√Hz)
 #define IMU_COVAR_POS   2.0f
-#define IMU_COVAR_VEL   1.0f;          // m/s       
-#define IMU_COVAR_ATT   2.0f*DEG2RAD;  // rad       
-#define IMU_COVAR_BA    0.075f;        // m/s^2         
-#define IMU_COVAR_BG    0.004f;        // rad/s     
+#define IMU_COVAR_VEL   1.0f           // m/s
+#define IMU_COVAR_ATT   (2.0f*DEG2RAD) // rad
+#define IMU_COVAR_BA    0.075f         // m/s^2
+#define IMU_COVAR_BG    0.004f         // rad/s
 
 
 static int cal_led_exported = 0;
@@ -262,6 +266,20 @@ static inline float yaw_from_q(quatf q) {
 static inline quatf q_from_yaw_delta(float dpsi) {
     float half = 0.5f*dpsi;
     return (quatf){cosf(half), 0.0f, 0.0f, sinf(half)};
+}
+
+// Quaternion from Euler angles (ZYX convention: yaw, pitch, roll)
+// Produces body→ENU quaternion
+static inline quatf q_from_euler(float roll, float pitch, float yaw) {
+    float cr = cosf(0.5f*roll),  sr = sinf(0.5f*roll);
+    float cp = cosf(0.5f*pitch), sp = sinf(0.5f*pitch);
+    float cy = cosf(0.5f*yaw),   sy = sinf(0.5f*yaw);
+    return q_normalize((quatf){
+        cr*cp*cy + sr*sp*sy,
+        sr*cp*cy - cr*sp*sy,
+        cr*sp*cy + sr*cp*sy,
+        cr*cp*sy - sr*sp*cy
+    });
 }
 
 static bool mat3_inv(const float A[9], float invA[9]) {
@@ -392,9 +410,9 @@ static void ecef2enu(ecef_t e, lla_t ref, ecef_t e0, double out[3]) {
     double dy = e.y - e0.y;
     double dz = e.z - e0.z;
 
-    out[0] = -s0*dx + c0*dy;
-    out[1] = -c1*c0*dx - c1*s0*dy + s1*dz;
-    out[2] =  s1*c0*dx + s1*s0*dy + c1*dz;
+    out[0] = -s0*dx + c0*dy;                          // East
+    out[1] = -s1*c0*dx - s1*s0*dy + c1*dz;             // North
+    out[2] =  c1*c0*dx + c1*s0*dy + s1*dz;             // Up
 }
 
 // ------------------------- Calibration (persistent + online trims ) -------------------------
@@ -1013,8 +1031,11 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
         Q[(9+i)*15 + (9+i)] = sba2 * dt;    // ba RW
         Q[(12+i)*15 + (12+i)] = sbg2 * dt;  // bg RW
     }
-    // also inject into dp via integration of dv noise (rough)
-    for (i=0;i<3;i++) Q[(0+i)*15 + (0+i)] = sa2 * dt*dt*dt / 3.0f;
+    // Position noise: double-integrated accel noise + position random walk
+    // The random walk term prevents the filter from over-trusting IMU-propagated position
+    const float sigma_p_rw = 0.01f;  // m/sqrt(s) — position random walk
+    float sp2 = (sigma_p_rw * sigma_p_rw) * q_scale;
+    for (i=0;i<3;i++) Q[(0+i)*15 + (0+i)] = sa2 * dt*dt*dt / 3.0f + sp2 * dt;
 
     // P = Phi P Phi^T + Q
     float PhiP[15*15], PhiT[15*15], PhiPPhiT[15*15];
@@ -1038,6 +1059,36 @@ static void ins15_inject(ins15_t *S, const float dx[15]) {
 
     // Optional: Joseph-form covariance update would be better; we do standard KF update,
     // then reset: P = (I-KH)P(I-KH)^T + K R K^T (done in update), so no extra here.
+}
+
+// Read-only NIS computation — does NOT modify state or covariance
+static bool kf_compute_nis_3(const ins15_t *S, const float H[3*15],
+                              const float z[3], const float h[3],
+                              const float Rdiag[3], float *out_NIS) {
+    int r, c, k, i, j;
+    // S33 = H P H^T + R  (3x3)
+    float HP[3*15];
+    for (r=0;r<3;r++)
+        for (c=0;c<15;c++) {
+            float s=0;
+            for (k=0;k<15;k++) s += H[r*15+k]*S->P[k*15+c];
+            HP[r*15+c]=s;
+        }
+    float S33[9];
+    for (r=0;r<3;r++) for (c=0;c<3;c++) {
+        float s=0;
+        for (k=0;k<15;k++) s += HP[r*15+k]*H[c*15+k];
+        if (r==c) s += Rdiag[r];
+        S33[r*3+c]=s;
+    }
+    float Sinv[9];
+    if (!mat3_inv(S33, Sinv)) return false;
+
+    float nu[3] = { z[0]-h[0], z[1]-h[1], z[2]-h[2] };
+    float tmp[3]={0};
+    for(i=0;i<3;i++) for(j=0;j<3;j++) tmp[i] += nu[j]*Sinv[j*3+i];
+    *out_NIS = nu[0]*tmp[0] + nu[1]*tmp[1] + nu[2]*tmp[2];
+    return true;
 }
 
 static bool kf_update_3(ins15_t *S, const float H[3*15], const float z[3], const float h[3], const float Rdiag[3], float *out_NIS) {
@@ -1140,6 +1191,26 @@ static bool ins15_update_gnss_vel(ins15_t *S, vec3f zvel, const float Rvdiag[3],
     return kf_update_3(S, H, z, h, Rvdiag, out_NIS);
 }
 
+// NIS-only (read-only) wrappers — compute innovation test without modifying state
+static bool ins15_nis_gnss_pos(const ins15_t *S, vec3f zpos, float Rpos, float *out_NIS) {
+    int i;
+    float H[3*15]; memset(H,0,sizeof(H));
+    for (i=0;i<3;i++) H[i*15 + (0+i)] = 1.0f;
+    float z[3] = { zpos.x, zpos.y, zpos.z };
+    float h[3] = { S->p.x, S->p.y, S->p.z };
+    float Rdiag[3] = { Rpos, Rpos, Rpos };
+    return kf_compute_nis_3(S, H, z, h, Rdiag, out_NIS);
+}
+
+static bool ins15_nis_gnss_vel(const ins15_t *S, vec3f zvel, const float Rvdiag[3], float *out_NIS) {
+    int i;
+    float H[3*15]; memset(H,0,sizeof(H));
+    for (i=0;i<3;i++) H[i*15 + (3+i)] = 1.0f;
+    float z[3] = { zvel.x, zvel.y, zvel.z };
+    float h[3] = { S->v.x, S->v.y, S->v.z };
+    return kf_compute_nis_3(S, H, z, h, Rvdiag, out_NIS);
+}
+
 static void ins15_update_zupt(ins15_t *S) {
     int i;
     // 3 sequential scalar updates on v components with z=0
@@ -1227,6 +1298,49 @@ static void ins15_update_nhc(ins15_t *S) {
 }
 
 
+
+// Scalar heading (yaw) measurement update through the EKF
+// z_yaw = GPS course-over-ground (ENU convention), R_hdg = measurement variance (rad^2)
+static void ins15_update_heading(ins15_t *S, float z_yaw, float R_hdg) {
+    int r, c;
+    float h_yaw = yaw_from_q(S->q);
+    float nu = wrap_pi(z_yaw - h_yaw);
+
+    // H = [0 0 0, 0 0 0, 0 0 1, 0 0 0, 0 0 0]  (scalar, 1x15)
+    // Only element: H[8] = 1.0  (δθ_z)
+    // S_scalar = H P H^T + R = P[8*15+8] + R_hdg
+    float S_scalar = S->P[8*15 + 8] + R_hdg;
+    if (S_scalar < 1e-12f) return;
+    float Sinv = 1.0f / S_scalar;
+
+    // K = P * H^T * Sinv  (15x1) — H^T has only element [8]=1
+    float K[15];
+    for (r=0; r<15; r++) K[r] = S->P[r*15 + 8] * Sinv;
+
+    // dx = K * nu
+    float dx[15];
+    for (r=0; r<15; r++) dx[r] = K[r] * nu;
+    ins15_inject(S, dx);
+
+    // Joseph-form covariance update: P = (I-KH)P(I-KH)^T + K R K^T
+    // KH is 15x15 with only column 8 nonzero: KH[r][8] = K[r]
+    // (I-KH)[r][c] = I[r][c] - K[r]*delta(c,8)
+    float Pnew[15*15];
+    for (r=0; r<15; r++) {
+        for (c=0; c<15; c++) {
+            // (I-KH)*P row r, col c = P[r][c] - K[r]*P[8][c]
+            Pnew[r*15+c] = S->P[r*15+c] - K[r]*S->P[8*15+c];
+        }
+    }
+    // Now Pnew = (I-KH)*P. Apply *(I-KH)^T + KRK^T:
+    float Pfinal[15*15];
+    for (r=0; r<15; r++) {
+        for (c=0; c<15; c++) {
+            Pfinal[r*15+c] = Pnew[r*15+c] - Pnew[r*15+8]*K[c] + K[r]*R_hdg*K[c];
+        }
+    }
+    memcpy(S->P, Pfinal, sizeof(Pfinal));
+}
 
 // ------------------------- GNSS helper (your ioctl pattern) -------------------------
 
@@ -1332,6 +1446,8 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
     bool imu_cal_in_progress;
     bool imu_cal_done;
     double imu_cal_start_s;
+    vec3f boot_acc_mean;        // mean accel from power-on calibration (for initial tilt)
+    bool heading_observed;      // true after first GPS heading update at speed
     
 } ctx_t;
 
@@ -1634,10 +1750,17 @@ static void* fusion_thread(void *arg) {
                 C->imu_cal_done = true;
                 C->imu_cal_in_progress = false;
                 cal_led_update(false, true, tcal_now); // steady ON
+
+                // Re-calibrate to get corrected gravity vector for initial tilt estimation
+                vec3f acc_corrected;
+                calib_accel(&C->imu_raw, &acc_corrected);
+                C->boot_acc_mean = acc_corrected;
+
                 printf("[CAL] Power-On IMU calibration complete. \n");
                 printf("       gyro_bias_counts = [%.3f, %.3f, %.3f]\n", g_cal.gyro_bias_counts[0], g_cal.gyro_bias_counts[1],
                        g_cal.gyro_bias_counts[2]);
                 printf("       accel_O = [%.6f, %.6f, %.6f]\n", g_cal.accel_O[0], g_cal.accel_O[1], g_cal.accel_O[2]);
+                printf("       boot_acc_mean = [%.4f, %.4f, %.4f]\n", C->boot_acc_mean.x, C->boot_acc_mean.y, C->boot_acc_mean.z);
             }
         } else {
             cal_led_update(false, true, tcal_now);
@@ -1668,8 +1791,20 @@ static void* fusion_thread(void *arg) {
                 float yaw0 = 0.0f;
                 if(C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN ) {
                     yaw0 = C->gnss_heading_rad;
+                    C->heading_observed = true;
                 }
-                C->ins.q = q_normalize(q_from_yaw_delta(yaw0));
+
+                // Initialize roll/pitch from boot accelerometer gravity vector
+                float roll0 = 0.0f, pitch0 = 0.0f;
+                float amag = v3_norm(C->boot_acc_mean);
+                if (amag > 1.0f) {
+                    vec3f a = C->boot_acc_mean;
+                    pitch0 = atan2f(-a.x, sqrtf(a.y*a.y + a.z*a.z));
+                    roll0  = atan2f(a.y, a.z);
+                    dbg_printf(C, "NAV_INIT tilt: roll=%.2f pitch=%.2f yaw=%.2f deg",
+                               roll0/DEG2RAD, pitch0/DEG2RAD, yaw0/DEG2RAD);
+                }
+                C->ins.q = q_from_euler(roll0, pitch0, yaw0);
 
                 // Start biases at 0 (since you already calibrated raw -> SI).
                 C->ins.ba = v3(0,0,0);
@@ -1740,8 +1875,11 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
         // Predict INS
         ins15_predict(&C->ins, acc_b, gyro_b, dt, C->qscale, &C->last_aw);
 
-        // Apply constraints every IMU step
-        ins15_update_nhc(&C->ins);
+        // Apply NHC only after heading has been observed from GPS
+        // (NHC with wrong heading causes rapid divergence)
+        if (C->heading_observed) {
+            ins15_update_nhc(&C->ins);
+        }
 
         // ZUPT detection
        
@@ -1823,12 +1961,14 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                 C->last_nis_pos = 0.0f;
                 C->reacq_left = 0; // done
             } else {
+                // Compute NIS first (read-only) then gate before applying update
                 float nis_pos = 0.0f;
-                bool ok_pos = ins15_update_gnss_pos(&C->ins, zpos, Rpos, &nis_pos);
-                bool gate_pos = ok_pos && (nis_pos < gate_thr);
+                bool ok_nis = ins15_nis_gnss_pos(&C->ins, zpos, Rpos, &nis_pos);
+                bool gate_pos = ok_nis && (nis_pos < gate_thr);
                 C->last_nis_pos = nis_pos;
 
                 if (gate_pos) {
+                    ins15_update_gnss_pos(&C->ins, zpos, Rpos, NULL);
                     C->last_gnss_used_s = tnow2;
                     C->gnss_valid = true;
                     C->last_gnss_used_pos = 1;
@@ -1848,12 +1988,14 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                 if( C->gnss_speed_mps < 1.0f ){
                     Rv[0] *= 10.0f; Rv[1] *= 10.0f;
                 }
+                // Compute NIS first (read-only) then gate before applying update
                 float nis_vel = 0.0f;
-                bool ok_vel = ins15_update_gnss_vel(&C->ins, C->gnss_vel_enu, Rv, &nis_vel);
-                bool gate_vel = ok_vel && (nis_vel < CHI2_3DOF_GATE);
+                bool ok_nis_v = ins15_nis_gnss_vel(&C->ins, C->gnss_vel_enu, Rv, &nis_vel);
+                bool gate_vel = ok_nis_v && (nis_vel < CHI2_3DOF_GATE);
                 C->last_nis_vel = nis_vel;
-                
+
                 if( gate_vel ){
+                    ins15_update_gnss_vel(&C->ins, C->gnss_vel_enu, Rv, NULL);
                     C->last_gnss_used_vel = 1;
                     C->last_gnss_used_s = tnow2;
                     C->gnss_valid = true;
@@ -1862,13 +2004,14 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                 C->last_nis_vel = 0.0f;
             }
 
-            // Optional yaw complementary correction using GNSS course (if available)
+            // GPS heading measurement update through the EKF (replaces ad-hoc complementary yaw)
+            // NEO-6M datasheet: heading accuracy 0.5 deg at speed
+            // COG gets noisy at low speed; use conservative values scaled by speed
             if (C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN && hdop <= YAW_FUSION_HDOP_MAX) {
-                float yaw_est = yaw_from_q(C->ins.q);
-                float yaw_gnss = C->gnss_heading_rad;
-                float dpsi = wrap_pi(yaw_gnss - yaw_est);
-                float dpsi_corr = YAW_FUSION_ALPHA * dpsi;
-                C->ins.q = q_normalize(q_mul(q_from_yaw_delta(dpsi_corr), C->ins.q));
+                float R_hdg = (5.0f * DEG2RAD) * (5.0f * DEG2RAD);    // (5 deg)^2 at low speed
+                if (C->gnss_speed_mps > 5.0f) R_hdg = (2.0f * DEG2RAD) * (2.0f * DEG2RAD);  // (2 deg)^2 at speed
+                ins15_update_heading(&C->ins, C->gnss_heading_rad, R_hdg);
+                if (!C->heading_observed) C->heading_observed = true;
             }
             C->have_gnss = false; // consumed
         } else {
