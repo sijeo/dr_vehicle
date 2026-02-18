@@ -1442,13 +1442,21 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
     pthread_cond_t cv;
     bool running;
 
+    // Stationary position anchor (eliminates drift when confirmed still)
+    vec3f anchor_p;             // position when stillness first confirmed
+    bool  anchor_set;           // true while vehicle is confirmed stationary
+    int   sustained_still;      // counts how long we've been in ZUPT
+
+    // Predict-only position snapshot (for diagnostic logging)
+    vec3f predict_p;            // position right after ins15_predict(), before updates
+
     // Calibration on Power On
     bool imu_cal_in_progress;
     bool imu_cal_done;
     double imu_cal_start_s;
     vec3f boot_acc_mean;        // mean accel from power-on calibration (for initial tilt)
     bool heading_observed;      // true after first GPS heading update at speed
-    
+
 } ctx_t;
 
 static void make_log_file(ctx_t *C) {
@@ -1484,7 +1492,8 @@ static void make_log_file(ctx_t *C) {
         "gnss_fix,lat_deg,lon_deg,alt_m,speed_mps,course_deg,yaw_enu_deg,hdop,"
         "gnss_E,gnss_N,gnss_U,err_E,err_N,err_H,"
         "gnss_present,gnss_valid,gnss_used_pos,gnss_used_vel,reacq_active,snap_applied,"
-        "outage_s,qscale,nis_pos,nis_vel,gnss_meas_age_s\n"
+        "outage_s,qscale,nis_pos,nis_vel,gnss_meas_age_s,"
+        "pred_E,pred_N,pred_U,zupt_active,anchor_active\n"
     );
     fflush(C->logf);
 
@@ -1875,6 +1884,9 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
         // Predict INS
         ins15_predict(&C->ins, acc_b, gyro_b, dt, C->qscale, &C->last_aw);
 
+        // Snapshot position right after predict (before any measurement updates)
+        C->predict_p = C->ins.p;
+
         // Apply NHC only after heading has been observed from GPS
         // (NHC with wrong heading causes rapid divergence)
         if (C->heading_observed) {
@@ -1889,14 +1901,38 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
         if (C->zupt_count >= ZUPT_COUNT_REQUIRED) {
             ins15_update_zupt(&C->ins);
             ins15_update_zaru(&C->ins, gyro_b);
-            C->zupt_count = 0;
+            // Keep counter saturated so ZUPT fires EVERY step while still
+            // (previously reset to 0, causing 5-sample gaps with unconstrained drift)
+            if (C->zupt_count > ZUPT_COUNT_REQUIRED + 100)
+                C->zupt_count = ZUPT_COUNT_REQUIRED; // cap to avoid overflow
+        }
+
+        // --- Stationary position anchor ---
+        // When ZUPT has been active for a sustained period, anchor position
+        // via an EKF-consistent position measurement update (prevents random walk)
+        if (C->zupt_count >= ZUPT_COUNT_REQUIRED) {
+            C->sustained_still++;
+            if (!C->anchor_set && C->sustained_still > 20) { // ~200ms confirmed still
+                C->anchor_p = C->ins.p;
+                C->anchor_set = true;
+            }
+            // Apply position anchor as a tight EKF position measurement
+            // This is EKF-consistent: tells the filter "position hasn't changed"
+            if (C->anchor_set) {
+                const float R_anchor = 0.25f; // (0.5 m)^2 — tight but not aggressive
+                ins15_update_gnss_pos(&C->ins, C->anchor_p, R_anchor, NULL);
+            }
+        } else {
+            C->sustained_still = 0;
+            C->anchor_set = false;
         }
 
         // Velocity decay when *almost* stopped (helps fight tiny residuals)
         float vnorm = v3_norm(C->ins.v);
         const float VEL_DAMP_THR = 0.10f;
         if (vnorm < VEL_DAMP_THR) {
-            C->ins.v = v3_scale(C->ins.v, VEL_DECAY);
+            float decay = (vnorm < 0.02f) ? 0.90f : VEL_DECAY; // stronger near zero
+            C->ins.v = v3_scale(C->ins.v, decay);
         }
 
         // GNSS fusion (pos + optional vel + optional yaw complementary)
@@ -2027,9 +2063,16 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
             }
         }
 
-        // Output ENU only (after nav is ready)
-        printf("%.3f,%.3f,%.3f\n", C->ins.p.x, C->ins.p.y, C->ins.p.z);
-        fflush(stdout);
+        // Output ENU at 10 Hz (not 100 Hz — reduces visible predict-step jitter)
+        {
+            static double last_out_s = 0.0;
+            double tout = now_sec();
+            if (tout - last_out_s >= 0.1) {
+                printf("%.3f,%.3f,%.3f\n", C->ins.p.x, C->ins.p.y, C->ins.p.z);
+                fflush(stdout);
+                last_out_s = tout;
+            }
+        }
 
         // 1 Hz CSV logging
         double tlog = now_sec();
@@ -2060,7 +2103,8 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                     "%d,%.7f,%.7f,%.2f,%.3f,%.2f,%.2f,%.2f,"
                     "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,"
                     "%d,%d,%d,%d,%d,%d,"
-                    "%.3f,%.2f,%.2f,%.2f,%.3f\n",
+                    "%.3f,%.2f,%.2f,%.2f,%.3f,"
+                    "%.3f,%.3f,%.3f,%d,%d\n",
                     tlog,
                     C->ins.p.x, C->ins.p.y, C->ins.p.z,
                     C->ins.v.x, C->ins.v.y, C->ins.v.z,
@@ -2085,7 +2129,10 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                     C->snap_applied ? 1 : 0,
                     C->outage_s, C->qscale,
                     C->last_nis_pos, C->last_nis_vel,
-                    gnss_meas_age_s
+                    gnss_meas_age_s,
+                    C->predict_p.x, C->predict_p.y, C->predict_p.z,
+                    (C->zupt_count >= ZUPT_COUNT_REQUIRED) ? 1 : 0,
+                    C->anchor_set ? 1 : 0
                 );
                 fflush(C->logf);
 
@@ -2140,6 +2187,9 @@ C.last_gnss_used_pos = 0;
 C.last_gnss_used_vel = 0;
 C.last_gnss_fix_mono_ns = -1;
 C.gnss_enu_last_valid = false;
+C.anchor_set = false;
+C.sustained_still = 0;
+C.predict_p = v3(0,0,0);
 
     make_log_file(&C);
     make_debug_log_file(&C);
