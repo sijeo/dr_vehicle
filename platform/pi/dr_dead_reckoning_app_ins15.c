@@ -131,6 +131,11 @@
 #define YAW_FUSION_HDOP_MAX     (4.0f)
 #define YAW_FUSION_ALPHA        (0.05f)      // fraction per GNSS update
 
+// Vehicle dynamics sanity limits (reject physically impossible values)
+#define MAX_ACCEL_ENU_MPS2  15.0f    // max believable acceleration for ground vehicle (~1.5g)
+#define MAX_GNSS_SPEED_MPS  55.0f    // ~200 km/h absolute cap
+#define MAX_GNSS_ACCEL_MPS2  8.0f    // max speed change per second (~0.8g between 1 Hz fixes)
+
 // Logging
 #define LOG_DIR             "/home/sijeo/nav_logs"
 
@@ -965,6 +970,12 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
     );
     vec3f a_enu = v3(f_enu.x, f_enu.y, f_enu.z - GRAVITY);
 
+    // Clamp ENU acceleration to vehicle dynamics limits
+    // Catches IMU spikes, calibration errors, and attitude-induced gravity leakage
+    a_enu.x = clampf(a_enu.x, -MAX_ACCEL_ENU_MPS2, MAX_ACCEL_ENU_MPS2);
+    a_enu.y = clampf(a_enu.y, -MAX_ACCEL_ENU_MPS2, MAX_ACCEL_ENU_MPS2);
+    a_enu.z = clampf(a_enu.z, -MAX_ACCEL_ENU_MPS2, MAX_ACCEL_ENU_MPS2);
+
     // Kinematics
     S->p = v3_add(S->p, v3_add(v3_scale(S->v, dt), v3_scale(a_enu, 0.5f*dt*dt)));
     S->v = v3_add(S->v, v3_scale(a_enu, dt));
@@ -1435,7 +1446,12 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
 
     vec3f gnss_enu_last;
     bool gnss_enu_last_valid;
-    
+
+    // GNSS speed spike filter state
+    float gnss_prev_speed_mps;  // previous accepted speed for rate-of-change check
+    double gnss_prev_speed_time; // monotonic time of previous speed
+    bool  gnss_prev_speed_valid; // false until first accepted fix
+    bool  gnss_speed_rejected;   // latched for debug log: last fix had speed spike
 
     // threading
     pthread_mutex_t mtx;
@@ -1612,7 +1628,39 @@ static void* gnss_thread(void *arg) {
             C->gnss_lat_rad = lat_deg * (M_PI/180.0);
             C->gnss_lon_rad = lon_deg * (M_PI/180.0);
             C->gnss_alt_m   = alt_m;
-            C->gnss_speed_mps = (float)f.speed_mmps / 1000.0f;
+            float raw_speed = (float)f.speed_mmps / 1000.0f;
+
+            // --- GNSS speed spike filter ---
+            // Reject if: (a) exceeds absolute vehicle limit, or
+            //            (b) rate-of-change exceeds max physically possible acceleration
+            bool speed_ok = true;
+            C->gnss_speed_rejected = false;
+
+            if (raw_speed > MAX_GNSS_SPEED_MPS) {
+                speed_ok = false;  // absolute cap
+            } else if (C->gnss_prev_speed_valid) {
+                double dt_gnss = tmeas - C->gnss_prev_speed_time;
+                if (dt_gnss > 0.1 && dt_gnss < 10.0) {
+                    float delta_v = fabsf(raw_speed - C->gnss_prev_speed_mps);
+                    float max_delta = MAX_GNSS_ACCEL_MPS2 * (float)dt_gnss;
+                    if (delta_v > max_delta) {
+                        speed_ok = false;  // rate-of-change exceeded
+                    }
+                }
+            }
+
+            if (speed_ok) {
+                C->gnss_speed_mps = raw_speed;
+                C->gnss_prev_speed_mps = raw_speed;
+                C->gnss_prev_speed_time = tmeas;
+                C->gnss_prev_speed_valid = true;
+            } else {
+                // Speed spike: keep previous accepted speed, invalidate heading+velocity
+                C->gnss_speed_rejected = true;
+                dbg_printf(C, "GNSS_SPIKE speed=%.2f prev=%.2f REJECTED", raw_speed,
+                           C->gnss_prev_speed_valid ? C->gnss_prev_speed_mps : -1.0f);
+                // Use last good speed for logging, but mark heading/vel invalid below
+            }
 
 #if HAVE_GNSS_HDOP
             // Expected fields if you extended your driver:
@@ -1631,7 +1679,9 @@ static void* gnss_thread(void *arg) {
 #if HAVE_GNSS_HEADING
             // Expected fields if you extended your driver:
             //   f.heading_valid (bool-like), f.course_deg_e5 (int32, deg*1e5)
-            if (f.heading_valid && C->gnss_speed_mps > 0.5f) {
+            // When speed spike is detected, also reject heading and derived velocity
+            // (COG is unreliable during speed glitches)
+            if (f.heading_valid && C->gnss_speed_mps > 0.5f && !C->gnss_speed_rejected) {
                 float heading_deg = (float)f.course_deg_e5 / 1e5f;
                 float yaw_enu = (0.5*M_PI)-(heading_deg * DEG2RAD);
                 yaw_enu = wrap_pi(yaw_enu);
@@ -1982,7 +2032,7 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
             if (allow_snap && (!C->gnss_hdop_valid || hdop <= SNAP_HDOP_MAX) && innov_h > SNAP_INNOV_M) {
                 // Snap position (and velocity if available) to GNSS to guarantee re-lock.
                 C->ins.p = zpos;
-                if (C->gnss_vel_valid) C->ins.v = C->gnss_vel_enu;
+                if (C->gnss_vel_valid && !C->gnss_speed_rejected) C->ins.v = C->gnss_vel_enu;
 
                 // Inflate position covariance a bit after snap
                 for (i=0;i<3;i++) {
@@ -2190,6 +2240,10 @@ C.gnss_enu_last_valid = false;
 C.anchor_set = false;
 C.sustained_still = 0;
 C.predict_p = v3(0,0,0);
+C.gnss_prev_speed_valid = false;
+C.gnss_prev_speed_mps = 0.0f;
+C.gnss_prev_speed_time = 0.0;
+C.gnss_speed_rejected = false;
 
     make_log_file(&C);
     make_debug_log_file(&C);
