@@ -1,6 +1,6 @@
 // dr_dead_reckoning_app_ins15.c
 //
-// 15-state INS (Error-State EKF) + GNSS (Neo6M) dead-reckoning app for RPi3B + MPU6050
+// 15-state INS (Error-State EKF) + GNSS (TAU1204) dead-reckoning app for RPi3B + ISM330
 //
 // Output: ENU only (stdout) AFTER first GNSS fix initializes ENU origin and nav state.
 //
@@ -31,7 +31,7 @@
 //
 // Dependencies:
 //   - mpu6050_ioctl.h (struct mpu6050_sample with ax,ay,az,gx,gy,gz raw counts)
-//   - neo6m_gnss_ioctl.h (struct neo6m_gnss_fix; this app expects optional fields for hdop/heading)
+//   - neo6m_gnss_ioctl.h (struct neo6m_gnss_fix; reused ABI for TAU1204 dual-band GNSS)
 //     If you haven't extended the driver yet, set HAVE_GNSS_HDOP=0 and HAVE_GNSS_HEADING=0 below.
 //
 // Build (example):
@@ -67,13 +67,15 @@
 
 #define GNSS_TIMEOUT_S      2.0f
 // Reacquisition / snap parameters (GNSS returns after outage)
-#define REACQ_MIN_OUTAGE_S     3.0f     // start reacq if outage longer than this
+#define REACQ_MIN_OUTAGE_S     5.0f     // start reacq if outage longer than this
 #define REACQ_STEPS           8        // number of GNSS attempts in reacq mode
 #define REACQ_R_MULT          100.0f   // inflate Rpos during reacq
 #define REACQ_CHI2_GATE       200.0f   // relaxed gate during reacq (3 dof)
 #define SNAP_MIN_OUTAGE_S     15.0f    // allow snap after long outage
 #define SNAP_INNOV_M          120.0f   // if horizontal innovation exceeds, snap to GNSS
-#define SNAP_HDOP_MAX         3.0f     // require decent HDOP for snap
+#define SNAP_HDOP_MAX         2.5f     // require decent HDOP for snap (TAU1204 multi-constellation)
+#define NAV_INIT_HDOP_MAX     2.5f     // require decent HDOP before initializing nav
+#define NAV_INIT_MIN_FIXES    2        // skip first N fixes (TAU1204 converges faster than single-band)
 
 #define GRAVITY             9.80665f
 #ifndef M_PI
@@ -81,7 +83,7 @@
 #endif
 #define DEG2RAD ( (float)M_PI / 180.0f )
 
-// If your neo6m_gnss_fix was extended with HDOP + heading/course fields, enable these.
+// GNSS driver ABI uses neo6m_gnss_fix struct (TAU1204 reuses same driver interface).
 #ifndef HAVE_GNSS_HDOP
 #define HAVE_GNSS_HDOP      1
 #endif
@@ -113,22 +115,22 @@
 #define QSCL_D  15.0f
 
 // GNSS gating and fade-in
-#define CHI2_3DOF_GATE      50.0f            // ~99.5% for 3 DOF
-#define R_GNSS_POS_VAR      4.0f             // base (m^2), scaled by HDOP^2
+#define CHI2_3DOF_GATE      16.0f            // chi2(3) 99.9% = 16.27 — rejects multipath outliers
+#define R_GNSS_POS_VAR      2.0f             // base (m^2), TAU1204 CEP<1m + vehicle margin, ×HDOP^2
 #define FADE_IN_FACT_INIT   4.0f
 #define FADE_IN_STEPS       3
 
 // Measurement noise
-#define RV_VEL_E            (0.09f)          // (0.30 m/s)^2
-#define RV_VEL_N            (0.09f)
+#define RV_VEL_E            (0.04f)          // (0.20 m/s)^2 — TAU1204 dual-band gives cleaner COG
+#define RV_VEL_N            (0.04f)
 #define RV_VEL_U            (0.36f)          // (0.60 m/s)^2
-#define R_NHC_VY            (0.01f)          // (m/s)^2
+#define R_NHC_VY            (0.015f)         // (m/s)^2 — slightly relaxed for turn robustness
 #define R_NHC_VZ            (0.04f)
 #define R_ZUPT_V            (0.0004f)        // (m/s)^2
 
 // GNSS yaw fusion (optional complementary yaw correction)
 #define YAW_FUSION_SPEED_MIN    (1.0f)       // m/s
-#define YAW_FUSION_HDOP_MAX     (4.0f)
+#define YAW_FUSION_HDOP_MAX     (3.0f)       // tightened for TAU1204 multi-constellation
 #define YAW_FUSION_ALPHA        (0.05f)      // fraction per GNSS update
 
 // Vehicle dynamics sanity limits (reject physically impossible values)
@@ -156,15 +158,15 @@
  * Learn gyro Z scale using GNSS course/heading during turns.
  * Units rad/s, m/s, seconds
  */
-#define YAW_LEARN_MIN_SPEED_MPS     2.0f
-#define YAW_LEARN_MAX_HDOP          2.5f
+#define YAW_LEARN_MIN_SPEED_MPS     3.0f    // raised: COG too noisy below 3 m/s
+#define YAW_LEARN_MAX_HDOP          2.0f    // tightened: TAU1204 achieves lower HDOP routinely
 #define YAW_LEARN_TURN_RATE_THR     0.03f   // ~ 1.7deg/s
 #define YAW_LEARN_MIN_TURN_DEG      20.0f
 #define YAW_LEARN_MIN_SEG_S         3.0f
-#define YAW_LEARN_MAX_SEG_S         40.0f
+#define YAW_LEARN_MAX_SEG_S         25.0f   // reduced: limits gyro bias accumulation error
 #define YAW_LEARN_BETA_SCALE        0.05f   // LPF update for scale
-#define YAW_LEARN_SCALE_MIN         0.85f
-#define YAW_LEARN_SCALE_MAX         1.15f
+#define YAW_LEARN_SCALE_MIN         0.90f   // tightened: ISM330 shouldn't need >10% correction
+#define YAW_LEARN_SCALE_MAX         1.10f
 #define YAW_LEARN_PERSIST_PERIOD_S  60.0
 
 
@@ -180,13 +182,13 @@
  */
 #define IMU_SIGMA_ACCEL         (0.004f)    // m/s²/√Hz  (~5x ISM330 datasheet 80µg/√Hz)
 #define IMU_SIGMA_GYRO          (0.00035f)  // rad/s/√Hz (~5x ISM330 datasheet 3.8mdps/√Hz)
-#define IMU_SIGMA_ACCEL_BIAS    (0.001f)    // accel bias instability (m/s²/√Hz)
-#define IMU_SIGMA_GYRO_BIAS     (0.0005f)   // gyro bias instability (rad/s/√Hz)
+#define IMU_SIGMA_ACCEL_BIAS    (0.0005f)   // accel bias random walk (m/s²/√Hz) — tightened to prevent vertical wander
+#define IMU_SIGMA_GYRO_BIAS     (0.0001f)   // gyro bias random walk (rad/s/√Hz) — tightened to stabilize heading
 #define IMU_COVAR_POS   2.0f
 #define IMU_COVAR_VEL   1.0f           // m/s
 #define IMU_COVAR_ATT   (2.0f*DEG2RAD) // rad
 #define IMU_COVAR_BA    0.075f         // m/s^2
-#define IMU_COVAR_BG    0.004f         // rad/s
+#define IMU_COVAR_BG    0.01f          // rad/s  (wider: gives filter room to find correct bias)
 
 
 static int cal_led_exported = 0;
@@ -1044,7 +1046,7 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
     }
     // Position noise: double-integrated accel noise + position random walk
     // The random walk term prevents the filter from over-trusting IMU-propagated position
-    const float sigma_p_rw = 0.01f;  // m/sqrt(s) — position random walk
+    const float sigma_p_rw = 0.015f; // m/sqrt(s) — position random walk (prevents P_pos shrinking too much)
     float sp2 = (sigma_p_rw * sigma_p_rw) * q_scale;
     for (i=0;i<3;i++) Q[(0+i)*15 + (0+i)] = sa2 * dt*dt*dt / 3.0f + sp2 * dt;
 
@@ -1472,6 +1474,7 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
     double imu_cal_start_s;
     vec3f boot_acc_mean;        // mean accel from power-on calibration (for initial tilt)
     bool heading_observed;      // true after first GPS heading update at speed
+    int  gnss_fix_count;        // counts valid GNSS fixes received (for cold-start skip)
 
 } ctx_t;
 
@@ -1721,16 +1724,8 @@ static void* gnss_thread(void *arg) {
             C->gnss_last_hdop = C->gnss_hdop_valid ? C->gnss_hdop : -1.0f;
             C->gnss_last_valid = true;
 
-            // Set ENU reference on first ever fix
-            if (!C->enu_ref_set) {
-                C->enu_ref_lla = (lla_t){C->gnss_lat_rad, C->gnss_lon_rad, C->gnss_alt_m};
-                C->enu_ref_ecef = lla2ecef(C->enu_ref_lla);
-                C->enu_ref_set = true;
-                dbg_printf(C, "ENU_REF_SET lat=%.9f lon=%.9f alt=%.3f",
-                C->enu_ref_lla.lat * (180.0/M_PI), 
-                C->enu_ref_lla.lon * (180.0/M_PI),
-                C->enu_ref_lla.h); /* Print in Degrees for Sanity*/
-            }
+            // Count valid fixes (for cold-start skip in fusion thread)
+            if (new_fix) C->gnss_fix_count++;
         } else {
             // No fix: still keep last values for logging
             C->gnss_last_fix = 0;
@@ -1828,27 +1823,47 @@ static void* fusion_thread(void *arg) {
 
 
 
-        // Initialize nav on first GNSS fix (wait until ENU origin set AND have current GNSS fix)
+        // Initialize nav after MIN_FIXES good GNSS fixes (skip cold-start, check HDOP)
         if (!C->nav_ready) {
-            if (C->enu_ref_set && C->have_gnss && C->gnss_have_fix) {
-                lla_t L = { C->gnss_lat_rad, C->gnss_lon_rad, C->gnss_alt_m };
-                ecef_t E = lla2ecef(L);
-                dbg_printf(C, "NAV_INIT using ENU_REF lat=%.9f lon=%.9f alt=%.3f",
-                C->enu_ref_lla.lat * (180.0/M_PI),
-                C->enu_ref_lla.lon * (180.0/M_PI),
-                C->enu_ref_lla.h);
-                double enu_d[3];
-                ecef2enu(E, C->enu_ref_lla, C->enu_ref_ecef, enu_d);
-                dbg_printf(C, "NAV_INIT zpos_ENU=(%.3f,%.3f,%.3f)", enu_d[0],enu_d[1],enu_d[2]);
+            // Wait for enough good GNSS fixes to skip cold-start transient,
+            // then set ENU reference AND init nav from the SAME fix (atomic).
+            if (C->have_gnss && C->gnss_have_fix &&
+                C->gnss_fix_count >= NAV_INIT_MIN_FIXES &&
+                (!C->gnss_hdop_valid || C->gnss_hdop <= NAV_INIT_HDOP_MAX)) {
+
+                // ---- Set ENU reference from THIS fix ----
+                C->enu_ref_lla.lat = C->gnss_lat_rad;
+                C->enu_ref_lla.lon = C->gnss_lon_rad;
+                C->enu_ref_lla.h   = C->gnss_alt_m;
+                C->enu_ref_ecef    = lla2ecef(C->enu_ref_lla);
+                C->enu_ref_set     = true;
+
+                dbg_printf(C, "NAV_INIT ENU_REF set from fix #%d lat=%.9f lon=%.9f alt=%.3f hdop=%.1f",
+                    C->gnss_fix_count,
+                    C->enu_ref_lla.lat * (180.0/M_PI),
+                    C->enu_ref_lla.lon * (180.0/M_PI),
+                    C->enu_ref_lla.h,
+                    C->gnss_hdop_valid ? C->gnss_hdop : -1.0f);
+
+                // ---- Init EKF state ----
                 ins15_init(&C->ins);
-                C->ins.p = v3((float)enu_d[0], (float)enu_d[1], (float)enu_d[2]);
+                // ENU origin = this fix, so initial position is exactly (0,0,0)
+                C->ins.p = v3(0.0f, 0.0f, 0.0f);
                 C->ins.v = v3(0,0,0);
-                //C->ins.q = q_identity();
-                if( C->gnss_heading_valid ){
+
+                // Widen initial position covariance based on HDOP
+                float hdop_init = C->gnss_hdop_valid ? C->gnss_hdop : 2.0f;
+                float p0_h = hdop_init * 2.5f;   // horizontal 1-sigma (m)
+                float p0_v = hdop_init * 5.0f;    // vertical 1-sigma  (m)
+                C->ins.P[0*15+0] = p0_h * p0_h;   // East
+                C->ins.P[1*15+1] = p0_h * p0_h;   // North
+                C->ins.P[2*15+2] = p0_v * p0_v;   // Up
+
+                if (C->gnss_heading_valid) {
                     yaw_learn_on_gnss_fix(&yawL, C->gnss_heading_rad, C->last_gnss_fix_mono_ns);
                 }
                 float yaw0 = 0.0f;
-                if(C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN ) {
+                if (C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN) {
                     yaw0 = C->gnss_heading_rad;
                     C->heading_observed = true;
                 }
@@ -1865,17 +1880,24 @@ static void* fusion_thread(void *arg) {
                 }
                 C->ins.q = q_from_euler(roll0, pitch0, yaw0);
 
-                // Start biases at 0 (since you already calibrated raw -> SI).
+                // Start biases at 0 (already calibrated raw -> SI).
                 C->ins.ba = v3(0,0,0);
                 C->ins.bg = v3(0,0,0);
 
+                // If heading was NOT observed at init, widen yaw covariance
+                // so the filter can converge heading from subsequent GNSS COG updates
+                if (!C->heading_observed) {
+                    float yaw_unc = 45.0f * DEG2RAD;  // 45° 1-sigma
+                    C->ins.P[8*15+8] = yaw_unc * yaw_unc;
+                    dbg_printf(C, "NAV_INIT no heading — yaw P widened to (%.0f deg)^2", 45.0f);
+                }
+
                 C->nav_ready = true;
-                // GNSS measurement just initialized navigation -> treat as present+used
                 double t0 = now_sec();
                 C->last_gnss_meas_s = t0;
                 C->last_gnss_used_s = t0;
                 C->gnss_present     = true;
-                C->gnss_valid       = true;   // legacy: last accepted update
+                C->gnss_valid       = true;
                 C->reacq_left       = 0;
                 C->reacq_active     = false;
                 C->snap_applied     = false;
@@ -1884,7 +1906,8 @@ static void* fusion_thread(void *arg) {
                 C->last_nis_pos = 0.0f;
                 C->last_nis_vel = 0.0f;
 
-                dbg_printf(C, "NAV_READY ins.p=(%.3f,%.3f,%.3f)",C->ins.p.x, C->ins.p.y, C->ins.p.z);
+                dbg_printf(C, "NAV_READY p=(0,0,0) P_pos_h=%.1f P_pos_v=%.1f m^2",
+                    p0_h * p0_h, p0_v * p0_v);
 
                 C->have_gnss = false; // consume
             }
@@ -2090,12 +2113,13 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                 C->last_nis_vel = 0.0f;
             }
 
-            // GPS heading measurement update through the EKF (replaces ad-hoc complementary yaw)
-            // NEO-6M datasheet: heading accuracy 0.5 deg at speed
-            // COG gets noisy at low speed; use conservative values scaled by speed
+            // GPS heading measurement update through the EKF
+            // TAU1204 dual-band COG accuracy ≈ inversely proportional to speed
+            // sigma ≈ max(0.5°, 5°/speed) — ~2× tighter than single-band L1
             if (C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN && hdop <= YAW_FUSION_HDOP_MAX) {
-                float R_hdg = (5.0f * DEG2RAD) * (5.0f * DEG2RAD);    // (5 deg)^2 at low speed
-                if (C->gnss_speed_mps > 5.0f) R_hdg = (2.0f * DEG2RAD) * (2.0f * DEG2RAD);  // (2 deg)^2 at speed
+                float sigma_hdg_deg = fmaxf(0.5f, 5.0f / C->gnss_speed_mps);
+                float sigma_hdg_rad = sigma_hdg_deg * DEG2RAD;
+                float R_hdg = sigma_hdg_rad * sigma_hdg_rad;
                 ins15_update_heading(&C->ins, C->gnss_heading_rad, R_hdg);
                 if (!C->heading_observed) C->heading_observed = true;
             }
@@ -2113,16 +2137,8 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
             }
         }
 
-        // Output ENU at 10 Hz (not 100 Hz — reduces visible predict-step jitter)
-        {
-            static double last_out_s = 0.0;
-            double tout = now_sec();
-            if (tout - last_out_s >= 0.1) {
-                printf("%.3f,%.3f,%.3f\n", C->ins.p.x, C->ins.p.y, C->ins.p.z);
-                fflush(stdout);
-                last_out_s = tout;
-            }
-        }
+        // ENU output: CSV file only at 1 Hz (handled in the 1 Hz CSV block below)
+        // No stdout output — all position data goes to the log file.
 
         // 1 Hz CSV logging
         double tlog = now_sec();

@@ -60,7 +60,7 @@
 <div class="meta">
   <strong>File:</strong> platform/pi/dr_dead_reckoning_app_ins15.c (~2176 lines)<br>
   <strong>Platform:</strong> Raspberry Pi 3B<br>
-  <strong>Sensors:</strong> ISM330 IMU (6-axis) + NEO-6M GNSS<br>
+  <strong>Sensors:</strong> ISM330 IMU (6-axis) + TAU1204 dual-band GNSS (L1+L5)<br>
   <strong>Language:</strong> C (POSIX pthreads, -lm -lpthread)<br>
   <strong>Build:</strong> <code>gcc -O2 -pthread -lm -o dr_ins15 dr_dead_reckoning_app_ins15.c</code><br>
   <strong>Generated:</strong> 2026-02-13
@@ -95,7 +95,7 @@
 <!-- ==================== SECTION 1 ==================== -->
 <h2 id="s1">1. Application Overview</h2>
 
-<p>This application implements a <strong>15-state Error-State Extended Kalman Filter (ES-EKF)</strong> for vehicular dead-reckoning navigation. It fuses data from an ISM330 IMU (accelerometer + gyroscope at ~100 Hz) with a NEO-6M GNSS receiver (~1 Hz) to produce continuous position, velocity, and attitude estimates in an East-North-Up (ENU) coordinate frame.</p>
+<p>This application implements a <strong>15-state Error-State Extended Kalman Filter (ES-EKF)</strong> for vehicular dead-reckoning navigation. It fuses data from an ISM330 IMU (accelerometer + gyroscope at ~100 Hz) with a TAU1204 dual-band (L1+L5) multi-constellation GNSS receiver (~1 Hz) to produce continuous position, velocity, and attitude estimates in an East-North-Up (ENU) coordinate frame.</p>
 
 <h3>State Vector</h3>
 <p>The <strong>nominal state</strong> consists of:</p>
@@ -122,12 +122,19 @@
 <h3>Key Design Features</h3>
 <ul>
   <li><strong>GNSS outage handling:</strong> Tiered process noise inflation; NHC/ZUPT/velocity-decay to bound drift</li>
-  <li><strong>Reacquisition mode:</strong> Relaxed gating and inflated R when GNSS returns after outage</li>
-  <li><strong>Snap-to-GNSS:</strong> Safety net for extreme drift after prolonged outage (&gt;15s, &gt;120m innovation)</li>
-  <li><strong>NIS gating:</strong> Normalized Innovation Squared test (Chi-squared) before accepting GNSS updates</li>
+  <li><strong>Reacquisition mode:</strong> Relaxed gating and inflated R when GNSS returns after outage (&ge;5 s)</li>
+  <li><strong>Snap-to-GNSS:</strong> Safety net for extreme drift after prolonged outage (&gt;15 s, &gt;120 m innovation)</li>
+  <li><strong>NIS gating:</strong> Normalized Innovation Squared test &chi;&sup2;(3) &le; 16.0 before accepting GNSS updates</li>
   <li><strong>Joseph-form covariance:</strong> Numerically stable covariance update</li>
   <li><strong>Power-on calibration:</strong> 10-second stillness calibration at each boot</li>
-  <li><strong>Online yaw-rate learning:</strong> Learns gyro Z-axis scale from GNSS heading during turns</li>
+  <li><strong>Online yaw-rate learning:</strong> Learns gyro Z-axis scale from GNSS heading during turns (scale clamp 0.90&ndash;1.10)</li>
+  <li><strong>GNSS speed spike filter:</strong> Rejects fixes with speed &gt;55 m/s or acceleration &gt;8 m/s&sup2; to protect the EKF from multi-path or glitches</li>
+  <li><strong>IMU acceleration clamp:</strong> Caps ENU acceleration at &plusmn;15 m/s&sup2; after gravity removal, preventing prediction blow-ups from sensor spikes</li>
+  <li><strong>Stationary position anchor:</strong> When ZUPT is active, an EKF-consistent position measurement (R = 0.25 m&sup2;) locks the reported position to suppress drift</li>
+  <li><strong>Continuous ZUPT:</strong> Stillness counter stays saturated rather than resetting, providing uninterrupted zero-velocity updates while stationary</li>
+  <li><strong>Atomic nav initialisation:</strong> ENU reference origin and nav state are set from the same quality-checked GNSS fix (HDOP &le; 2.5, &ge;2 valid fixes), with HDOP-scaled initial covariance</li>
+  <li><strong>Speed-dependent heading R:</strong> Heading measurement noise &sigma; = max(0.5&deg;, 5&deg;/speed) adapts to TAU1204 COG quality at different speeds</li>
+  <li><strong>Two-tier velocity decay:</strong> Gentle decay (0.98) below 0.5 m/s, aggressive decay (0.90) below 0.15 m/s, for smooth stop behaviour without GNSS</li>
 </ul>
 
 
@@ -139,7 +146,7 @@
 <table>
 <tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
 <tr><td><code>IMU_DEVICE_PATH</code></td><td><code>/dev/mpu6050-0</code></td><td>Character device for IMU reads</td></tr>
-<tr><td><code>NEO6M_DEVICE_PATH</code></td><td><code>/dev/neo6m0</code></td><td>Character device for GNSS ioctl</td></tr>
+<tr><td><code>NEO6M_DEVICE_PATH</code></td><td><code>/dev/neo6m0</code></td><td>Character device for GNSS ioctl (TAU1204 reuses neo6m driver ABI)</td></tr>
 <tr><td><code>IMU_HZ</code></td><td>100.0</td><td>IMU sample rate (Hz)</td></tr>
 <tr><td><code>DT_IMU_DEFAULT</code></td><td>0.01</td><td>Fallback dt when timing is abnormal</td></tr>
 <tr><td><code>GNSS_TIMEOUT_S</code></td><td>2.0</td><td>Seconds before declaring GNSS outage</td></tr>
@@ -148,13 +155,13 @@
 <h3>2.2 Reacquisition / Snap Parameters</h3>
 <table>
 <tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
-<tr><td><code>REACQ_MIN_OUTAGE_S</code></td><td>3.0</td><td>Minimum outage before entering reacquisition mode</td></tr>
+<tr><td><code>REACQ_MIN_OUTAGE_S</code></td><td>5.0</td><td>Minimum outage before entering reacquisition mode</td></tr>
 <tr><td><code>REACQ_STEPS</code></td><td>8</td><td>Number of GNSS attempts with relaxed gating</td></tr>
 <tr><td><code>REACQ_R_MULT</code></td><td>100.0</td><td>Inflate measurement noise during reacquisition</td></tr>
 <tr><td><code>REACQ_CHI2_GATE</code></td><td>200.0</td><td>Relaxed NIS gate during reacquisition</td></tr>
 <tr><td><code>SNAP_MIN_OUTAGE_S</code></td><td>15.0</td><td>Minimum outage before snap is allowed</td></tr>
 <tr><td><code>SNAP_INNOV_M</code></td><td>120.0</td><td>Horizontal innovation threshold for snap (m)</td></tr>
-<tr><td><code>SNAP_HDOP_MAX</code></td><td>3.0</td><td>Maximum HDOP for snap</td></tr>
+<tr><td><code>SNAP_HDOP_MAX</code></td><td>2.5</td><td>Maximum HDOP for snap (TAU1204 multi-constellation)</td></tr>
 </table>
 
 <h3>2.3 Stillness / ZUPT Detection</h3>
@@ -180,13 +187,13 @@
 <h3>2.5 GNSS Measurement Noise</h3>
 <table>
 <tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
-<tr><td><code>R_GNSS_POS_VAR</code></td><td>4.0 m&sup2;</td><td>Base position variance, scaled by HDOP&sup2;</td></tr>
-<tr><td><code>RV_VEL_E, RV_VEL_N</code></td><td>0.09 m&sup2;/s&sup2;</td><td>Horizontal velocity variance (0.30 m/s)&sup2;</td></tr>
+<tr><td><code>R_GNSS_POS_VAR</code></td><td>2.0 m&sup2;</td><td>Base position variance (TAU1204 CEP&lt;1m + vehicle margin), &times;HDOP&sup2;</td></tr>
+<tr><td><code>RV_VEL_E, RV_VEL_N</code></td><td>0.04 m&sup2;/s&sup2;</td><td>Horizontal velocity variance (0.20 m/s)&sup2; &mdash; TAU1204 dual-band gives cleaner COG</td></tr>
 <tr><td><code>RV_VEL_U</code></td><td>0.36 m&sup2;/s&sup2;</td><td>Vertical velocity variance (0.60 m/s)&sup2;</td></tr>
-<tr><td><code>R_NHC_VY</code></td><td>0.01</td><td>NHC lateral velocity noise (m/s)&sup2;</td></tr>
+<tr><td><code>R_NHC_VY</code></td><td>0.015</td><td>NHC lateral velocity noise (m/s)&sup2; &mdash; slightly relaxed for turn robustness</td></tr>
 <tr><td><code>R_NHC_VZ</code></td><td>0.04</td><td>NHC vertical velocity noise (m/s)&sup2;</td></tr>
 <tr><td><code>R_ZUPT_V</code></td><td>0.0004</td><td>ZUPT velocity noise (m/s)&sup2;</td></tr>
-<tr><td><code>CHI2_3DOF_GATE</code></td><td>50.0</td><td>NIS gate threshold (~99.5% for 3-DOF Chi-squared)</td></tr>
+<tr><td><code>CHI2_3DOF_GATE</code></td><td>16.0</td><td>NIS gate threshold (&chi;&sup2;(3) 99.9% = 16.27 &mdash; rejects multipath outliers)</td></tr>
 </table>
 
 <h3>2.6 IMU Noise Figures (ISM330)</h3>
@@ -194,8 +201,8 @@
 <tr><th>Constant</th><th>Value</th><th>Description</th></tr>
 <tr><td><code>IMU_SIGMA_ACCEL</code></td><td>0.004 m/s&sup2;/&radic;Hz</td><td>~5x ISM330 datasheet (80 &mu;g/&radic;Hz)</td></tr>
 <tr><td><code>IMU_SIGMA_GYRO</code></td><td>0.00035 rad/s/&radic;Hz</td><td>~5x ISM330 datasheet (3.8 mdps/&radic;Hz)</td></tr>
-<tr><td><code>IMU_SIGMA_ACCEL_BIAS</code></td><td>0.001 m/s&sup2;/&radic;Hz</td><td>Accel bias instability</td></tr>
-<tr><td><code>IMU_SIGMA_GYRO_BIAS</code></td><td>0.0005 rad/s/&radic;Hz</td><td>Gyro bias instability</td></tr>
+<tr><td><code>IMU_SIGMA_ACCEL_BIAS</code></td><td>0.0005 m/s&sup2;/&radic;Hz</td><td>Accel bias random walk &mdash; tightened to prevent vertical wander</td></tr>
+<tr><td><code>IMU_SIGMA_GYRO_BIAS</code></td><td>0.0001 rad/s/&radic;Hz</td><td>Gyro bias random walk &mdash; tightened to stabilize heading (~7&times; ISM330 datasheet)</td></tr>
 <tr><td><code>GYRO_LSB_PER_DPS</code></td><td>57.143</td><td>ISM330 &plusmn;500 dps full-scale sensitivity</td></tr>
 </table>
 
@@ -361,7 +368,7 @@
 <pre>E =  -sin(&lambda;)&middot;&Delta;X + cos(&lambda;)&middot;&Delta;Y
 N = -sin(&phi;)cos(&lambda;)&middot;&Delta;X - sin(&phi;)sin(&lambda;)&middot;&Delta;Y + cos(&phi;)&middot;&Delta;Z
 U =  cos(&phi;)cos(&lambda;)&middot;&Delta;X + cos(&phi;)sin(&lambda;)&middot;&Delta;Y + sin(&phi;)&middot;&Delta;Z</pre>
-<p>The ENU reference is established from the first valid GNSS fix and remains fixed for the entire session.</p>
+<p>The ENU reference is established atomically with nav initialization from the same quality-checked GNSS fix (after skipping cold-start transient fixes, with HDOP &le; 2.5). The reference remains fixed for the entire session.</p>
 
 
 <!-- ==================== SECTION 7 ==================== -->
@@ -438,16 +445,16 @@ accel_O -= residual</pre></li>
 <div class="sig"><code>static void yaw_learn_try_finalize(yaw_learn_t *Y, double now_s)</code></div>
 <p>Attempts to finalize a turn segment. Validates:</p>
 <ul>
-  <li>Segment duration: 3&ndash;40 seconds</li>
+  <li>Segment duration: 3&ndash;25 seconds (reduced from 40s to limit gyro bias accumulation error)</li>
   <li>Minimum GNSS heading change: 20&deg;</li>
   <li>Minimum integrated gyro angle: 0.10 rad</li>
   <li>Scale estimate in [0.5, 1.5] (rejects GNSS glitches)</li>
 </ul>
-<p>If valid, applies LPF update: <code>scale = 0.95&times;old + 0.05&times;estimate</code>, clamped to [0.85, 1.15].</p>
+<p>If valid, applies LPF update: <code>scale = 0.95&times;old + 0.05&times;estimate</code>, clamped to [0.90, 1.10] (tightened: ISM330 factory-calibrated, &gt;10% correction indicates a problem).</p>
 
 <h4><code>yaw_learn_on_imu()</code> &mdash; Line 832</h4>
 <div class="sig"><code>static void yaw_learn_on_imu(yaw_learn_t *Y, double now_s, float dt, const struct mpu6050_sample *raw, bool gnss_ok, float gnss_speed_mps, bool turning_ok)</code></div>
-<p>Called every IMU step (~100 Hz). If a segment is active, integrates unscaled gyro-Z. If GNSS quality degrades or turning stops, attempts finalization. If no segment is active and all conditions are met (GNSS good, speed &gt; 2 m/s, turning), starts a new segment.</p>
+<p>Called every IMU step (~100 Hz). If a segment is active, integrates unscaled gyro-Z. If GNSS quality degrades or turning stops, attempts finalization. If no segment is active and all conditions are met (GNSS good, speed &gt; 3 m/s, HDOP &le; 2.0, turning), starts a new segment.</p>
 
 <h4><code>yaw_learn_maybe_persist()</code> &mdash; Line 877</h4>
 <div class="sig"><code>static void yaw_learn_maybe_persist(yaw_learn_t *Y, double now_s)</code></div>
@@ -463,12 +470,13 @@ accel_O -= residual</pre></li>
 <p>Initializes the INS state. Zeros nominal state, sets quaternion to identity, and sets diagonal initial covariance P<sub>0</sub>:</p>
 <table>
 <tr><th>State Block</th><th>Indices</th><th>Initial &sigma;</th><th>P<sub>0</sub> diagonal</th></tr>
-<tr><td>Position &delta;p</td><td>0&ndash;2</td><td>2.0 m</td><td>4.0 m&sup2;</td></tr>
+<tr><td>Position &delta;p</td><td>0&ndash;2</td><td>2.0 m (default)</td><td>4.0 m&sup2; (overridden at nav init by HDOP-based values)</td></tr>
 <tr><td>Velocity &delta;v</td><td>3&ndash;5</td><td>1.0 m/s</td><td>1.0 m&sup2;/s&sup2;</td></tr>
-<tr><td>Attitude &delta;&theta;</td><td>6&ndash;8</td><td>2.0&deg;</td><td>~0.0012 rad&sup2;</td></tr>
+<tr><td>Attitude &delta;&theta;</td><td>6&ndash;8</td><td>2.0&deg; (roll/pitch)</td><td>~0.0012 rad&sup2;; yaw widened to (45&deg;)&sup2; if heading not observed at init</td></tr>
 <tr><td>Accel bias b<sub>a</sub></td><td>9&ndash;11</td><td>0.075 m/s&sup2;</td><td>~0.0056 m&sup2;/s&sup4;</td></tr>
-<tr><td>Gyro bias b<sub>g</sub></td><td>12&ndash;14</td><td>0.004 rad/s</td><td>~1.6e-5 rad&sup2;/s&sup2;</td></tr>
+<tr><td>Gyro bias b<sub>g</sub></td><td>12&ndash;14</td><td>0.01 rad/s</td><td>~1.0e-4 rad&sup2;/s&sup2; (wider: gives filter room to find correct bias)</td></tr>
 </table>
+<div class="note"><strong>Note:</strong> At nav initialization, position P is overridden to HDOP&times;2.5 (horizontal) and HDOP&times;5.0 (vertical), and yaw P is widened to (45&deg;)&sup2; if no heading was observed. This ensures the filter starts appropriately uncertain for the actual GNSS fix quality.</div>
 
 <h4><code>compute_qscale()</code> &mdash; Line 920</h4>
 <div class="sig"><code>static inline float compute_qscale(double outage_s)</code></div>
@@ -579,7 +587,7 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
 
 <h4><code>ins15_update_heading()</code> &mdash; Line 1304</h4>
 <div class="sig"><code>static void ins15_update_heading(ins15_t *S, float z_yaw, float R_hdg)</code></div>
-<p>Scalar heading update through the EKF. The measurement is the GNSS course-over-ground (converted to ENU yaw). The observation matrix H has a single nonzero element: H[8] = 1.0 (maps &delta;&theta;<sub>z</sub>). Uses an optimized scalar Kalman update with Joseph-form covariance. Measurement noise varies with speed: (5&deg;)&sup2; at low speed, (2&deg;)&sup2; above 5 m/s.</p>
+<p>Scalar heading update through the EKF. The measurement is the GNSS course-over-ground (converted to ENU yaw). The observation matrix H has a single nonzero element: H[8] = 1.0 (maps &delta;&theta;<sub>z</sub>). Uses an optimized scalar Kalman update with Joseph-form covariance. Measurement noise is speed-dependent: &sigma; = max(0.5&deg;, 5&deg;/speed), giving a smooth transition from ~5&deg; at low speed to 0.5&deg; at 10+ m/s (tuned for TAU1204 dual-band COG accuracy, approximately 2&times; tighter than single-band L1).</p>
 
 
 <!-- ==================== SECTION 12 ==================== -->
@@ -610,12 +618,13 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
 <tr><td>GNSS Data</td><td><code>have_gnss</code>, <code>gnss_have_fix</code>, lat/lon/alt/speed, heading, hdop</td><td>Latest GNSS fix data and quality indicators</td></tr>
 <tr><td>GNSS Velocity</td><td><code>gnss_vel_valid</code>, <code>gnss_vel_enu</code></td><td>ENU velocity derived from GNSS speed + course</td></tr>
 <tr><td>INS State</td><td><code>ins</code> (ins15_t)</td><td>Complete EKF state including covariance</td></tr>
-<tr><td>ENU Reference</td><td><code>enu_ref_set</code>, <code>enu_ref_lla</code>, <code>enu_ref_ecef</code></td><td>ENU origin set from first GNSS fix</td></tr>
-<tr><td>Nav Status</td><td><code>nav_ready</code>, <code>heading_observed</code></td><td>Navigation initialization flags</td></tr>
+<tr><td>ENU Reference</td><td><code>enu_ref_set</code>, <code>enu_ref_lla</code>, <code>enu_ref_ecef</code></td><td>ENU origin set atomically with nav init from quality-checked fix</td></tr>
+<tr><td>Nav Status</td><td><code>nav_ready</code>, <code>heading_observed</code>, <code>gnss_fix_count</code></td><td>Navigation initialization flags and cold-start fix counter</td></tr>
 <tr><td>Outage Tracking</td><td><code>last_gnss_meas_s</code>, <code>last_gnss_used_s</code>, <code>gnss_present</code>, <code>outage_s</code>, <code>qscale</code></td><td>GNSS outage detection and process noise scaling</td></tr>
 <tr><td>Reacquisition</td><td><code>reacq_left</code>, <code>reacq_active</code>, <code>snap_applied</code></td><td>Post-outage GNSS re-lock state machine</td></tr>
-<tr><td>ZUPT</td><td><code>zupt_count</code></td><td>Consecutive stillness sample counter</td></tr>
-<tr><td>Diagnostics</td><td><code>last_nis_pos</code>, <code>last_nis_vel</code></td><td>Latest NIS values for logging</td></tr>
+<tr><td>ZUPT / Anchor</td><td><code>zupt_count</code>, <code>anchor_p</code>, <code>anchor_set</code>, <code>sustained_still</code></td><td>Consecutive stillness counter and stationary position anchor</td></tr>
+<tr><td>Diagnostics</td><td><code>last_nis_pos</code>, <code>last_nis_vel</code>, <code>predict_p</code></td><td>Latest NIS values and predict-only position snapshot for logging</td></tr>
+<tr><td>GNSS Spike Filter</td><td><code>gnss_prev_speed_mps</code>, <code>gnss_prev_speed_time</code>, <code>gnss_speed_rejected</code></td><td>Speed spike detection (absolute cap + rate-of-change filter)</td></tr>
 <tr><td>Logging</td><td><code>logf</code>, <code>dbglog</code>, filenames, <code>last_log_s</code></td><td>CSV and debug log file handles</td></tr>
 <tr><td>Calibration</td><td><code>imu_cal_in_progress</code>, <code>imu_cal_done</code>, <code>boot_acc_mean</code></td><td>Power-on calibration state</td></tr>
 <tr><td>Threading</td><td><code>mtx</code>, <code>cv</code>, <code>running</code></td><td>Mutex, condition variable, and stop flag</td></tr>
@@ -628,7 +637,7 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
 
 <h4><code>make_log_file()</code> &mdash; Line 1454</h4>
 <div class="sig"><code>static void make_log_file(ctx_t *C)</code></div>
-<p>Creates the log directory (<code>/home/sijeo/nav_logs/</code>) and opens a timestamped CSV file (e.g., <code>navlog_2026-02-13_14-30-00.csv</code>). Writes the CSV header with 47 columns covering: time, ENU position/velocity/acceleration, yaw, biases, raw IMU, GNSS fields, outage/reacquisition status, NIS, and diagnostic fields.</p>
+<p>Creates the log directory (<code>/home/sijeo/nav_logs/</code>) and opens a timestamped CSV file (e.g., <code>navlog_2026-02-13_14-30-00.csv</code>). Writes the CSV header with 49 columns covering: time, ENU position/velocity/acceleration, yaw, biases, raw IMU, GNSS fields, outage/reacquisition status, NIS, predict-only position, ZUPT/anchor status, and diagnostic fields.</p>
 
 <h4><code>make_debug_log_file()</code> &mdash; Line 1495</h4>
 <div class="sig"><code>static void make_debug_log_file(ctx_t *C)</code></div>
@@ -708,7 +717,8 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
     </ul>
   </li>
   <li>Deduplicates fixes using <code>monotonic_ns</code> comparison</li>
-  <li>Sets ENU reference on first ever fix (origin for the entire session)</li>
+  <li><strong>GNSS speed spike filter:</strong> Rejects speeds exceeding absolute cap (55 m/s ~200 km/h) or rate-of-change limit (8 m/s&sup2; between fixes). Rejected speed also invalidates heading and derived velocity.</li>
+  <li>Counts valid fixes (<code>gnss_fix_count++</code>) for cold-start skip in the fusion thread</li>
   <li>Saves all fields for 1 Hz logging regardless of fix validity</li>
 </ol>
 
@@ -745,10 +755,11 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
 
 <h3>Phase 4: Navigation Initialization (lines 1772&ndash;1835)</h3>
 <ul>
-  <li>Waits for: (a) ENU reference set, (b) current GNSS fix available</li>
-  <li>Converts first GNSS position to ENU coordinates</li>
-  <li>Initializes INS state: position from GNSS, zero velocity, attitude from accelerometer tilt + GNSS heading (if available)</li>
-  <li>Computes initial roll/pitch from boot accelerometer gravity: pitch = atan2(-a<sub>x</sub>, &radic;(a<sub>y</sub>&sup2; + a<sub>z</sub>&sup2;)), roll = atan2(a<sub>y</sub>, a<sub>z</sub>)</li>
+  <li>Waits for: (a) at least <code>NAV_INIT_MIN_FIXES</code> (2) valid GNSS fixes received (skips cold-start transient), (b) HDOP &le; <code>NAV_INIT_HDOP_MAX</code> (2.5)</li>
+  <li><strong>Atomic ENU ref + nav init:</strong> Sets ENU reference AND initializes nav from the <em>same</em> fix &mdash; initial ENU position is exactly (0,0,0) with no mismatch</li>
+  <li>Widens initial position covariance based on HDOP: P<sub>h</sub> = (HDOP &times; 2.5)&sup2;, P<sub>v</sub> = (HDOP &times; 5.0)&sup2;</li>
+  <li>If heading not observed at init, widens yaw P to (45&deg;)&sup2; so filter can converge heading from subsequent GNSS COG updates</li>
+  <li>Initializes attitude: roll/pitch from boot accelerometer gravity (pitch = atan2(-a<sub>x</sub>, &radic;(a<sub>y</sub>&sup2; + a<sub>z</sub>&sup2;)), roll = atan2(a<sub>y</sub>, a<sub>z</sub>)), yaw from GNSS heading if available</li>
 </ul>
 
 <h3>Phase 5: GNSS Outage Tracking (lines 1837&ndash;1862)</h3>
@@ -768,13 +779,16 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
 <ul>
   <li>Calls <code>ins15_predict()</code> with calibrated accel, gyro, dt, and qscale</li>
   <li>Updates nominal state (p, v, q) and propagates error-state covariance P</li>
+  <li><strong>ENU acceleration clamp:</strong> After gravity removal, clamps a<sub>ENU</sub> to &plusmn;15 m/s&sup2; (~1.5g) to reject IMU spikes, calibration errors, and attitude-induced gravity leakage</li>
+  <li>Snapshots predict-only position (<code>predict_p</code>) for diagnostic logging</li>
 </ul>
 
 <h3>Phase 8: Constraint Updates (lines 1878&ndash;1900)</h3>
 <ul>
   <li><strong>NHC:</strong> Applied every step if heading has been observed (constrains lateral/vertical body velocity to zero)</li>
-  <li><strong>ZUPT:</strong> After 5 consecutive still samples, constrains velocity to zero and applies ZARU (locks gyro bias)</li>
-  <li><strong>Velocity decay:</strong> When speed &lt; 0.10 m/s, applies 0.98x damping to bound residual drift</li>
+  <li><strong>ZUPT:</strong> After 5 consecutive still samples, constrains velocity to zero and applies ZARU (locks gyro bias). Counter stays saturated (fires every step while still, not once per 5 samples)</li>
+  <li><strong>Stationary position anchor:</strong> After sustained stillness (~200ms), captures anchor position and applies tight EKF position update (R=0.25 m&sup2;) each step to prevent random walk drift</li>
+  <li><strong>Velocity decay:</strong> When speed &lt; 0.10 m/s, applies two-tier damping: 0.90x near zero (&lt;0.02 m/s), 0.98x otherwise</li>
 </ul>
 
 <h3>Phase 9: GNSS Fusion (lines 1902&ndash;2016)</h3>
@@ -782,18 +796,18 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
 <ol>
   <li><strong>Position conversion:</strong> LLA &rarr; ECEF &rarr; ENU</li>
   <li><strong>Measurement noise:</strong> R<sub>pos</sub> = R_GNSS_POS_VAR &times; HDOP&sup2;</li>
-  <li><strong>Reacquisition check:</strong> If outage &gt; 3s, enter reacq mode (inflate R &times;100, relax gate to 200)</li>
-  <li><strong>Snap-to-GNSS:</strong> If outage &gt; 15s AND innovation &gt; 120m AND HDOP &le; 3, force position to GNSS and inflate P</li>
-  <li><strong>NIS gating:</strong> Compute NIS (read-only), accept position update only if NIS &lt; gate threshold</li>
+  <li><strong>Reacquisition check:</strong> If outage &gt; 5s, enter reacq mode (inflate R &times;100, relax gate to 200)</li>
+  <li><strong>Snap-to-GNSS:</strong> If outage &gt; 15s AND innovation &gt; 120m AND HDOP &le; 2.5, force position to GNSS and inflate P</li>
+  <li><strong>NIS gating:</strong> Compute NIS (read-only), accept position update only if NIS &lt; 16.0 (&chi;&sup2;(3) 99.9%)</li>
   <li><strong>Position update:</strong> <code>ins15_update_gnss_pos()</code></li>
   <li><strong>Velocity update:</strong> If GNSS velocity valid, inflate noise at low speed (&lt;1 m/s &times;10), NIS gate, then <code>ins15_update_gnss_vel()</code></li>
-  <li><strong>Heading update:</strong> If speed &gt; 1 m/s and HDOP &le; 4, apply scalar yaw update via <code>ins15_update_heading()</code></li>
+  <li><strong>Heading update:</strong> If speed &gt; 1 m/s and HDOP &le; 3, apply scalar yaw update via <code>ins15_update_heading()</code> with speed-dependent R: &sigma; = max(0.5&deg;, 5&deg;/speed)</li>
 </ol>
 
 <h3>Phase 10: Output &amp; Logging (lines 2030&ndash;2098)</h3>
 <ul>
-  <li>Outputs ENU position to stdout at IMU rate (100 Hz)</li>
-  <li>1 Hz CSV log with 47 fields covering all state, measurements, and diagnostics</li>
+  <li>ENU position output to CSV file only (no stdout) at 1 Hz, with or without GNSS fix</li>
+  <li>1 Hz CSV log with 49 fields covering all state, measurements, diagnostics, predict-only position, and ZUPT/anchor status</li>
   <li>Resets per-log latches (gnss_used_pos, gnss_used_vel, reacq_active, snap_applied)</li>
 </ul>
 
@@ -865,10 +879,11 @@ fusion_thread loop:
 <h4>Phase 2: Wait for GNSS Fix</h4>
 <pre>
 fusion_thread loop:
-  &rarr; Wait for enu_ref_set (first GNSS fix sets ENU origin)
-  &rarr; Wait for have_gnss (current fix available)
-  &rarr; Convert LLA &rarr; ECEF &rarr; ENU
-  &rarr; Initialize INS: position from GNSS, tilt from accel, heading from GNSS
+  &rarr; Wait for gnss_fix_count &ge; 2 (skip cold-start transient)
+  &rarr; Wait for HDOP &le; 2.5 (quality gate)
+  &rarr; Set ENU reference from THIS fix (atomic with nav init)
+  &rarr; Initialize INS: position = (0,0,0), tilt from accel, heading from GNSS
+  &rarr; Widen position P by HDOP; widen yaw P to (45&deg;)&sup2; if no heading
   &rarr; Set nav_ready = true
 </pre>
 </div>
@@ -883,22 +898,24 @@ fusion_thread loop (every ~10ms):
   2. Predict:    ins15_predict(acc, gyro, dt, qscale)
                  &rarr; Attitude integration (quaternion)
                  &rarr; Velocity/position integration (ENU)
+                 &rarr; ENU acceleration clamp (&plusmn;15 m/s&sup2;)
                  &rarr; Covariance propagation (P = &Phi;P&Phi;<sup>T</sup> + Q)
+                 &rarr; Snapshot predict_p for diagnostics
 
   3. Constrain:  ins15_update_nhc()    (every step, if heading observed)
-                 ins15_update_zupt()   (when still for 5+ samples)
+                 ins15_update_zupt()   (continuous while still, not one-shot)
                  ins15_update_zaru()   (when still, locks gyro bias)
-                 velocity_decay()      (when |v| &lt; 0.1 m/s)
+                 position_anchor()     (after sustained stillness, R=0.25m&sup2;)
+                 velocity_decay()      (two-tier: 0.90x/0.98x when |v| &lt; 0.1 m/s)
 
   4. GNSS Fuse:  (when new fix arrives, ~1 Hz)
                  LLA &rarr; ECEF &rarr; ENU
-                 NIS gate &rarr; ins15_update_gnss_pos()
+                 NIS gate (&lt;16.0) &rarr; ins15_update_gnss_pos()
                  NIS gate &rarr; ins15_update_gnss_vel()
-                 ins15_update_heading()
+                 ins15_update_heading() (&sigma; = max(0.5&deg;, 5&deg;/speed))
                  yaw_learn_on_gnss_fix()
 
-  5. Output:     printf("%.3f,%.3f,%.3f\n", E, N, U)  (100 Hz)
-                 CSV log (1 Hz, 47 columns)
+  5. Output:     CSV log only (1 Hz, 49 columns, no stdout)
 
   6. Learn:      yaw_learn_on_imu() (online gyro-Z scale)
 </pre>
@@ -915,12 +932,12 @@ When GNSS is lost:
   5. Velocity decay bounds creep at near-zero speed
 
 When GNSS returns:
-  1. If outage was 3&ndash;15s: Reacquisition mode
+  1. If outage was 5&ndash;15s: Reacquisition mode
      &rarr; Inflate R &times;100, relax gate to 200
      &rarr; Gradually accept GNSS over 8 fixes
   2. If outage &gt;15s AND innovation &gt;120m: Snap-to-GNSS
      &rarr; Force position = GNSS, inflate P to (5m)&sup2;
-  3. Normal: NIS &lt; 50 &rarr; accept update
+  3. Normal: NIS &lt; 16 &rarr; accept update
 </pre>
 </div>
 
