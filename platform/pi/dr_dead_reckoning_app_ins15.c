@@ -116,13 +116,13 @@
 
 // GNSS gating and fade-in
 #define CHI2_3DOF_GATE      16.0f            // chi2(3) 99.9% = 16.27 — rejects multipath outliers
-#define R_GNSS_POS_VAR      2.0f             // base (m^2), TAU1204 CEP<1m + vehicle margin, ×HDOP^2
+#define R_GNSS_POS_VAR      1.0f             // base (m^2), TAU1204 CEP<1m (0.81m measured), ×HDOP^2
 #define FADE_IN_FACT_INIT   4.0f
 #define FADE_IN_STEPS       3
 
 // Measurement noise
-#define RV_VEL_E            (0.04f)          // (0.20 m/s)^2 — TAU1204 dual-band gives cleaner COG
-#define RV_VEL_N            (0.04f)
+#define RV_VEL_E            (0.02f)          // (0.14 m/s)^2 — TAU1204 dual-band velocity accuracy ~0.1 m/s
+#define RV_VEL_N            (0.02f)
 #define RV_VEL_U            (0.36f)          // (0.60 m/s)^2
 #define R_NHC_VY            (0.015f)         // (m/s)^2 — slightly relaxed for turn robustness
 #define R_NHC_VZ            (0.04f)
@@ -2115,9 +2115,9 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
 
             // GPS heading measurement update through the EKF
             // TAU1204 dual-band COG accuracy ≈ inversely proportional to speed
-            // sigma ≈ max(0.5°, 5°/speed) — ~2× tighter than single-band L1
+            // sigma ≈ max(0.3°, 3°/speed) — TAU1204 dual-band COG is very clean
             if (C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN && hdop <= YAW_FUSION_HDOP_MAX) {
-                float sigma_hdg_deg = fmaxf(0.5f, 5.0f / C->gnss_speed_mps);
+                float sigma_hdg_deg = fmaxf(0.3f, 3.0f / C->gnss_speed_mps);
                 float sigma_hdg_rad = sigma_hdg_deg * DEG2RAD;
                 float R_hdg = sigma_hdg_rad * sigma_hdg_rad;
                 ins15_update_heading(&C->ins, C->gnss_heading_rad, R_hdg);
