@@ -133,7 +133,8 @@
   <li><strong>Stationary position anchor:</strong> When ZUPT is active, an EKF-consistent position measurement (R = 0.25 m&sup2;) locks the reported position to suppress drift</li>
   <li><strong>Continuous ZUPT:</strong> Stillness counter stays saturated rather than resetting, providing uninterrupted zero-velocity updates while stationary</li>
   <li><strong>Atomic nav initialisation:</strong> ENU reference origin and nav state are set from the same quality-checked GNSS fix (HDOP &le; 2.5, &ge;2 valid fixes), with HDOP-scaled initial covariance</li>
-  <li><strong>Speed-dependent heading R:</strong> Heading measurement noise &sigma; = max(0.5&deg;, 5&deg;/speed) adapts to TAU1204 COG quality at different speeds</li>
+  <li><strong>Speed-dependent heading R:</strong> Heading measurement noise &sigma; = max(0.3&deg;, 3&deg;/speed) adapts to TAU1204 COG quality at different speeds</li>
+  <li><strong>GNSS sawtooth smoother:</strong> Velocity-aided position filter blends each raw fix with a velocity-predicted position (&alpha; = 0.3) to remove the 1 Hz PVT epoch jitter sawtooth artefact; resets on large jumps (&gt;5 m) or gaps (&gt;3 s)</li>
   <li><strong>Two-tier velocity decay:</strong> Gentle decay (0.98) below 0.5 m/s, aggressive decay (0.90) below 0.15 m/s, for smooth stop behaviour without GNSS</li>
 </ul>
 
@@ -187,13 +188,16 @@
 <h3>2.5 GNSS Measurement Noise</h3>
 <table>
 <tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
-<tr><td><code>R_GNSS_POS_VAR</code></td><td>2.0 m&sup2;</td><td>Base position variance (TAU1204 CEP&lt;1m + vehicle margin), &times;HDOP&sup2;</td></tr>
-<tr><td><code>RV_VEL_E, RV_VEL_N</code></td><td>0.04 m&sup2;/s&sup2;</td><td>Horizontal velocity variance (0.20 m/s)&sup2; &mdash; TAU1204 dual-band gives cleaner COG</td></tr>
+<tr><td><code>R_GNSS_POS_VAR</code></td><td>1.0 m&sup2;</td><td>Base position variance (TAU1204 CEP&lt;1m, doubled trust), &times;HDOP&sup2;</td></tr>
+<tr><td><code>RV_VEL_E, RV_VEL_N</code></td><td>0.02 m&sup2;/s&sup2;</td><td>Horizontal velocity variance (0.14 m/s)&sup2; &mdash; TAU1204 dual-band velocity accuracy ~0.1 m/s</td></tr>
 <tr><td><code>RV_VEL_U</code></td><td>0.36 m&sup2;/s&sup2;</td><td>Vertical velocity variance (0.60 m/s)&sup2;</td></tr>
 <tr><td><code>R_NHC_VY</code></td><td>0.015</td><td>NHC lateral velocity noise (m/s)&sup2; &mdash; slightly relaxed for turn robustness</td></tr>
 <tr><td><code>R_NHC_VZ</code></td><td>0.04</td><td>NHC vertical velocity noise (m/s)&sup2;</td></tr>
 <tr><td><code>R_ZUPT_V</code></td><td>0.0004</td><td>ZUPT velocity noise (m/s)&sup2;</td></tr>
 <tr><td><code>CHI2_3DOF_GATE</code></td><td>16.0</td><td>NIS gate threshold (&chi;&sup2;(3) 99.9% = 16.27 &mdash; rejects multipath outliers)</td></tr>
+<tr><td><code>GNSS_SMOOTH_ALPHA</code></td><td>0.3</td><td>Sawtooth smoother blend weight for raw fix (0 = pure prediction, 1 = raw only)</td></tr>
+<tr><td><code>GNSS_SMOOTH_MAX_DT</code></td><td>3.0 s</td><td>Smoother resets if gap between fixes exceeds this</td></tr>
+<tr><td><code>GNSS_SMOOTH_MAX_JUMP</code></td><td>5.0 m</td><td>Smoother resets if raw-vs-predicted divergence exceeds this</td></tr>
 </table>
 
 <h3>2.6 IMU Noise Figures (ISM330)</h3>
@@ -587,7 +591,7 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
 
 <h4><code>ins15_update_heading()</code> &mdash; Line 1304</h4>
 <div class="sig"><code>static void ins15_update_heading(ins15_t *S, float z_yaw, float R_hdg)</code></div>
-<p>Scalar heading update through the EKF. The measurement is the GNSS course-over-ground (converted to ENU yaw). The observation matrix H has a single nonzero element: H[8] = 1.0 (maps &delta;&theta;<sub>z</sub>). Uses an optimized scalar Kalman update with Joseph-form covariance. Measurement noise is speed-dependent: &sigma; = max(0.5&deg;, 5&deg;/speed), giving a smooth transition from ~5&deg; at low speed to 0.5&deg; at 10+ m/s (tuned for TAU1204 dual-band COG accuracy, approximately 2&times; tighter than single-band L1).</p>
+<p>Scalar heading update through the EKF. The measurement is the GNSS course-over-ground (converted to ENU yaw). The observation matrix H has a single nonzero element: H[8] = 1.0 (maps &delta;&theta;<sub>z</sub>). Uses an optimized scalar Kalman update with Joseph-form covariance. Measurement noise is speed-dependent: &sigma; = max(0.3&deg;, 3&deg;/speed), giving a smooth transition from ~3&deg; at low speed to 0.3&deg; at 10+ m/s (tuned for TAU1204 dual-band COG accuracy, high trust in dual-band velocity).</p>
 
 
 <!-- ==================== SECTION 12 ==================== -->
@@ -625,6 +629,7 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
 <tr><td>ZUPT / Anchor</td><td><code>zupt_count</code>, <code>anchor_p</code>, <code>anchor_set</code>, <code>sustained_still</code></td><td>Consecutive stillness counter and stationary position anchor</td></tr>
 <tr><td>Diagnostics</td><td><code>last_nis_pos</code>, <code>last_nis_vel</code>, <code>predict_p</code></td><td>Latest NIS values and predict-only position snapshot for logging</td></tr>
 <tr><td>GNSS Spike Filter</td><td><code>gnss_prev_speed_mps</code>, <code>gnss_prev_speed_time</code>, <code>gnss_speed_rejected</code></td><td>Speed spike detection (absolute cap + rate-of-change filter)</td></tr>
+<tr><td>GNSS Sawtooth Smoother</td><td><code>gnss_smooth_valid</code>, <code>gnss_smooth_enu</code>, <code>gnss_smooth_vel</code>, <code>gnss_smooth_time</code></td><td>Velocity-aided position filter removing 1 Hz PVT epoch jitter</td></tr>
 <tr><td>Logging</td><td><code>logf</code>, <code>dbglog</code>, filenames, <code>last_log_s</code></td><td>CSV and debug log file handles</td></tr>
 <tr><td>Calibration</td><td><code>imu_cal_in_progress</code>, <code>imu_cal_done</code>, <code>boot_acc_mean</code></td><td>Power-on calibration state</td></tr>
 <tr><td>Threading</td><td><code>mtx</code>, <code>cv</code>, <code>running</code></td><td>Mutex, condition variable, and stop flag</td></tr>
@@ -794,14 +799,15 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
 <h3>Phase 9: GNSS Fusion (lines 1902&ndash;2016)</h3>
 <p>When a new GNSS fix is available:</p>
 <ol>
-  <li><strong>Position conversion:</strong> LLA &rarr; ECEF &rarr; ENU</li>
-  <li><strong>Measurement noise:</strong> R<sub>pos</sub> = R_GNSS_POS_VAR &times; HDOP&sup2;</li>
+  <li><strong>Position conversion:</strong> LLA &rarr; ECEF &rarr; ENU (raw fix)</li>
+  <li><strong>Sawtooth smoother:</strong> Blend raw ENU with velocity-predicted position: smoothed = &alpha;&times;raw + (1&minus;&alpha;)&times;(prev + vel&times;dt), &alpha; = 0.3. Resets on jumps &gt;5 m or gaps &gt;3 s. Eliminates 1 Hz PVT epoch jitter.</li>
+  <li><strong>Measurement noise:</strong> R<sub>pos</sub> = R_GNSS_POS_VAR &times; HDOP&sup2; (base = 1.0 m&sup2;)</li>
   <li><strong>Reacquisition check:</strong> If outage &gt; 5s, enter reacq mode (inflate R &times;100, relax gate to 200)</li>
-  <li><strong>Snap-to-GNSS:</strong> If outage &gt; 15s AND innovation &gt; 120m AND HDOP &le; 2.5, force position to GNSS and inflate P</li>
+  <li><strong>Snap-to-GNSS:</strong> If outage &gt; 15s AND innovation &gt; 120m AND HDOP &le; 2.5, force position to GNSS, inflate P, and reset smoother</li>
   <li><strong>NIS gating:</strong> Compute NIS (read-only), accept position update only if NIS &lt; 16.0 (&chi;&sup2;(3) 99.9%)</li>
   <li><strong>Position update:</strong> <code>ins15_update_gnss_pos()</code></li>
   <li><strong>Velocity update:</strong> If GNSS velocity valid, inflate noise at low speed (&lt;1 m/s &times;10), NIS gate, then <code>ins15_update_gnss_vel()</code></li>
-  <li><strong>Heading update:</strong> If speed &gt; 1 m/s and HDOP &le; 3, apply scalar yaw update via <code>ins15_update_heading()</code> with speed-dependent R: &sigma; = max(0.5&deg;, 5&deg;/speed)</li>
+  <li><strong>Heading update:</strong> If speed &gt; 1 m/s and HDOP &le; 3, apply scalar yaw update via <code>ins15_update_heading()</code> with speed-dependent R: &sigma; = max(0.3&deg;, 3&deg;/speed)</li>
 </ol>
 
 <h3>Phase 10: Output &amp; Logging (lines 2030&ndash;2098)</h3>

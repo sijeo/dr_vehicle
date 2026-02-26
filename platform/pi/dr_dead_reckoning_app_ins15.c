@@ -138,6 +138,13 @@
 #define MAX_GNSS_SPEED_MPS  55.0f    // ~200 km/h absolute cap
 #define MAX_GNSS_ACCEL_MPS2  8.0f    // max speed change per second (~0.8g between 1 Hz fixes)
 
+// GNSS sawtooth smoother (velocity-aided position filter)
+// Removes the saw-tooth caused by 1 Hz PVT epoch jitter.
+// smoothed = alpha*raw + (1-alpha)*(prev_smoothed + vel*dt)
+#define GNSS_SMOOTH_ALPHA   0.3f   // blend weight for raw fix (0=pure prediction, 1=raw only)
+#define GNSS_SMOOTH_MAX_DT  3.0f   // reset smoother if gap exceeds this (seconds)
+#define GNSS_SMOOTH_MAX_JUMP 5.0f  // reset smoother if raw-vs-predicted exceeds this (metres)
+
 // Logging
 #define LOG_DIR             "/home/sijeo/nav_logs"
 
@@ -1468,6 +1475,12 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
     // Predict-only position snapshot (for diagnostic logging)
     vec3f predict_p;            // position right after ins15_predict(), before updates
 
+    // GNSS sawtooth smoother state (velocity-aided position filter)
+    bool  gnss_smooth_valid;    // true after first smoothed fix
+    vec3f gnss_smooth_enu;      // previous smoothed ENU position
+    vec3f gnss_smooth_vel;      // previous GNSS velocity used for prediction
+    double gnss_smooth_time;    // timestamp of previous smoothed fix
+
     // Calibration on Power On
     bool imu_cal_in_progress;
     bool imu_cal_done;
@@ -2017,9 +2030,49 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
             ecef_t E = lla2ecef(L);
             double enu_d[3];
             ecef2enu(E, C->enu_ref_lla, C->enu_ref_ecef, enu_d);
-            vec3f zpos = v3((float)enu_d[0], (float)enu_d[1], (float)enu_d[2]);
+            vec3f zpos_raw = v3((float)enu_d[0], (float)enu_d[1], (float)enu_d[2]);
+
+            // --- GNSS sawtooth smoother ---
+            // Blends raw fix with velocity-predicted position to remove
+            // 1 Hz PVT epoch jitter (sawtooth artefact).
+            vec3f zpos;
+            double tnow_gnss = C->last_gnss_meas_s;
+            if (C->gnss_smooth_valid) {
+                float dt_s = (float)(tnow_gnss - C->gnss_smooth_time);
+                if (dt_s > 0.0f && dt_s < GNSS_SMOOTH_MAX_DT) {
+                    // Predict from previous smoothed position using GNSS velocity
+                    vec3f predicted = v3_add(C->gnss_smooth_enu,
+                                             v3_scale(C->gnss_smooth_vel, dt_s));
+                    // Check jump: if raw deviates too far from predicted, reset
+                    float jump = v3_norm(v3_sub(zpos_raw, predicted));
+                    if (jump < GNSS_SMOOTH_MAX_JUMP) {
+                        // Blend: alpha*raw + (1-alpha)*predicted
+                        zpos = v3_add(v3_scale(zpos_raw, GNSS_SMOOTH_ALPHA),
+                                      v3_scale(predicted, 1.0f - GNSS_SMOOTH_ALPHA));
+                    } else {
+                        // Large jump — trust raw (possible real manoeuvre or reacq)
+                        zpos = zpos_raw;
+                        dbg_printf(C, "GNSS_SMOOTH RESET jump=%.2f m", jump);
+                    }
+                } else {
+                    // Gap too long — reset
+                    zpos = zpos_raw;
+                    dbg_printf(C, "GNSS_SMOOTH RESET dt=%.2f s", dt_s);
+                }
+            } else {
+                // First fix — no prediction available
+                zpos = zpos_raw;
+            }
+            // Update smoother state
+            C->gnss_smooth_enu  = zpos;
+            C->gnss_smooth_vel  = C->gnss_vel_valid ? C->gnss_vel_enu : v3(0,0,0);
+            C->gnss_smooth_time = tnow_gnss;
+            C->gnss_smooth_valid = true;
+
             C->gnss_enu_last = zpos;
             C->gnss_enu_last_valid = true;
+            dbg_printf(C, "GNSS_SMOOTH raw=(%.3f,%.3f,%.3f) smoothed=(%.3f,%.3f,%.3f)",
+                       zpos_raw.x, zpos_raw.y, zpos_raw.z, zpos.x, zpos.y, zpos.z);
             dbg_printf(C, "GNSS_FUSE ENU_REF lat=%.9f lon=%.9f alt=%.3f meas_age=%.3f present=%d",
             C->enu_ref_lla.lat * (180.0/M_PI),
             C->enu_ref_lla.lon * (180.0/M_PI),
@@ -2069,6 +2122,10 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                 C->snap_applied = true;
                 C->last_nis_pos = 0.0f;
                 C->reacq_left = 0; // done
+                // Reset smoother so it re-seeds from snapped position
+                C->gnss_smooth_enu = zpos;
+                C->gnss_smooth_time = tnow_gnss;
+                C->gnss_smooth_vel = C->gnss_vel_valid ? C->gnss_vel_enu : v3(0,0,0);
             } else {
                 // Compute NIS first (read-only) then gate before applying update
                 float nis_pos = 0.0f;
