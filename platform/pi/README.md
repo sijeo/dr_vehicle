@@ -290,6 +290,30 @@ doxygen
 
 
 '''code
+sudo nano /etc/systemd/system/dr_stack.service
+
+Paste this code into the service
+[Unit]
+Description=Dead Reckoning Stack Loader(MPU6050 + NEO6M + EKF )
+After=multi-user.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/sijeo/dr_vehicle
+ExecStart=/home/sijeo/dr_vehicle/load_dr_stack.sh
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dr_stack
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target
+
+
 sudo systemctl stop dr_stack.service
 sudo systemctl disable dr_stack.service
 sudo journalctl -u dr_stack.service -f
@@ -435,3 +459,6 @@ Best validated with real outage test data on the ISM330.
 3. **Stillness thresholds** (lines 93–99) — tighten for better ZUPT/ZARU
 4. **Initial P₀ bias terms** (lines 879–880) — reflect tighter bias bounds
 5. **Q inflation tiers** (lines 110–113) — optional, tune empirically
+
+** 'In the config.txt of the /boot/firmare/ directory of raspberry pi, we need to make sure the dtoverlay=neo6m-serdev, dtoverlay=mpu6050-rpi3-b-overlay, enable-uart=1, dtoverlay=disable-ble is added '
+
