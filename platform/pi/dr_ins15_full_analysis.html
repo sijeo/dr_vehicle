@@ -129,13 +129,13 @@
   <li><strong>Power-on calibration:</strong> 10-second stillness calibration at each boot</li>
   <li><strong>Online yaw-rate learning:</strong> Learns gyro Z-axis scale from GNSS heading during turns (scale clamp 0.90&ndash;1.10)</li>
   <li><strong>GNSS speed spike filter:</strong> Rejects fixes with speed &gt;55 m/s or acceleration &gt;8 m/s&sup2; to protect the EKF from multi-path or glitches</li>
-  <li><strong>IMU acceleration clamp:</strong> Caps ENU acceleration at &plusmn;15 m/s&sup2; after gravity removal, preventing prediction blow-ups from sensor spikes</li>
+  <li><strong>IMU acceleration clamp:</strong> Caps ENU acceleration at &plusmn;6 m/s&sup2; after gravity removal, preventing prediction blow-ups from sensor spikes</li>
   <li><strong>Stationary position anchor:</strong> When ZUPT is active, an EKF-consistent position measurement (R = 0.25 m&sup2;) locks the reported position to suppress drift</li>
   <li><strong>Continuous ZUPT:</strong> Stillness counter stays saturated rather than resetting, providing uninterrupted zero-velocity updates while stationary</li>
   <li><strong>Atomic nav initialisation:</strong> ENU reference origin and nav state are set from the same quality-checked GNSS fix (HDOP &le; 2.5, &ge;2 valid fixes), with HDOP-scaled initial covariance</li>
   <li><strong>Speed-dependent heading R:</strong> Heading measurement noise &sigma; = max(0.3&deg;, 3&deg;/speed) adapts to TAU1204 COG quality at different speeds</li>
-  <li><strong>GNSS sawtooth smoother:</strong> Velocity-aided position filter blends each raw fix with a velocity-predicted position (&alpha; = 0.3) to remove the 1 Hz PVT epoch jitter sawtooth artefact; resets on large jumps (&gt;5 m) or gaps (&gt;3 s)</li>
-  <li><strong>Two-tier velocity decay:</strong> Gentle decay (0.98) below 0.5 m/s, aggressive decay (0.90) below 0.15 m/s, for smooth stop behaviour without GNSS</li>
+  <li><strong>GNSS alpha-beta tracker:</strong> 2nd-order position-velocity filter (&alpha; = 0.4, &beta; = 0.1) corrects the 1 Hz PVT sawtooth by tracking both position and velocity; eliminates N-sample oscillation; resets on large residuals (&gt;8 m) or gaps (&gt;3 s)</li>
+  <li><strong>Velocity management:</strong> Hard cap at 55 m/s; outage-proportional decay (0.995&rarr;0.98&rarr;0.95) prevents runaway drift; near-zero two-tier decay (0.98/0.90) for smooth stop behaviour</li>
 </ul>
 
 
@@ -179,10 +179,10 @@
 <h3>2.4 Outage Q-Inflation Tiers</h3>
 <table>
 <tr><th>Outage Duration</th><th>Multiplier</th><th>Effect</th></tr>
-<tr><td>&lt; 2 s (TIER_A)</td><td>QSCL_A = 1.5</td><td>Mild inflation</td></tr>
-<tr><td>&lt; 10 s (TIER_B)</td><td>QSCL_B = 3.0</td><td>Moderate inflation</td></tr>
-<tr><td>&lt; 60 s (TIER_C)</td><td>QSCL_C = 6.0</td><td>High inflation</td></tr>
-<tr><td>&ge; 60 s</td><td>QSCL_D = 15.0</td><td>Maximum inflation</td></tr>
+<tr><td>&lt; 2 s (TIER_A)</td><td>QSCL_A = 1.2</td><td>Barely inflate (IMU reliable short-term)</td></tr>
+<tr><td>&lt; 10 s (TIER_B)</td><td>QSCL_B = 2.0</td><td>Moderate inflation</td></tr>
+<tr><td>&lt; 60 s (TIER_C)</td><td>QSCL_C = 3.0</td><td>Cap growth (prevents covariance blow-up)</td></tr>
+<tr><td>&ge; 60 s</td><td>QSCL_D = 4.0</td><td>Ceiling (was 15.0 &mdash; caused position splatter)</td></tr>
 </table>
 
 <h3>2.5 GNSS Measurement Noise</h3>
@@ -195,9 +195,10 @@
 <tr><td><code>R_NHC_VZ</code></td><td>0.04</td><td>NHC vertical velocity noise (m/s)&sup2;</td></tr>
 <tr><td><code>R_ZUPT_V</code></td><td>0.0004</td><td>ZUPT velocity noise (m/s)&sup2;</td></tr>
 <tr><td><code>CHI2_3DOF_GATE</code></td><td>16.0</td><td>NIS gate threshold (&chi;&sup2;(3) 99.9% = 16.27 &mdash; rejects multipath outliers)</td></tr>
-<tr><td><code>GNSS_SMOOTH_ALPHA</code></td><td>0.3</td><td>Sawtooth smoother blend weight for raw fix (0 = pure prediction, 1 = raw only)</td></tr>
-<tr><td><code>GNSS_SMOOTH_MAX_DT</code></td><td>3.0 s</td><td>Smoother resets if gap between fixes exceeds this</td></tr>
-<tr><td><code>GNSS_SMOOTH_MAX_JUMP</code></td><td>5.0 m</td><td>Smoother resets if raw-vs-predicted divergence exceeds this</td></tr>
+<tr><td><code>AB_ALPHA</code></td><td>0.4</td><td>Alpha-beta tracker position correction gain (0 = pure predict, 1 = raw)</td></tr>
+<tr><td><code>AB_BETA</code></td><td>0.1</td><td>Alpha-beta tracker velocity correction gain (smooths GNSS velocity)</td></tr>
+<tr><td><code>AB_MAX_DT</code></td><td>3.0 s</td><td>Tracker resets if gap between fixes exceeds this</td></tr>
+<tr><td><code>AB_MAX_RESIDUAL</code></td><td>8.0 m</td><td>Tracker resets if residual exceeds this (real manoeuvre or reacq)</td></tr>
 </table>
 
 <h3>2.6 IMU Noise Figures (ISM330)</h3>
@@ -205,8 +206,8 @@
 <tr><th>Constant</th><th>Value</th><th>Description</th></tr>
 <tr><td><code>IMU_SIGMA_ACCEL</code></td><td>0.004 m/s&sup2;/&radic;Hz</td><td>~5x ISM330 datasheet (80 &mu;g/&radic;Hz)</td></tr>
 <tr><td><code>IMU_SIGMA_GYRO</code></td><td>0.00035 rad/s/&radic;Hz</td><td>~5x ISM330 datasheet (3.8 mdps/&radic;Hz)</td></tr>
-<tr><td><code>IMU_SIGMA_ACCEL_BIAS</code></td><td>0.0005 m/s&sup2;/&radic;Hz</td><td>Accel bias random walk &mdash; tightened to prevent vertical wander</td></tr>
-<tr><td><code>IMU_SIGMA_GYRO_BIAS</code></td><td>0.0001 rad/s/&radic;Hz</td><td>Gyro bias random walk &mdash; tightened to stabilize heading (~7&times; ISM330 datasheet)</td></tr>
+<tr><td><code>IMU_SIGMA_ACCEL_BIAS</code></td><td>0.002 m/s&sup2;/&radic;Hz</td><td>Accel bias random walk &mdash; loosened so filter can track bias changes</td></tr>
+<tr><td><code>IMU_SIGMA_GYRO_BIAS</code></td><td>0.0005 rad/s/&radic;Hz</td><td>Gyro bias random walk &mdash; loosened so heading converges with GNSS</td></tr>
 <tr><td><code>GYRO_LSB_PER_DPS</code></td><td>57.143</td><td>ISM330 &plusmn;500 dps full-scale sensitivity</td></tr>
 </table>
 
@@ -629,7 +630,7 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
 <tr><td>ZUPT / Anchor</td><td><code>zupt_count</code>, <code>anchor_p</code>, <code>anchor_set</code>, <code>sustained_still</code></td><td>Consecutive stillness counter and stationary position anchor</td></tr>
 <tr><td>Diagnostics</td><td><code>last_nis_pos</code>, <code>last_nis_vel</code>, <code>predict_p</code></td><td>Latest NIS values and predict-only position snapshot for logging</td></tr>
 <tr><td>GNSS Spike Filter</td><td><code>gnss_prev_speed_mps</code>, <code>gnss_prev_speed_time</code>, <code>gnss_speed_rejected</code></td><td>Speed spike detection (absolute cap + rate-of-change filter)</td></tr>
-<tr><td>GNSS Sawtooth Smoother</td><td><code>gnss_smooth_valid</code>, <code>gnss_smooth_enu</code>, <code>gnss_smooth_vel</code>, <code>gnss_smooth_time</code></td><td>Velocity-aided position filter removing 1 Hz PVT epoch jitter</td></tr>
+<tr><td>GNSS Alpha-Beta Tracker</td><td><code>ab_valid</code>, <code>ab_pos</code>, <code>ab_vel</code>, <code>ab_time</code></td><td>2nd-order position-velocity tracker removing GNSS sawtooth</td></tr>
 <tr><td>Logging</td><td><code>logf</code>, <code>dbglog</code>, filenames, <code>last_log_s</code></td><td>CSV and debug log file handles</td></tr>
 <tr><td>Calibration</td><td><code>imu_cal_in_progress</code>, <code>imu_cal_done</code>, <code>boot_acc_mean</code></td><td>Power-on calibration state</td></tr>
 <tr><td>Threading</td><td><code>mtx</code>, <code>cv</code>, <code>running</code></td><td>Mutex, condition variable, and stop flag</td></tr>
@@ -784,7 +785,7 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
 <ul>
   <li>Calls <code>ins15_predict()</code> with calibrated accel, gyro, dt, and qscale</li>
   <li>Updates nominal state (p, v, q) and propagates error-state covariance P</li>
-  <li><strong>ENU acceleration clamp:</strong> After gravity removal, clamps a<sub>ENU</sub> to &plusmn;15 m/s&sup2; (~1.5g) to reject IMU spikes, calibration errors, and attitude-induced gravity leakage</li>
+  <li><strong>ENU acceleration clamp:</strong> After gravity removal, clamps a<sub>ENU</sub> to &plusmn;6 m/s&sup2; (~0.6g) to reject IMU spikes, calibration errors, and attitude-induced gravity leakage</li>
   <li>Snapshots predict-only position (<code>predict_p</code>) for diagnostic logging</li>
 </ul>
 
@@ -793,14 +794,14 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
   <li><strong>NHC:</strong> Applied every step if heading has been observed (constrains lateral/vertical body velocity to zero)</li>
   <li><strong>ZUPT:</strong> After 5 consecutive still samples, constrains velocity to zero and applies ZARU (locks gyro bias). Counter stays saturated (fires every step while still, not once per 5 samples)</li>
   <li><strong>Stationary position anchor:</strong> After sustained stillness (~200ms), captures anchor position and applies tight EKF position update (R=0.25 m&sup2;) each step to prevent random walk drift</li>
-  <li><strong>Velocity decay:</strong> When speed &lt; 0.10 m/s, applies two-tier damping: 0.90x near zero (&lt;0.02 m/s), 0.98x otherwise</li>
+  <li><strong>Velocity management:</strong> Hard cap at 55 m/s; outage-proportional decay (0.995&times; at 3&ndash;10 s, 0.98&times; at 10&ndash;30 s, 0.95&times; at &gt;30 s); near-zero two-tier damping (0.90&times;/0.98&times;) when |v| &lt; 0.1 m/s</li>
 </ul>
 
 <h3>Phase 9: GNSS Fusion (lines 1902&ndash;2016)</h3>
 <p>When a new GNSS fix is available:</p>
 <ol>
   <li><strong>Position conversion:</strong> LLA &rarr; ECEF &rarr; ENU (raw fix)</li>
-  <li><strong>Sawtooth smoother:</strong> Blend raw ENU with velocity-predicted position: smoothed = &alpha;&times;raw + (1&minus;&alpha;)&times;(prev + vel&times;dt), &alpha; = 0.3. Resets on jumps &gt;5 m or gaps &gt;3 s. Eliminates 1 Hz PVT epoch jitter.</li>
+  <li><strong>Alpha-beta sawtooth correction:</strong> 2nd-order tracker predicts position from its own smoothed velocity, computes residual against raw fix, then corrects both position (&alpha; = 0.4) and velocity (&beta;/dt = 0.1/dt). Resets on residual &gt;8 m or gap &gt;3 s.</li>
   <li><strong>Measurement noise:</strong> R<sub>pos</sub> = R_GNSS_POS_VAR &times; HDOP&sup2; (base = 1.0 m&sup2;)</li>
   <li><strong>Reacquisition check:</strong> If outage &gt; 5s, enter reacq mode (inflate R &times;100, relax gate to 200)</li>
   <li><strong>Snap-to-GNSS:</strong> If outage &gt; 15s AND innovation &gt; 120m AND HDOP &le; 2.5, force position to GNSS, inflate P, and reset smoother</li>
@@ -904,7 +905,7 @@ fusion_thread loop (every ~10ms):
   2. Predict:    ins15_predict(acc, gyro, dt, qscale)
                  &rarr; Attitude integration (quaternion)
                  &rarr; Velocity/position integration (ENU)
-                 &rarr; ENU acceleration clamp (&plusmn;15 m/s&sup2;)
+                 &rarr; ENU acceleration clamp (&plusmn;6 m/s&sup2;)
                  &rarr; Covariance propagation (P = &Phi;P&Phi;<sup>T</sup> + Q)
                  &rarr; Snapshot predict_p for diagnostics
 
@@ -912,7 +913,7 @@ fusion_thread loop (every ~10ms):
                  ins15_update_zupt()   (continuous while still, not one-shot)
                  ins15_update_zaru()   (when still, locks gyro bias)
                  position_anchor()     (after sustained stillness, R=0.25m&sup2;)
-                 velocity_decay()      (two-tier: 0.90x/0.98x when |v| &lt; 0.1 m/s)
+                 velocity_cap(55 m/s) + outage_decay(0.995/0.98/0.95) + near-zero decay(0.90/0.98)
 
   4. GNSS Fuse:  (when new fix arrives, ~1 Hz)
                  LLA &rarr; ECEF &rarr; ENU

@@ -105,14 +105,14 @@
 #define VEL_DECAY           0.98f
 #define VEL_EPS             1e-3f
 
-// Outage-tiered Q inflation
+// Outage-tiered Q inflation (conservative: prevent covariance blow-up)
 #define TIER_A  2.0f
 #define TIER_B  10.0f
 #define TIER_C  60.0f
-#define QSCL_A  1.5f
-#define QSCL_B  3.0f
-#define QSCL_C  6.0f
-#define QSCL_D  15.0f
+#define QSCL_A  1.2f       // first 2s: barely inflate (IMU still reliable short-term)
+#define QSCL_B  2.0f       // 2-10s: moderate inflation
+#define QSCL_C  3.0f       // 10-60s: cap growth (was 6.0 — caused position blow-up)
+#define QSCL_D  4.0f       // >60s: ceiling (was 15.0 — made covariance explode)
 
 // GNSS gating and fade-in
 #define CHI2_3DOF_GATE      16.0f            // chi2(3) 99.9% = 16.27 — rejects multipath outliers
@@ -134,16 +134,21 @@
 #define YAW_FUSION_ALPHA        (0.05f)      // fraction per GNSS update
 
 // Vehicle dynamics sanity limits (reject physically impossible values)
-#define MAX_ACCEL_ENU_MPS2  15.0f    // max believable acceleration for ground vehicle (~1.5g)
+#define MAX_ACCEL_ENU_MPS2  6.0f     // max believable acceleration for ground vehicle (~0.6g)
 #define MAX_GNSS_SPEED_MPS  55.0f    // ~200 km/h absolute cap
 #define MAX_GNSS_ACCEL_MPS2  8.0f    // max speed change per second (~0.8g between 1 Hz fixes)
 
-// GNSS sawtooth smoother (velocity-aided position filter)
-// Removes the saw-tooth caused by 1 Hz PVT epoch jitter.
-// smoothed = alpha*raw + (1-alpha)*(prev_smoothed + vel*dt)
-#define GNSS_SMOOTH_ALPHA   0.3f   // blend weight for raw fix (0=pure prediction, 1=raw only)
-#define GNSS_SMOOTH_MAX_DT  3.0f   // reset smoother if gap exceeds this (seconds)
-#define GNSS_SMOOTH_MAX_JUMP 5.0f  // reset smoother if raw-vs-predicted exceeds this (metres)
+// GNSS sawtooth correction: alpha-beta position-velocity tracker
+// 2nd-order filter that tracks both position and velocity, removing
+// the 1 Hz PVT sawtooth without creating N-sample oscillations.
+//   predicted_pos = prev_pos + prev_vel * dt
+//   residual      = raw_fix  - predicted_pos
+//   smoothed_pos  = predicted_pos + alpha * residual
+//   smoothed_vel  = prev_vel      + (beta/dt) * residual
+#define AB_ALPHA            0.4f   // position correction gain (0=pure predict, 1=raw)
+#define AB_BETA             0.1f   // velocity correction gain (keeps velocity smooth)
+#define AB_MAX_DT           3.0f   // reset tracker if gap exceeds this (seconds)
+#define AB_MAX_RESIDUAL     8.0f   // reset tracker if residual exceeds this (metres)
 
 // Logging
 #define LOG_DIR             "/home/sijeo/nav_logs"
@@ -189,8 +194,8 @@
  */
 #define IMU_SIGMA_ACCEL         (0.004f)    // m/s²/√Hz  (~5x ISM330 datasheet 80µg/√Hz)
 #define IMU_SIGMA_GYRO          (0.00035f)  // rad/s/√Hz (~5x ISM330 datasheet 3.8mdps/√Hz)
-#define IMU_SIGMA_ACCEL_BIAS    (0.0005f)   // accel bias random walk (m/s²/√Hz) — tightened to prevent vertical wander
-#define IMU_SIGMA_GYRO_BIAS     (0.0001f)   // gyro bias random walk (rad/s/√Hz) — tightened to stabilize heading
+#define IMU_SIGMA_ACCEL_BIAS    (0.002f)    // accel bias random walk (m/s²/√Hz) — loosened so filter can track bias changes
+#define IMU_SIGMA_GYRO_BIAS     (0.0005f)   // gyro bias random walk (rad/s/√Hz) — loosened so heading can converge with GNSS
 #define IMU_COVAR_POS   2.0f
 #define IMU_COVAR_VEL   1.0f           // m/s
 #define IMU_COVAR_ATT   (2.0f*DEG2RAD) // rad
@@ -1475,11 +1480,11 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
     // Predict-only position snapshot (for diagnostic logging)
     vec3f predict_p;            // position right after ins15_predict(), before updates
 
-    // GNSS sawtooth smoother state (velocity-aided position filter)
-    bool  gnss_smooth_valid;    // true after first smoothed fix
-    vec3f gnss_smooth_enu;      // previous smoothed ENU position
-    vec3f gnss_smooth_vel;      // previous GNSS velocity used for prediction
-    double gnss_smooth_time;    // timestamp of previous smoothed fix
+    // GNSS alpha-beta tracker state (sawtooth correction)
+    bool  ab_valid;             // true after first fix initialises the tracker
+    vec3f ab_pos;               // tracker's smoothed position (ENU)
+    vec3f ab_vel;               // tracker's smoothed velocity (ENU, m/s)
+    double ab_time;             // timestamp of last tracker update
 
     // Calibration on Power On
     bool imu_cal_in_progress;
@@ -2013,11 +2018,26 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
             C->anchor_set = false;
         }
 
-        // Velocity decay when *almost* stopped (helps fight tiny residuals)
+        // Velocity management: decay + cap
         float vnorm = v3_norm(C->ins.v);
-        const float VEL_DAMP_THR = 0.10f;
-        if (vnorm < VEL_DAMP_THR) {
-            float decay = (vnorm < 0.02f) ? 0.90f : VEL_DECAY; // stronger near zero
+
+        // Hard velocity cap: no road vehicle exceeds ~55 m/s (~200 km/h)
+        // During GNSS outage, bad IMU integration can push velocity to absurd values
+        if (vnorm > MAX_GNSS_SPEED_MPS) {
+            C->ins.v = v3_scale(C->ins.v, MAX_GNSS_SPEED_MPS / vnorm);
+            vnorm = MAX_GNSS_SPEED_MPS;
+        }
+
+        // Velocity decay: tiered by speed AND outage duration
+        if (!C->gnss_present && C->outage_s > 3.0) {
+            // During extended outage, gently decay velocity to prevent runaway drift
+            // Decay strengthens with outage length: 0.995 at 3s → 0.98 at 10s → 0.95 at 30s+
+            float outage_decay = (C->outage_s < 10.0) ? 0.995f :
+                                 (C->outage_s < 30.0) ? 0.98f  : 0.95f;
+            C->ins.v = v3_scale(C->ins.v, outage_decay);
+        } else if (vnorm < 0.10f) {
+            // Near-stationary: strong decay to suppress residual creep
+            float decay = (vnorm < 0.02f) ? 0.90f : VEL_DECAY;
             C->ins.v = v3_scale(C->ins.v, decay);
         }
 
@@ -2032,47 +2052,52 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
             ecef2enu(E, C->enu_ref_lla, C->enu_ref_ecef, enu_d);
             vec3f zpos_raw = v3((float)enu_d[0], (float)enu_d[1], (float)enu_d[2]);
 
-            // --- GNSS sawtooth smoother ---
-            // Blends raw fix with velocity-predicted position to remove
-            // 1 Hz PVT epoch jitter (sawtooth artefact).
+            // --- Alpha-beta sawtooth correction ---
+            // 2nd-order tracker: maintains smoothed position AND velocity.
+            // Eliminates N-sample oscillation that a simple 1st-order blend creates.
             vec3f zpos;
             double tnow_gnss = C->last_gnss_meas_s;
-            if (C->gnss_smooth_valid) {
-                float dt_s = (float)(tnow_gnss - C->gnss_smooth_time);
-                if (dt_s > 0.0f && dt_s < GNSS_SMOOTH_MAX_DT) {
-                    // Predict from previous smoothed position using GNSS velocity
-                    vec3f predicted = v3_add(C->gnss_smooth_enu,
-                                             v3_scale(C->gnss_smooth_vel, dt_s));
-                    // Check jump: if raw deviates too far from predicted, reset
-                    float jump = v3_norm(v3_sub(zpos_raw, predicted));
-                    if (jump < GNSS_SMOOTH_MAX_JUMP) {
-                        // Blend: alpha*raw + (1-alpha)*predicted
-                        zpos = v3_add(v3_scale(zpos_raw, GNSS_SMOOTH_ALPHA),
-                                      v3_scale(predicted, 1.0f - GNSS_SMOOTH_ALPHA));
+            if (C->ab_valid) {
+                float dt_s = (float)(tnow_gnss - C->ab_time);
+                if (dt_s > 0.0f && dt_s < AB_MAX_DT) {
+                    // Predict step: extrapolate using tracker's own velocity
+                    vec3f predicted = v3_add(C->ab_pos, v3_scale(C->ab_vel, dt_s));
+                    // Residual: how far raw fix is from prediction
+                    vec3f residual = v3_sub(zpos_raw, predicted);
+                    float res_norm = v3_norm(residual);
+
+                    if (res_norm < AB_MAX_RESIDUAL) {
+                        // Correct step: update position and velocity from residual
+                        zpos       = v3_add(predicted, v3_scale(residual, AB_ALPHA));
+                        C->ab_vel  = v3_add(C->ab_vel, v3_scale(residual, AB_BETA / dt_s));
                     } else {
-                        // Large jump — trust raw (possible real manoeuvre or reacq)
-                        zpos = zpos_raw;
-                        dbg_printf(C, "GNSS_SMOOTH RESET jump=%.2f m", jump);
+                        // Large residual — reset tracker (real manoeuvre, reacq, etc.)
+                        zpos      = zpos_raw;
+                        C->ab_vel = C->gnss_vel_valid ? C->gnss_vel_enu : v3(0,0,0);
+                        dbg_printf(C, "AB_RESET residual=%.2f m", res_norm);
                     }
                 } else {
-                    // Gap too long — reset
-                    zpos = zpos_raw;
-                    dbg_printf(C, "GNSS_SMOOTH RESET dt=%.2f s", dt_s);
+                    // Gap too long — reset tracker
+                    zpos      = zpos_raw;
+                    C->ab_vel = C->gnss_vel_valid ? C->gnss_vel_enu : v3(0,0,0);
+                    dbg_printf(C, "AB_RESET dt=%.2f s", dt_s);
                 }
             } else {
-                // First fix — no prediction available
-                zpos = zpos_raw;
+                // First fix — initialise tracker
+                zpos      = zpos_raw;
+                C->ab_vel = C->gnss_vel_valid ? C->gnss_vel_enu : v3(0,0,0);
             }
-            // Update smoother state
-            C->gnss_smooth_enu  = zpos;
-            C->gnss_smooth_vel  = C->gnss_vel_valid ? C->gnss_vel_enu : v3(0,0,0);
-            C->gnss_smooth_time = tnow_gnss;
-            C->gnss_smooth_valid = true;
+            // Update tracker state
+            C->ab_pos   = zpos;
+            C->ab_time  = tnow_gnss;
+            C->ab_valid = true;
 
             C->gnss_enu_last = zpos;
             C->gnss_enu_last_valid = true;
-            dbg_printf(C, "GNSS_SMOOTH raw=(%.3f,%.3f,%.3f) smoothed=(%.3f,%.3f,%.3f)",
-                       zpos_raw.x, zpos_raw.y, zpos_raw.z, zpos.x, zpos.y, zpos.z);
+            dbg_printf(C, "AB_TRACK raw=(%.3f,%.3f,%.3f) smooth=(%.3f,%.3f,%.3f) res=%.3f",
+                       zpos_raw.x, zpos_raw.y, zpos_raw.z,
+                       zpos.x, zpos.y, zpos.z,
+                       v3_norm(v3_sub(zpos_raw, zpos)));
             dbg_printf(C, "GNSS_FUSE ENU_REF lat=%.9f lon=%.9f alt=%.3f meas_age=%.3f present=%d",
             C->enu_ref_lla.lat * (180.0/M_PI),
             C->enu_ref_lla.lon * (180.0/M_PI),
@@ -2122,10 +2147,10 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                 C->snap_applied = true;
                 C->last_nis_pos = 0.0f;
                 C->reacq_left = 0; // done
-                // Reset smoother so it re-seeds from snapped position
-                C->gnss_smooth_enu = zpos;
-                C->gnss_smooth_time = tnow_gnss;
-                C->gnss_smooth_vel = C->gnss_vel_valid ? C->gnss_vel_enu : v3(0,0,0);
+                // Reset alpha-beta tracker so it re-seeds from snapped position
+                C->ab_pos  = zpos;
+                C->ab_time = tnow_gnss;
+                C->ab_vel  = C->gnss_vel_valid ? C->gnss_vel_enu : v3(0,0,0);
             } else {
                 // Compute NIS first (read-only) then gate before applying update
                 float nis_pos = 0.0f;
