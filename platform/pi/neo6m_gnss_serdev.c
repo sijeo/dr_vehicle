@@ -236,14 +236,59 @@ static bool nmea_latlon_to_e7(const char *val, const char *hem, s32 *out_e7)
     strlcpy(mm_str, val + mm_start, sizeof(mm_str));
 
     deg = strtol_safe(deg_str, 0);
-    milli = strtod_milli(mm_str, 0); /* minutes in milli-units */
 
-    /* Convert ddmm.mmmm to degrees*1e7 */
-    deg_e7 = deg * 10000000L;
-    minutes_deg_milli = (milli + 30) / 60; /* rounded */
-    minutes_e7 = minutes_deg_milli * 10000L;
+    /*
+     * Parse minutes with full precision for lat_e7/lon_e7.
+     *
+     * NMEA minutes field is mm.mmmmmm (up to 6 fractional digits from TAU1204).
+     * We need: degrees * 1e7 = deg*1e7 + (minutes/60)*1e7
+     *
+     * Strategy: parse minutes as integer in units of 1e-7 minutes (i.e. read
+     * up to 7 fractional digits), then divide by 60 to get degrees*1e7.
+     *
+     * Old code used strtod_milli() which only reads 3 fractional digits,
+     * giving 0.001 degree (~111m) resolution — completely inadequate.
+     */
+    {
+        const char *p = mm_str;
+        long mm_whole = 0;        /* integer part of minutes */
+        long mm_frac  = 0;        /* fractional part scaled to 1e7 */
+        int  frac_dig = 0;
 
-    total = deg_e7 + minutes_e7;
+        /* Parse integer part of minutes (the "mm" in mm.mmmmmm) */
+        while (isdigit(*p)) {
+            mm_whole = mm_whole * 10 + (*p - '0');
+            p++;
+        }
+        /* Parse fractional part — read up to 7 digits, pad remainder with zeros */
+        if (*p == '.') {
+            p++;
+            while (isdigit(*p) && frac_dig < 7) {
+                mm_frac = mm_frac * 10 + (*p - '0');
+                frac_dig++;
+                p++;
+            }
+        }
+        /* Pad to exactly 7 digits (scale to 1e-7 minutes) */
+        while (frac_dig < 7) {
+            mm_frac *= 10;
+            frac_dig++;
+        }
+
+        /*
+         * minutes_e7 = mm_whole * 1e7  +  mm_frac   (in units of 1e-7 minutes)
+         * degrees_e7 = minutes_e7 / 60               (in units of 1e-7 degrees)
+         *
+         * Use +30 for rounding before integer division.
+         */
+        {
+            long minutes_e7_raw = mm_whole * 10000000L + mm_frac;
+            long degrees_e7_from_min = (minutes_e7_raw + 30) / 60;
+
+            total = deg * 10000000L + degrees_e7_from_min;
+        }
+    }
+
     *out_e7 = (s32)(sign * total);
     return true;
 }

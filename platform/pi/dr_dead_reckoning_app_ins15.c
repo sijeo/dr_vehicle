@@ -96,10 +96,11 @@
 #define ACC_STILL_TOL       (0.04f*GRAVITY)
 #define GYRO_STILL_TOL_RAD  (1.0f * DEG2RAD)
 
-// ZUPT detection thresholds
-#define ZUPT_ACC_THR        (0.175f)           // | |a|-g | < thr
-#define ZUPT_GYRO_THR       (2.0f * DEG2RAD)
-#define ZUPT_COUNT_REQUIRED 5
+// ZUPT detection thresholds (must accommodate vehicle vibration + IMU noise)
+// Log analysis showed old thresholds (0.175, 2°/s) were never met: ZUPT fired 0/1925 rows.
+#define ZUPT_ACC_THR        (0.6f)             // | |a|-g | < thr  (was 0.175 — too tight for mounted IMU)
+#define ZUPT_GYRO_THR       (5.0f * DEG2RAD)   // per-axis gyro threshold (was 2°/s — below IMU noise floor)
+#define ZUPT_COUNT_REQUIRED 10                  // require 10 consecutive still samples (100ms) for confidence
 
 // Mild velocity decay (helps bound drift when filter is "almost stopped")
 #define VEL_DECAY           0.98f
@@ -153,8 +154,9 @@
 // Logging
 #define LOG_DIR             "/home/sijeo/nav_logs"
 
-// MPU6050 scale (assuming ±500 dps for gyro here; adjust to your config)
-#define GYRO_LSB_PER_DPS    57.143f
+// ISM330 gyro scale: ±500 dps full-scale → 32768/500 = 65.536 LSB/dps
+// (was 57.143 which corresponds to ±573 dps — 14.7% too fast, causing yaw drift)
+#define GYRO_LSB_PER_DPS    65.536f
 
 #define aWGS        6378137.0
 #define fWGS        (1.0/298.257223563)
@@ -199,8 +201,8 @@
 #define IMU_COVAR_POS   2.0f
 #define IMU_COVAR_VEL   1.0f           // m/s
 #define IMU_COVAR_ATT   (2.0f*DEG2RAD) // rad
-#define IMU_COVAR_BA    0.075f         // m/s^2
-#define IMU_COVAR_BG    0.01f          // rad/s  (wider: gives filter room to find correct bias)
+#define IMU_COVAR_BA    0.5f           // m/s^2 (~0.05g 1σ: covers typical ISM330 accel bias residual)
+#define IMU_COVAR_BG    0.15f          // rad/s  (~8.6°/s 1σ: covers boot-cal residual up to ~6°/s)
 
 
 static int cal_led_exported = 0;

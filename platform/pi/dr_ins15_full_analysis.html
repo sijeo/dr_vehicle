@@ -136,6 +136,7 @@
   <li><strong>Speed-dependent heading R:</strong> Heading measurement noise &sigma; = max(0.3&deg;, 3&deg;/speed) adapts to TAU1204 COG quality at different speeds</li>
   <li><strong>GNSS alpha-beta tracker:</strong> 2nd-order position-velocity filter (&alpha; = 0.4, &beta; = 0.1) corrects the 1 Hz PVT sawtooth by tracking both position and velocity; eliminates N-sample oscillation; resets on large residuals (&gt;8 m) or gaps (&gt;3 s)</li>
   <li><strong>Velocity management:</strong> Hard cap at 55 m/s; outage-proportional decay (0.995&rarr;0.98&rarr;0.95) prevents runaway drift; near-zero two-tier decay (0.98/0.90) for smooth stop behaviour</li>
+  <li><strong>GNSS driver precision fix:</strong> Lat/lon NMEA parser upgraded from 3 to 7 fractional digits in the minutes field, eliminating ~11 m quantisation jumps via <code>nmea_latlon_to_e7</code></li>
 </ul>
 
 
@@ -171,9 +172,9 @@
 <tr><td><code>YAW_DEADBAND_RAD</code></td><td>0.01 rad/s</td><td>Gyro-Z deadband to suppress yaw random walk when stationary</td></tr>
 <tr><td><code>ACC_STILL_TOL</code></td><td>0.04g</td><td>Accelerometer tolerance for stillness detection</td></tr>
 <tr><td><code>GYRO_STILL_TOL_RAD</code></td><td>1.0 deg/s</td><td>Gyro tolerance for stillness detection</td></tr>
-<tr><td><code>ZUPT_ACC_THR</code></td><td>0.175 m/s&sup2;</td><td>| |a| - g | threshold for zero-velocity detection</td></tr>
-<tr><td><code>ZUPT_GYRO_THR</code></td><td>2.0 deg/s</td><td>Gyro threshold for zero-velocity detection</td></tr>
-<tr><td><code>ZUPT_COUNT_REQUIRED</code></td><td>5</td><td>Consecutive samples before ZUPT fires</td></tr>
+<tr><td><code>ZUPT_ACC_THR</code></td><td>0.6 m/s&sup2;</td><td>| |a| - g | threshold for zero-velocity detection</td></tr>
+<tr><td><code>ZUPT_GYRO_THR</code></td><td>5.0 deg/s</td><td>Gyro threshold for zero-velocity detection</td></tr>
+<tr><td><code>ZUPT_COUNT_REQUIRED</code></td><td>10</td><td>Consecutive samples before ZUPT fires</td></tr>
 </table>
 
 <h3>2.4 Outage Q-Inflation Tiers</h3>
@@ -208,7 +209,7 @@
 <tr><td><code>IMU_SIGMA_GYRO</code></td><td>0.00035 rad/s/&radic;Hz</td><td>~5x ISM330 datasheet (3.8 mdps/&radic;Hz)</td></tr>
 <tr><td><code>IMU_SIGMA_ACCEL_BIAS</code></td><td>0.002 m/s&sup2;/&radic;Hz</td><td>Accel bias random walk &mdash; loosened so filter can track bias changes</td></tr>
 <tr><td><code>IMU_SIGMA_GYRO_BIAS</code></td><td>0.0005 rad/s/&radic;Hz</td><td>Gyro bias random walk &mdash; loosened so heading converges with GNSS</td></tr>
-<tr><td><code>GYRO_LSB_PER_DPS</code></td><td>57.143</td><td>ISM330 &plusmn;500 dps full-scale sensitivity</td></tr>
+<tr><td><code>GYRO_LSB_PER_DPS</code></td><td>65.536</td><td>ISM330 &plusmn;500 dps full-scale (32768/500)</td></tr>
 </table>
 
 <h3>2.7 WGS-84 Ellipsoid Constants</h3>
@@ -478,8 +479,8 @@ accel_O -= residual</pre></li>
 <tr><td>Position &delta;p</td><td>0&ndash;2</td><td>2.0 m (default)</td><td>4.0 m&sup2; (overridden at nav init by HDOP-based values)</td></tr>
 <tr><td>Velocity &delta;v</td><td>3&ndash;5</td><td>1.0 m/s</td><td>1.0 m&sup2;/s&sup2;</td></tr>
 <tr><td>Attitude &delta;&theta;</td><td>6&ndash;8</td><td>2.0&deg; (roll/pitch)</td><td>~0.0012 rad&sup2;; yaw widened to (45&deg;)&sup2; if heading not observed at init</td></tr>
-<tr><td>Accel bias b<sub>a</sub></td><td>9&ndash;11</td><td>0.075 m/s&sup2;</td><td>~0.0056 m&sup2;/s&sup4;</td></tr>
-<tr><td>Gyro bias b<sub>g</sub></td><td>12&ndash;14</td><td>0.01 rad/s</td><td>~1.0e-4 rad&sup2;/s&sup2; (wider: gives filter room to find correct bias)</td></tr>
+<tr><td>Accel bias b<sub>a</sub></td><td>9&ndash;11</td><td>0.5 m/s&sup2;</td><td>~0.05g 1&sigma;: covers ISM330 accel bias residual</td></tr>
+<tr><td>Gyro bias b<sub>g</sub></td><td>12&ndash;14</td><td>0.15 rad/s</td><td>~8.6&deg;/s 1&sigma;: covers boot-cal residual</td></tr>
 </table>
 <div class="note"><strong>Note:</strong> At nav initialization, position P is overridden to HDOP&times;2.5 (horizontal) and HDOP&times;5.0 (vertical), and yaw P is widened to (45&deg;)&sup2; if no heading was observed. This ensures the filter starts appropriately uncertain for the actual GNSS fix quality.</div>
 
@@ -715,7 +716,7 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
   <li>Loop: calls <code>get_gnss_fix_ioctl()</code> every ~100ms</li>
   <li>If fix is valid and new (monotonic_ns differs from last):
     <ul>
-      <li>Converts lat/lon from integer scaled format (deg &times; 1e7) to radians</li>
+      <li>Converts lat/lon from integer scaled format (deg &times; 1e7) to radians (precision fix: <code>nmea_latlon_to_e7</code> now parses 7 fractional digits in the NMEA minutes field, up from 3, eliminating ~11 m quantisation error)</li>
       <li>Converts altitude from mm to meters</li>
       <li>Converts speed from mm/s to m/s</li>
       <li>If HDOP available: converts from &times;100 integer to float</li>
