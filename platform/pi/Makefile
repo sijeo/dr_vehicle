@@ -1,4 +1,4 @@
-obj-m := ism330dlctr_char.o
+obj-m := neo6m_gnss_serdev.o
 
 KDIR := $(HOME)/rpi_work/kernel_rpi/linux
 CROSS_COMPILE ?= arm-linux-gnueabihf-
