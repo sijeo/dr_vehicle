@@ -1845,6 +1845,18 @@ static void* fusion_thread(void *arg) {
 
         // Initialize nav after MIN_FIXES good GNSS fixes (skip cold-start, check HDOP)
         if (!C->nav_ready) {
+            // Diagnostic: print nav-init gate status every 2 seconds
+            {
+                static double t_navwait = 0;
+                double tnw = now_sec();
+                if (tnw - t_navwait > 2.0) {
+                    printf("[NAV_WAIT] have_gnss=%d have_fix=%d fix_count=%d hdop_valid=%d hdop=%.2f (need: fixes>=%d hdop<=%.1f)\n",
+                        C->have_gnss, C->gnss_have_fix, C->gnss_fix_count,
+                        C->gnss_hdop_valid, C->gnss_hdop_valid ? C->gnss_hdop : -1.0f,
+                        NAV_INIT_MIN_FIXES, (float)NAV_INIT_HDOP_MAX);
+                    t_navwait = tnw;
+                }
+            }
             // Wait for enough good GNSS fixes to skip cold-start transient,
             // then set ENU reference AND init nav from the SAME fix (atomic).
             if (C->have_gnss && C->gnss_have_fix &&
