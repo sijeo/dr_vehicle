@@ -75,7 +75,10 @@
 #define SNAP_INNOV_M          120.0f   // if horizontal innovation exceeds, snap to GNSS
 #define SNAP_HDOP_MAX         2.5f     // require decent HDOP for snap (TAU1204 multi-constellation)
 #define NAV_INIT_HDOP_MAX     2.5f     // require decent HDOP before initializing nav
-#define NAV_INIT_MIN_FIXES    2        // skip first N fixes (TAU1204 converges faster than single-band)
+#define NAV_INIT_MIN_FIXES    5        // skip first N fixes — receiver needs time to converge
+                                       // (was 2: File 1 showed 550m altitude jump at fix #3)
+#define NAV_INIT_ALT_SPREAD   50.0f   // m — max altitude spread across last N fixes to accept
+#define NAV_INIT_HISTORY      5       // number of recent fixes to track for consistency
 
 #define GRAVITY             9.80665f
 #ifndef M_PI
@@ -196,12 +199,13 @@
  */
 #define IMU_SIGMA_ACCEL         (0.004f)    // m/s²/√Hz  (~5x ISM330 datasheet 80µg/√Hz)
 #define IMU_SIGMA_GYRO          (0.00035f)  // rad/s/√Hz (~5x ISM330 datasheet 3.8mdps/√Hz)
-#define IMU_SIGMA_ACCEL_BIAS    (0.002f)    // accel bias random walk (m/s²/√Hz) — loosened so filter can track bias changes
+#define IMU_SIGMA_ACCEL_BIAS    (0.0008f)   // accel bias random walk (m/s²/√Hz) — tightened to prevent
+                                            // bias absorbing gravity/real accel (was 0.002 → ba_z reached 13 m/s²)
 #define IMU_SIGMA_GYRO_BIAS     (0.0005f)   // gyro bias random walk (rad/s/√Hz) — loosened so heading can converge with GNSS
 #define IMU_COVAR_POS   2.0f
 #define IMU_COVAR_VEL   1.0f           // m/s
 #define IMU_COVAR_ATT   (2.0f*DEG2RAD) // rad
-#define IMU_COVAR_BA    0.5f           // m/s^2 (~0.05g 1σ: covers typical ISM330 accel bias residual)
+#define IMU_COVAR_BA    0.3f           // m/s^2 (~0.03g 1σ: covers ISM330 accel bias after boot-cal)
 #define IMU_COVAR_BG    0.15f          // rad/s  (~8.6°/s 1σ: covers boot-cal residual up to ~6°/s)
 
 
@@ -1071,6 +1075,21 @@ static void ins15_predict(ins15_t *S, vec3f acc_meas_b, vec3f gyro_meas_b, float
     mat15_mul(PhiP, PhiT, PhiPPhiT);
     memcpy(S->P, PhiPPhiT, sizeof(PhiPPhiT));
     mat15_add(S->P, Q);
+
+    // Covariance floor: prevent P from collapsing so the filter never
+    // becomes overconfident and rejects all GNSS measurements.
+    // Without this, P_pos shrinks to ~0 → NIS reaches 10,000+ → 80-87% GNSS rejected.
+    static const float P_floor[15] = {
+        0.5f, 0.5f, 1.0f,          // position E,N,U (m²): ~0.7m 1σ horizontal
+        0.01f, 0.01f, 0.04f,       // velocity E,N,U (m/s)²: ~0.1m/s horizontal
+        1e-4f, 1e-4f, 1e-4f,       // attitude roll,pitch,yaw (rad²): ~0.6°
+        1e-6f, 1e-6f, 1e-6f,       // accel bias (m/s²)²
+        1e-8f, 1e-8f, 1e-8f        // gyro bias (rad/s)²
+    };
+    for (i = 0; i < 15; i++) {
+        if (S->P[i*15+i] < P_floor[i])
+            S->P[i*15+i] = P_floor[i];
+    }
 }
 
 static void ins15_inject(ins15_t *S, const float dx[15]) {
@@ -1084,8 +1103,17 @@ static void ins15_inject(ins15_t *S, const float dx[15]) {
     S->ba.x += dx[9];  S->ba.y += dx[10]; S->ba.z += dx[11];
     S->bg.x += dx[12]; S->bg.y += dx[13]; S->bg.z += dx[14];
 
-    // Optional: Joseph-form covariance update would be better; we do standard KF update,
-    // then reset: P = (I-KH)P(I-KH)^T + K R K^T (done in update), so no extra here.
+    // Clamp biases to physically reasonable bounds for ISM330DLC.
+    // Without clamping, the bias states absorb real acceleration and gravity,
+    // causing ba_z to reach 13 m/s² (>1g) and position to diverge.
+    const float BA_MAX = 2.0f;   // m/s² — ISM330 accel bias ≈ ±40mg typical, 2 m/s² is generous
+    const float BG_MAX = 0.1f;   // rad/s — ISM330 gyro bias ≈ ±5°/s max, 0.1 rad/s ≈ 5.7°/s
+    S->ba.x = clampf(S->ba.x, -BA_MAX, BA_MAX);
+    S->ba.y = clampf(S->ba.y, -BA_MAX, BA_MAX);
+    S->ba.z = clampf(S->ba.z, -BA_MAX, BA_MAX);
+    S->bg.x = clampf(S->bg.x, -BG_MAX, BG_MAX);
+    S->bg.y = clampf(S->bg.y, -BG_MAX, BG_MAX);
+    S->bg.z = clampf(S->bg.z, -BG_MAX, BG_MAX);
 }
 
 // Read-only NIS computation — does NOT modify state or covariance
@@ -1496,6 +1524,12 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
     bool heading_observed;      // true after first GPS heading update at speed
     int  gnss_fix_count;        // counts valid GNSS fixes received (for cold-start skip)
 
+    // Nav-init consistency: track last N GNSS fixes to detect receiver convergence
+    double init_alt_history[NAV_INIT_HISTORY]; // altitude of last fixes
+    double init_lat_history[NAV_INIT_HISTORY]; // latitude (rad) of last fixes
+    double init_lon_history[NAV_INIT_HISTORY]; // longitude (rad) of last fixes
+    int    init_hist_count;     // how many entries stored (0..NAV_INIT_HISTORY)
+
 } ctx_t;
 
 static void make_log_file(ctx_t *C) {
@@ -1857,10 +1891,52 @@ static void* fusion_thread(void *arg) {
                     t_navwait = tnw;
                 }
             }
-            // Wait for enough good GNSS fixes to skip cold-start transient,
-            // then set ENU reference AND init nav from the SAME fix (atomic).
+            // Store recent fix history for consistency checking
+            if (C->have_gnss && C->gnss_have_fix) {
+                int idx = C->init_hist_count < NAV_INIT_HISTORY
+                        ? C->init_hist_count
+                        : NAV_INIT_HISTORY - 1;
+                // Shift history if full
+                if (C->init_hist_count >= NAV_INIT_HISTORY) {
+                    for (int sh = 0; sh < NAV_INIT_HISTORY - 1; sh++) {
+                        C->init_alt_history[sh] = C->init_alt_history[sh+1];
+                        C->init_lat_history[sh] = C->init_lat_history[sh+1];
+                        C->init_lon_history[sh] = C->init_lon_history[sh+1];
+                    }
+                    idx = NAV_INIT_HISTORY - 1;
+                }
+                C->init_alt_history[idx] = C->gnss_alt_m;
+                C->init_lat_history[idx] = C->gnss_lat_rad;
+                C->init_lon_history[idx] = C->gnss_lon_rad;
+                if (C->init_hist_count < NAV_INIT_HISTORY)
+                    C->init_hist_count++;
+            }
+
+            // Wait for enough good GNSS fixes AND position consistency
+            // before committing the ENU reference. File 1 showed a 550m altitude
+            // jump at fix #3 because the receiver hadn't converged yet.
+            bool init_consistent = false;
+            if (C->init_hist_count >= NAV_INIT_HISTORY) {
+                double alt_min = C->init_alt_history[0], alt_max = alt_min;
+                for (int h = 1; h < NAV_INIT_HISTORY; h++) {
+                    if (C->init_alt_history[h] < alt_min) alt_min = C->init_alt_history[h];
+                    if (C->init_alt_history[h] > alt_max) alt_max = C->init_alt_history[h];
+                }
+                init_consistent = (alt_max - alt_min) < NAV_INIT_ALT_SPREAD;
+                if (!init_consistent) {
+                    static double t_last_warn = 0;
+                    double tw = now_sec();
+                    if (tw - t_last_warn > 5.0) {
+                        printf("[NAV_INIT] alt spread %.1fm (need <%.0fm) — waiting for GNSS convergence\n",
+                               alt_max - alt_min, NAV_INIT_ALT_SPREAD);
+                        t_last_warn = tw;
+                    }
+                }
+            }
+
             if (C->have_gnss && C->gnss_have_fix &&
                 C->gnss_fix_count >= NAV_INIT_MIN_FIXES &&
+                init_consistent &&
                 (!C->gnss_hdop_valid || C->gnss_hdop <= NAV_INIT_HDOP_MAX)) {
 
                 // ---- Set ENU reference from THIS fix ----
@@ -2166,17 +2242,36 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                 C->ab_time = tnow_gnss;
                 C->ab_vel  = C->gnss_vel_valid ? C->gnss_vel_enu : v3(0,0,0);
             } else {
-                // Compute NIS first (read-only) then gate before applying update
+                // Adaptive gating: instead of hard-rejecting when NIS > gate,
+                // inflate R so the fix is accepted with reduced weight.
+                // This prevents the filter from running IMU-only for long periods
+                // (log analysis showed 80-87% of GNSS rejected → slow convergence).
                 float nis_pos = 0.0f;
                 bool ok_nis = ins15_nis_gnss_pos(&C->ins, zpos, Rpos, &nis_pos);
-                bool gate_pos = ok_nis && (nis_pos < gate_thr);
                 C->last_nis_pos = nis_pos;
 
-                if (gate_pos) {
-                    ins15_update_gnss_pos(&C->ins, zpos, Rpos, NULL);
-                    C->last_gnss_used_s = tnow2;
-                    C->gnss_valid = true;
-                    C->last_gnss_used_pos = 1;
+                if (ok_nis) {
+                    bool accepted = false;
+                    if (nis_pos < gate_thr) {
+                        // Normal: within gate, use standard R
+                        ins15_update_gnss_pos(&C->ins, zpos, Rpos, NULL);
+                        accepted = true;
+                    } else if (nis_pos < gate_thr * 50.0f) {
+                        // Soft gate: inflate R so the update is accepted but down-weighted.
+                        // Scale R so that the effective NIS ≈ gate_thr (barely accepted).
+                        // This pulls the EKF gently toward GNSS instead of ignoring it.
+                        float Rpos_inflated = Rpos * (nis_pos / gate_thr);
+                        ins15_update_gnss_pos(&C->ins, zpos, Rpos_inflated, NULL);
+                        dbg_printf(C, "GNSS_SOFT_GATE nis=%.1f R_inflated=%.1f (base=%.2f)", nis_pos, Rpos_inflated, Rpos);
+                        accepted = true;
+                    }
+                    // else: NIS > 50x gate — truly anomalous, discard completely
+
+                    if (accepted) {
+                        C->last_gnss_used_s = tnow2;
+                        C->gnss_valid = true;
+                        C->last_gnss_used_pos = 1;
+                    }
                 }
 
                 if (C->reacq_left > 0) {
