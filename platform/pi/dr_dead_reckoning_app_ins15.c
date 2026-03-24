@@ -1803,6 +1803,7 @@ static void* fusion_thread(void *arg) {
     ctx_t *C = (ctx_t*)arg;
     static yaw_learn_t yawL = {0};
     uint64_t last_tick_ns = monotonic_ns();
+    int sh, h;
 
     while (__atomic_load_n(&C->running, __ATOMIC_ACQUIRE)) {
         pthread_mutex_lock(&C->mtx);
@@ -1898,7 +1899,7 @@ static void* fusion_thread(void *arg) {
                         : NAV_INIT_HISTORY - 1;
                 // Shift history if full
                 if (C->init_hist_count >= NAV_INIT_HISTORY) {
-                    for (int sh = 0; sh < NAV_INIT_HISTORY - 1; sh++) {
+                    for (sh = 0; sh < NAV_INIT_HISTORY - 1; sh++) {
                         C->init_alt_history[sh] = C->init_alt_history[sh+1];
                         C->init_lat_history[sh] = C->init_lat_history[sh+1];
                         C->init_lon_history[sh] = C->init_lon_history[sh+1];
@@ -1918,7 +1919,7 @@ static void* fusion_thread(void *arg) {
             bool init_consistent = false;
             if (C->init_hist_count >= NAV_INIT_HISTORY) {
                 double alt_min = C->init_alt_history[0], alt_max = alt_min;
-                for (int h = 1; h < NAV_INIT_HISTORY; h++) {
+                for (h = 1; h < NAV_INIT_HISTORY; h++) {
                     if (C->init_alt_history[h] < alt_min) alt_min = C->init_alt_history[h];
                     if (C->init_alt_history[h] > alt_max) alt_max = C->init_alt_history[h];
                 }
