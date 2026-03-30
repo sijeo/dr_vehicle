@@ -1766,7 +1766,7 @@ static void* fusion_thread(void *arg) {
     ctx_t *C = (ctx_t*)arg;
     static yaw_learn_t yawL = {0};
     uint64_t last_tick_ns = monotonic_ns();
-    int sh, h;
+    //int sh, h;
 
     while (__atomic_load_n(&C->running, __ATOMIC_ACQUIRE)) {
         pthread_mutex_lock(&C->mtx);
@@ -1855,6 +1855,7 @@ static void* fusion_thread(void *arg) {
                     t_navwait = tnw;
                 }
             }
+            #if 0
             // Store recent fix history for consistency checking
             if (C->have_gnss && C->gnss_have_fix) {
                 int idx = C->init_hist_count < NAV_INIT_HISTORY
@@ -1897,7 +1898,7 @@ static void* fusion_thread(void *arg) {
                     }
                 }
             }
-
+            #endif 
             if (C->have_gnss && C->gnss_have_fix &&
                 C->gnss_fix_count >= NAV_INIT_MIN_FIXES &&
                 (!C->gnss_hdop_valid || C->gnss_hdop <= NAV_INIT_HDOP_MAX)) {
