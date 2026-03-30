@@ -1766,6 +1766,7 @@ static void* fusion_thread(void *arg) {
     ctx_t *C = (ctx_t*)arg;
     static yaw_learn_t yawL = {0};
     uint64_t last_tick_ns = monotonic_ns();
+    int sh, h;
 
     while (__atomic_load_n(&C->running, __ATOMIC_ACQUIRE)) {
         pthread_mutex_lock(&C->mtx);
@@ -1854,6 +1855,49 @@ static void* fusion_thread(void *arg) {
                     t_navwait = tnw;
                 }
             }
+            // Store recent fix history for consistency checking
+            if (C->have_gnss && C->gnss_have_fix) {
+                int idx = C->init_hist_count < NAV_INIT_HISTORY
+                        ? C->init_hist_count
+                        : NAV_INIT_HISTORY - 1;
+                // Shift history if full
+                if (C->init_hist_count >= NAV_INIT_HISTORY) {
+                    for (int sh = 0; sh < NAV_INIT_HISTORY - 1; sh++) {
+                        C->init_alt_history[sh] = C->init_alt_history[sh+1];
+                        C->init_lat_history[sh] = C->init_lat_history[sh+1];
+                        C->init_lon_history[sh] = C->init_lon_history[sh+1];
+                    }
+                    idx = NAV_INIT_HISTORY - 1;
+                }
+                C->init_alt_history[idx] = C->gnss_alt_m;
+                C->init_lat_history[idx] = C->gnss_lat_rad;
+                C->init_lon_history[idx] = C->gnss_lon_rad;
+                if (C->init_hist_count < NAV_INIT_HISTORY)
+                    C->init_hist_count++;
+            }
+
+            // Wait for enough good GNSS fixes AND position consistency
+            // before committing the ENU reference. File 1 showed a 550m altitude
+            // jump at fix #3 because the receiver hadn't converged yet.
+            bool init_consistent = false;
+            if (C->init_hist_count >= NAV_INIT_HISTORY) {
+                double alt_min = C->init_alt_history[0], alt_max = alt_min;
+                for (int h = 1; h < NAV_INIT_HISTORY; h++) {
+                    if (C->init_alt_history[h] < alt_min) alt_min = C->init_alt_history[h];
+                    if (C->init_alt_history[h] > alt_max) alt_max = C->init_alt_history[h];
+                }
+                init_consistent = (alt_max - alt_min) < NAV_INIT_ALT_SPREAD;
+                if (!init_consistent) {
+                    static double t_last_warn = 0;
+                    double tw = now_sec();
+                    if (tw - t_last_warn > 5.0) {
+                        printf("[NAV_INIT] alt spread %.1fm (need <%.0fm) — waiting for GNSS convergence\n",
+                               alt_max - alt_min, NAV_INIT_ALT_SPREAD);
+                        t_last_warn = tw;
+                    }
+                }
+            }
+
             if (C->have_gnss && C->gnss_have_fix &&
                 C->gnss_fix_count >= NAV_INIT_MIN_FIXES &&
                 (!C->gnss_hdop_valid || C->gnss_hdop <= NAV_INIT_HDOP_MAX)) {
