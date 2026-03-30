@@ -124,22 +124,19 @@
   <li><strong>GNSS outage handling:</strong> Tiered process noise inflation; NHC/ZUPT/velocity-decay to bound drift</li>
   <li><strong>Reacquisition mode:</strong> Relaxed gating and inflated R when GNSS returns after outage (&ge;5 s)</li>
   <li><strong>Snap-to-GNSS:</strong> Safety net for extreme drift after prolonged outage (&gt;15 s, &gt;120 m innovation)</li>
-  <li><strong>Adaptive NIS gating:</strong> Soft-gate with R inflation when NIS is 1&ndash;50&times; above the &chi;&sup2;(3) threshold (16.0); only truly anomalous fixes (NIS &gt; 800) are discarded. Prevents the filter from running IMU-only for long periods</li>
+  <li><strong>Hard NIS gating:</strong> &chi;&sup2;(3) threshold at 16.0; fixes exceeding the gate are discarded. The filter's self-healing mechanism relies on Q inflation growing P during outages, which naturally reduces NIS until GNSS is re-accepted</li>
   <li><strong>Joseph-form covariance:</strong> Numerically stable covariance update</li>
   <li><strong>Power-on calibration:</strong> 10-second stillness calibration at each boot</li>
   <li><strong>Online yaw-rate learning:</strong> Learns gyro Z-axis scale from GNSS heading during turns (scale clamp 0.90&ndash;1.10)</li>
   <li><strong>GNSS speed spike filter:</strong> Rejects fixes with speed &gt;55 m/s or acceleration &gt;8 m/s&sup2; to protect the EKF from multi-path or glitches</li>
-  <li><strong>IMU acceleration clamp:</strong> Caps ENU acceleration at &plusmn;6 m/s&sup2; after gravity removal, preventing prediction blow-ups from sensor spikes</li>
+  <li><strong>IMU acceleration clamp:</strong> Caps ENU acceleration at &plusmn;15 m/s&sup2; after gravity removal, preventing prediction blow-ups from sensor spikes</li>
   <li><strong>Stationary position anchor:</strong> When ZUPT is active, an EKF-consistent position measurement (R = 0.25 m&sup2;) locks the reported position to suppress drift</li>
   <li><strong>Continuous ZUPT:</strong> Stillness counter stays saturated rather than resetting, providing uninterrupted zero-velocity updates while stationary</li>
-  <li><strong>Atomic nav initialisation:</strong> ENU reference origin and nav state are set from the same quality-checked GNSS fix (HDOP &le; 2.5, &ge;5 valid fixes, altitude spread &lt; 50 m across last 5 fixes), with HDOP-scaled initial covariance</li>
+  <li><strong>Atomic nav initialisation:</strong> ENU reference origin and nav state are set from the same quality-checked GNSS fix (HDOP &le; 2.5, &ge;2 valid fixes), with HDOP-scaled initial covariance</li>
   <li><strong>Speed-dependent heading R:</strong> Heading measurement noise &sigma; = max(0.3&deg;, 3&deg;/speed) adapts to TAU1204 COG quality at different speeds</li>
   <li><strong>GNSS alpha-beta tracker:</strong> 2nd-order position-velocity filter (&alpha; = 0.4, &beta; = 0.1) corrects the 1 Hz PVT sawtooth by tracking both position and velocity; eliminates N-sample oscillation; resets on large residuals (&gt;8 m) or gaps (&gt;3 s)</li>
-  <li><strong>Velocity management:</strong> Hard cap at 55 m/s; outage-proportional decay (0.995&rarr;0.98&rarr;0.95) prevents runaway drift; near-zero two-tier decay (0.98/0.90) for smooth stop behaviour</li>
+  <li><strong>Velocity management:</strong> Hard cap at 55 m/s; near-zero two-tier decay (0.98/0.90) for smooth stop behaviour</li>
   <li><strong>GNSS driver precision fix:</strong> Lat/lon NMEA parser upgraded from 3 to 7 fractional digits in the minutes field, eliminating ~11 m quantisation jumps via <code>nmea_latlon_to_e7</code></li>
-  <li><strong>Covariance floor:</strong> Minimum P diagonal values enforced after each predict step (0.5 m&sup2; horizontal position, 0.01 m&sup2;/s&sup2; velocity, 1e-4 rad&sup2; attitude). Prevents the filter from becoming overconfident and rejecting all GNSS measurements (log analysis showed NIS reaching 10,000+ and 80&ndash;87% rejection rate without floor)</li>
-  <li><strong>Bias clamping:</strong> Accel bias clamped to &plusmn;2 m/s&sup2;, gyro bias to &plusmn;0.1 rad/s after each EKF update injection. Prevents bias states from absorbing real acceleration and gravity (log analysis showed b<sub>a,z</sub> reaching 13 m/s&sup2; &mdash; over 1g &mdash; without clamping)</li>
-  <li><strong>Nav-init consistency check:</strong> Tracks the last 5 GNSS fixes and requires altitude spread &lt; 50 m before committing the ENU reference. Prevents setting the origin from an unconverged GNSS receiver (log analysis showed a 550 m altitude jump at fix #3 that permanently corrupted the ENU frame)</li>
 </ul>
 
 
@@ -175,18 +172,18 @@
 <tr><td><code>YAW_DEADBAND_RAD</code></td><td>0.01 rad/s</td><td>Gyro-Z deadband to suppress yaw random walk when stationary</td></tr>
 <tr><td><code>ACC_STILL_TOL</code></td><td>0.04g</td><td>Accelerometer tolerance for stillness detection</td></tr>
 <tr><td><code>GYRO_STILL_TOL_RAD</code></td><td>1.0 deg/s</td><td>Gyro tolerance for stillness detection</td></tr>
-<tr><td><code>ZUPT_ACC_THR</code></td><td>0.6 m/s&sup2;</td><td>| |a| - g | threshold for zero-velocity detection</td></tr>
-<tr><td><code>ZUPT_GYRO_THR</code></td><td>5.0 deg/s</td><td>Gyro threshold for zero-velocity detection</td></tr>
-<tr><td><code>ZUPT_COUNT_REQUIRED</code></td><td>10</td><td>Consecutive samples before ZUPT fires</td></tr>
+<tr><td><code>ZUPT_ACC_THR</code></td><td>0.175 m/s&sup2;</td><td>| |a| - g | threshold for zero-velocity detection</td></tr>
+<tr><td><code>ZUPT_GYRO_THR</code></td><td>2.0 deg/s</td><td>Gyro threshold for zero-velocity detection</td></tr>
+<tr><td><code>ZUPT_COUNT_REQUIRED</code></td><td>5</td><td>Consecutive samples before ZUPT fires</td></tr>
 </table>
 
 <h3>2.4 Outage Q-Inflation Tiers</h3>
 <table>
 <tr><th>Outage Duration</th><th>Multiplier</th><th>Effect</th></tr>
-<tr><td>&lt; 2 s (TIER_A)</td><td>QSCL_A = 1.2</td><td>Barely inflate (IMU reliable short-term)</td></tr>
-<tr><td>&lt; 10 s (TIER_B)</td><td>QSCL_B = 2.0</td><td>Moderate inflation</td></tr>
-<tr><td>&lt; 60 s (TIER_C)</td><td>QSCL_C = 3.0</td><td>Cap growth (prevents covariance blow-up)</td></tr>
-<tr><td>&ge; 60 s</td><td>QSCL_D = 4.0</td><td>Ceiling (was 15.0 &mdash; caused position splatter)</td></tr>
+<tr><td>&lt; 2 s (TIER_A)</td><td>QSCL_A = 1.5</td><td>Mild inflation (IMU reliable short-term)</td></tr>
+<tr><td>&lt; 10 s (TIER_B)</td><td>QSCL_B = 3.0</td><td>Moderate inflation</td></tr>
+<tr><td>&lt; 60 s (TIER_C)</td><td>QSCL_C = 6.0</td><td>Strong inflation &mdash; P grows fast to enable GNSS re-acquisition</td></tr>
+<tr><td>&ge; 60 s</td><td>QSCL_D = 15.0</td><td>Maximum inflation &mdash; ensures self-healing: P grows large enough to drop NIS below gate and re-accept GNSS</td></tr>
 </table>
 
 <h3>2.5 GNSS Measurement Noise</h3>
@@ -210,8 +207,8 @@
 <tr><th>Constant</th><th>Value</th><th>Description</th></tr>
 <tr><td><code>IMU_SIGMA_ACCEL</code></td><td>0.004 m/s&sup2;/&radic;Hz</td><td>~5x ISM330 datasheet (80 &mu;g/&radic;Hz)</td></tr>
 <tr><td><code>IMU_SIGMA_GYRO</code></td><td>0.00035 rad/s/&radic;Hz</td><td>~5x ISM330 datasheet (3.8 mdps/&radic;Hz)</td></tr>
-<tr><td><code>IMU_SIGMA_ACCEL_BIAS</code></td><td>0.0008 m/s&sup2;/&radic;Hz</td><td>Accel bias random walk &mdash; tightened to prevent bias absorbing gravity/real accel (was 0.002 &rarr; b<sub>a,z</sub> reached 13 m/s&sup2;)</td></tr>
-<tr><td><code>IMU_SIGMA_GYRO_BIAS</code></td><td>0.0005 rad/s/&radic;Hz</td><td>Gyro bias random walk &mdash; loosened so heading converges with GNSS</td></tr>
+<tr><td><code>IMU_SIGMA_ACCEL_BIAS</code></td><td>0.0005 m/s&sup2;/&radic;Hz</td><td>Accel bias random walk</td></tr>
+<tr><td><code>IMU_SIGMA_GYRO_BIAS</code></td><td>0.0001 rad/s/&radic;Hz</td><td>Gyro bias random walk</td></tr>
 <tr><td><code>GYRO_LSB_PER_DPS</code></td><td>65.536</td><td>ISM330 &plusmn;500 dps full-scale (32768/500)</td></tr>
 </table>
 
@@ -540,29 +537,13 @@ Builds the 15&times;15 Jacobian F matrix:</p>
 <p><strong>Step 9: Covariance propagation</strong></p>
 <pre>P &larr; &Phi;&middot;P&middot;&Phi;<sup>T</sup> + Q</pre>
 
-<p><strong>Step 10: Covariance floor</strong><br>
-Enforces minimum diagonal values on P to prevent the filter from becoming overconfident. Without this floor, position P can shrink to near-zero, causing NIS to exceed 10,000 and rejecting 80&ndash;87% of GNSS measurements. Floor values:</p>
-<table>
-<tr><th>State Block</th><th>P floor</th><th>Equivalent &sigma;</th></tr>
-<tr><td>Position E, N</td><td>0.5 m&sup2;</td><td>~0.7 m</td></tr>
-<tr><td>Position U</td><td>1.0 m&sup2;</td><td>~1.0 m</td></tr>
-<tr><td>Velocity E, N</td><td>0.01 m&sup2;/s&sup2;</td><td>~0.1 m/s</td></tr>
-<tr><td>Velocity U</td><td>0.04 m&sup2;/s&sup2;</td><td>~0.2 m/s</td></tr>
-<tr><td>Attitude</td><td>1e-4 rad&sup2;</td><td>~0.6&deg;</td></tr>
-<tr><td>Accel bias</td><td>1e-6 m&sup2;/s&sup4;</td><td>~0.001 m/s&sup2;</td></tr>
-<tr><td>Gyro bias</td><td>1e-8 rad&sup2;/s&sup2;</td><td>~0.0001 rad/s</td></tr>
-</table>
+<p><strong>Note:</strong> No covariance floor is applied. The filter relies on the tiered Q inflation (up to 15&times; during extended outage) to grow P naturally, which in turn reduces NIS and allows the filter to self-heal by re-accepting GNSS measurements.</p>
 
 <h4><code>ins15_inject()</code> &mdash; Line 1049</h4>
 <div class="sig"><code>static void ins15_inject(ins15_t *S, const float dx[15])</code></div>
 <p>Applies the estimated error-state correction to the nominal state:</p>
 <pre>p += &delta;p,  v += &delta;v,  q &larr; q &otimes; q_from_small_angle(&delta;&theta;),  b<sub>a</sub> += &delta;b<sub>a</sub>,  b<sub>g</sub> += &delta;b<sub>g</sub></pre>
-<p><strong>Bias clamping (post-injection):</strong> After correction, biases are clamped to physically reasonable bounds:</p>
-<ul>
-  <li><strong>Accel bias:</strong> &plusmn;2.0 m/s&sup2; (ISM330 typical bias ~&plusmn;40 mg; 2 m/s&sup2; is generous)</li>
-  <li><strong>Gyro bias:</strong> &plusmn;0.1 rad/s (~5.7&deg;/s; ISM330 gyro bias &plusmn;5&deg;/s max)</li>
-</ul>
-<div class="note"><strong>Why clamping is critical:</strong> Log analysis showed that without clamping, the accel bias b<sub>a,z</sub> reached 13 m/s&sup2; (over 1g), meaning the bias state was absorbing real acceleration and gravity. This caused the filter to miscalculate gravity-compensated acceleration and diverge in position.</div>
+<p>No bias clamping is applied. The bias states are allowed to converge freely, which is essential for the filter's self-healing mechanism during GNSS re-acquisition after outages.</p>
 
 
 <!-- ==================== SECTION 11 ==================== -->
@@ -785,7 +766,7 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
 
 <h3>Phase 4: Navigation Initialization (lines 1772&ndash;1835)</h3>
 <ul>
-  <li>Waits for: (a) at least <code>NAV_INIT_MIN_FIXES</code> (5) valid GNSS fixes received (skips cold-start transient), (b) HDOP &le; <code>NAV_INIT_HDOP_MAX</code> (2.5), (c) altitude spread across last 5 fixes &lt; <code>NAV_INIT_ALT_SPREAD</code> (50 m) &mdash; ensures receiver has converged</li>
+  <li>Waits for: (a) at least <code>NAV_INIT_MIN_FIXES</code> (2) valid GNSS fixes received (skips cold-start transient), (b) HDOP &le; <code>NAV_INIT_HDOP_MAX</code> (2.5)</li>
   <li><strong>Atomic ENU ref + nav init:</strong> Sets ENU reference AND initializes nav from the <em>same</em> fix &mdash; initial ENU position is exactly (0,0,0) with no mismatch</li>
   <li>Widens initial position covariance based on HDOP: P<sub>h</sub> = (HDOP &times; 2.5)&sup2;, P<sub>v</sub> = (HDOP &times; 5.0)&sup2;</li>
   <li>If heading not observed at init, widens yaw P to (45&deg;)&sup2; so filter can converge heading from subsequent GNSS COG updates</li>
@@ -809,8 +790,8 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
 <ul>
   <li>Calls <code>ins15_predict()</code> with calibrated accel, gyro, dt, and qscale</li>
   <li>Updates nominal state (p, v, q) and propagates error-state covariance P</li>
-  <li><strong>ENU acceleration clamp:</strong> After gravity removal, clamps a<sub>ENU</sub> to &plusmn;6 m/s&sup2; (~0.6g) to reject IMU spikes, calibration errors, and attitude-induced gravity leakage</li>
-  <li><strong>Covariance floor:</strong> After P = &Phi;P&Phi;<sup>T</sup> + Q, enforces minimum diagonal values (0.5 m&sup2; horizontal position, 0.01 m&sup2;/s&sup2; velocity). Prevents the filter from becoming overconfident and rejecting all GNSS updates</li>
+  <li><strong>ENU acceleration clamp:</strong> After gravity removal, clamps a<sub>ENU</sub> to &plusmn;15 m/s&sup2; (~1.5g) to reject extreme IMU spikes</li>
+  <li>No covariance floor &mdash; P is allowed to shrink naturally; the tiered Q inflation (up to 15&times;) ensures P grows during outages for self-healing GNSS re-acquisition</li>
   <li>Snapshots predict-only position (<code>predict_p</code>) for diagnostic logging</li>
 </ul>
 
@@ -830,13 +811,7 @@ NIS = &nu;<sup>T</sup>&middot;S<sub>33</sub><sup>-1</sup>&middot;&nu;</pre>
   <li><strong>Measurement noise:</strong> R<sub>pos</sub> = R_GNSS_POS_VAR &times; HDOP&sup2; (base = 1.0 m&sup2;)</li>
   <li><strong>Reacquisition check:</strong> If outage &gt; 5s, enter reacq mode (inflate R &times;100, relax gate to 200)</li>
   <li><strong>Snap-to-GNSS:</strong> If outage &gt; 15s AND innovation &gt; 120m AND HDOP &le; 2.5, force position to GNSS, inflate P, and reset smoother</li>
-  <li><strong>Adaptive NIS gating:</strong> Compute NIS (read-only), then:
-    <ul>
-      <li>NIS &lt; 16.0 (&chi;&sup2;(3) gate): accept with standard R</li>
-      <li>16.0 &le; NIS &lt; 800: accept with inflated R (R &times; NIS/gate) &mdash; pulls EKF gently toward GNSS instead of ignoring it</li>
-      <li>NIS &ge; 800: truly anomalous, discard completely</li>
-    </ul>
-  </li>
+  <li><strong>Hard NIS gating:</strong> Compute NIS (read-only); accept if NIS &lt; gate threshold (&chi;&sup2;(3) = 16.0, or 200 during reacquisition), reject otherwise. The filter self-heals via Q inflation growing P during rejection streaks, naturally reducing NIS until GNSS is re-accepted</li>
   <li><strong>Position update:</strong> <code>ins15_update_gnss_pos()</code></li>
   <li><strong>Velocity update:</strong> If GNSS velocity valid, inflate noise at low speed (&lt;1 m/s &times;10), NIS gate, then <code>ins15_update_gnss_vel()</code></li>
   <li><strong>Heading update:</strong> If speed &gt; 1 m/s and HDOP &le; 3, apply scalar yaw update via <code>ins15_update_heading()</code> with speed-dependent R: &sigma; = max(0.3&deg;, 3&deg;/speed)</li>
@@ -917,9 +892,8 @@ fusion_thread loop:
 <h4>Phase 2: Wait for GNSS Fix</h4>
 <pre>
 fusion_thread loop:
-  &rarr; Wait for gnss_fix_count &ge; 5 (skip cold-start transient)
+  &rarr; Wait for gnss_fix_count &ge; 2 (skip cold-start transient)
   &rarr; Wait for HDOP &le; 2.5 (quality gate)
-  &rarr; Wait for altitude spread &lt; 50m across last 5 fixes (consistency gate)
   &rarr; Set ENU reference from THIS fix (atomic with nav init)
   &rarr; Initialize INS: position = (0,0,0), tilt from accel, heading from GNSS
   &rarr; Widen position P by HDOP; widen yaw P to (45&deg;)&sup2; if no heading
@@ -937,21 +911,20 @@ fusion_thread loop (every ~10ms):
   2. Predict:    ins15_predict(acc, gyro, dt, qscale)
                  &rarr; Attitude integration (quaternion)
                  &rarr; Velocity/position integration (ENU)
-                 &rarr; ENU acceleration clamp (&plusmn;6 m/s&sup2;)
+                 &rarr; ENU acceleration clamp (&plusmn;15 m/s&sup2;)
                  &rarr; Covariance propagation (P = &Phi;P&Phi;<sup>T</sup> + Q)
-                 &rarr; Covariance floor enforcement (prevents overconfidence)
                  &rarr; Snapshot predict_p for diagnostics
 
   3. Constrain:  ins15_update_nhc()    (every step, if heading observed)
                  ins15_update_zupt()   (continuous while still, not one-shot)
                  ins15_update_zaru()   (when still, locks gyro bias)
                  position_anchor()     (after sustained stillness, R=0.25m&sup2;)
-                 velocity_cap(55 m/s) + outage_decay(0.995/0.98/0.95) + near-zero decay(0.90/0.98)
+                 velocity_cap(55 m/s) + near-zero decay(0.90/0.98)
 
   4. GNSS Fuse:  (when new fix arrives, ~1 Hz)
                  LLA &rarr; ECEF &rarr; ENU
-                 Adaptive NIS gate &rarr; ins15_update_gnss_pos()
-                   &lt;16: standard R; 16&ndash;800: inflated R; &gt;800: reject
+                 Hard NIS gate &rarr; ins15_update_gnss_pos()
+                   NIS &lt; gate_thr: accept; NIS &ge; gate_thr: reject
                  NIS gate &rarr; ins15_update_gnss_vel()
                  ins15_update_heading() (&sigma; = max(0.3&deg;, 3&deg;/speed))
                  yaw_learn_on_gnss_fix()
@@ -966,7 +939,7 @@ fusion_thread loop (every ~10ms):
 <h4>GNSS Outage Behavior</h4>
 <pre>
 When GNSS is lost:
-  1. outage_s increases &rarr; qscale increases (1.2x to 4x)
+  1. outage_s increases &rarr; qscale increases (1.5x to 15x)
   2. Process noise inflated &rarr; P grows &rarr; filter uncertainty increases
   3. NHC constrains lateral drift
   4. ZUPT/ZARU lock velocity and gyro bias when stopped
@@ -978,10 +951,9 @@ When GNSS returns:
      &rarr; Gradually accept GNSS over 8 fixes
   2. If outage &gt;15s AND innovation &gt;120m: Snap-to-GNSS
      &rarr; Force position = GNSS, inflate P to (5m)&sup2;
-  3. Normal: Adaptive NIS gating
-     &rarr; NIS &lt; 16: accept with standard R
-     &rarr; NIS 16&ndash;800: accept with inflated R (soft gate)
-     &rarr; NIS &gt; 800: reject (truly anomalous)
+  3. Normal: Hard NIS gating
+     &rarr; NIS &lt; 16: accept
+     &rarr; NIS &ge; 16: reject (filter self-heals via Q inflation growing P)
 </pre>
 </div>
 
