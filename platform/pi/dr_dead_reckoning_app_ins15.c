@@ -74,7 +74,8 @@
 #define SNAP_MIN_OUTAGE_S     15.0f    // allow snap after long outage
 #define SNAP_INNOV_M          120.0f   // if horizontal innovation exceeds, snap to GNSS
 #define SNAP_HDOP_MAX         2.5f     // require decent HDOP for snap (TAU1204 multi-constellation)
-#define NAV_INIT_HDOP_MAX     4.0f     // require decent HDOP before initializing nav (relaxed: TAU1204 can report >2.5 after cold start)
+#define NAV_INIT_HDOP_MAX     10.0f    // permissive: allow init with any reasonable HDOP
+                                       // (initial P is HDOP-scaled, EKF NIS gating handles the rest)
 #define NAV_INIT_MIN_FIXES    2        // skip first N fixes — receiver needs time to converge
 
 #define GRAVITY             9.80665f
@@ -1638,7 +1639,10 @@ static void* gnss_thread(void *arg) {
 
         pthread_mutex_lock(&C->mtx);
 
-        C->have_gnss = false;
+        // NOTE: do NOT clear have_gnss here — let the fusion thread consume it.
+        // Clearing it on every poll iteration caused a race: the non-blocking ioctl
+        // returns cached data instantly, so the GNSS thread loops thousands of times/sec
+        // and overwrites have_gnss=true before the fusion thread can see it.
         C->gnss_have_fix = f.have_fix ? 1 : 0;
         double tmeas = now_sec();
         C->last_gnss_meas_s = tmeas;
@@ -1738,8 +1742,9 @@ static void* gnss_thread(void *arg) {
             C->gnss_vel_valid = false;
 #endif
 
-            C->have_gnss = (C->gnss_have_fix && new_fix) ;
-// Mark GNSS measurement presence (independent of EKF gating)
+            // Only SET have_gnss on new fixes — fusion thread clears it after consuming
+            if (C->gnss_have_fix && new_fix)
+                C->have_gnss = true;
 
 
 
@@ -1996,6 +2001,9 @@ static void* fusion_thread(void *arg) {
                     p0_h * p0_h, p0_v * p0_v);
 
                 C->have_gnss = false; // consume
+            } else {
+                // Consume even if conditions not met — GNSS thread only sets, never clears
+                C->have_gnss = false;
             }
 
             pthread_mutex_unlock(&C->mtx);
@@ -2267,6 +2275,7 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
             }
             C->have_gnss = false; // consumed
         } else {
+            C->have_gnss = false; // consume stale flag (GNSS thread only sets, never clears)
             // Dead-reckoning status prints at ~2 Hz
             static double t_last = 0.0;
             double t = now_sec();
