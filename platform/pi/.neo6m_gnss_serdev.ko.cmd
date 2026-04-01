@@ -1,1 +1,0 @@
-cmd_/home/sijeophilip/dr_vehicle/platform/pi/neo6m_gnss_serdev.ko := arm-linux-gnueabihf-ld -r  -EL  --build-id  -T ./scripts/module-common.lds -T ./arch/arm/kernel/module.lds -o /home/sijeophilip/dr_vehicle/platform/pi/neo6m_gnss_serdev.ko /home/sijeophilip/dr_vehicle/platform/pi/neo6m_gnss_serdev.o /home/sijeophilip/dr_vehicle/platform/pi/neo6m_gnss_serdev.mod.o;  true

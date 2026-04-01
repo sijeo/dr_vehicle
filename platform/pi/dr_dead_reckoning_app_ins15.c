@@ -74,8 +74,9 @@
 #define SNAP_MIN_OUTAGE_S     15.0f    // allow snap after long outage
 #define SNAP_INNOV_M          120.0f   // if horizontal innovation exceeds, snap to GNSS
 #define SNAP_HDOP_MAX         2.5f     // require decent HDOP for snap (TAU1204 multi-constellation)
-#define NAV_INIT_HDOP_MAX     2.5f     // require decent HDOP before initializing nav
-#define NAV_INIT_MIN_FIXES    2        // skip first N fixes (TAU1204 converges faster than single-band)
+#define NAV_INIT_HDOP_MAX     10.0f    // permissive: allow init with any reasonable HDOP
+                                       // (initial P is HDOP-scaled, EKF NIS gating handles the rest)
+#define NAV_INIT_MIN_FIXES    2        // skip first N fixes — receiver needs time to converge
 
 #define GRAVITY             9.80665f
 #ifndef M_PI
@@ -96,24 +97,23 @@
 #define ACC_STILL_TOL       (0.04f*GRAVITY)
 #define GYRO_STILL_TOL_RAD  (1.0f * DEG2RAD)
 
-// ZUPT detection thresholds (must accommodate vehicle vibration + IMU noise)
-// Log analysis showed old thresholds (0.175, 2°/s) were never met: ZUPT fired 0/1925 rows.
-#define ZUPT_ACC_THR        (0.6f)             // | |a|-g | < thr  (was 0.175 — too tight for mounted IMU)
-#define ZUPT_GYRO_THR       (5.0f * DEG2RAD)   // per-axis gyro threshold (was 2°/s — below IMU noise floor)
-#define ZUPT_COUNT_REQUIRED 10                  // require 10 consecutive still samples (100ms) for confidence
+// ZUPT detection thresholds
+#define ZUPT_ACC_THR        (0.175f)            // | |a|-g | < thr
+#define ZUPT_GYRO_THR       (2.0f * DEG2RAD)    // per-axis gyro threshold
+#define ZUPT_COUNT_REQUIRED 5                    // consecutive still samples before ZUPT fires
 
 // Mild velocity decay (helps bound drift when filter is "almost stopped")
 #define VEL_DECAY           0.98f
 #define VEL_EPS             1e-3f
 
-// Outage-tiered Q inflation (conservative: prevent covariance blow-up)
+// Outage-tiered Q inflation
 #define TIER_A  2.0f
 #define TIER_B  10.0f
 #define TIER_C  60.0f
-#define QSCL_A  1.2f       // first 2s: barely inflate (IMU still reliable short-term)
-#define QSCL_B  2.0f       // 2-10s: moderate inflation
-#define QSCL_C  3.0f       // 10-60s: cap growth (was 6.0 — caused position blow-up)
-#define QSCL_D  4.0f       // >60s: ceiling (was 15.0 — made covariance explode)
+#define QSCL_A  1.5f       // first 2s
+#define QSCL_B  3.0f       // 2-10s
+#define QSCL_C  6.0f       // 10-60s
+#define QSCL_D  15.0f      // >60s
 
 // GNSS gating and fade-in
 #define CHI2_3DOF_GATE      16.0f            // chi2(3) 99.9% = 16.27 — rejects multipath outliers
@@ -135,7 +135,7 @@
 #define YAW_FUSION_ALPHA        (0.05f)      // fraction per GNSS update
 
 // Vehicle dynamics sanity limits (reject physically impossible values)
-#define MAX_ACCEL_ENU_MPS2  6.0f     // max believable acceleration for ground vehicle (~0.6g)
+#define MAX_ACCEL_ENU_MPS2  15.0f    // max believable acceleration for ground vehicle (~1.5g)
 #define MAX_GNSS_SPEED_MPS  55.0f    // ~200 km/h absolute cap
 #define MAX_GNSS_ACCEL_MPS2  8.0f    // max speed change per second (~0.8g between 1 Hz fixes)
 
@@ -196,13 +196,13 @@
  */
 #define IMU_SIGMA_ACCEL         (0.004f)    // m/s²/√Hz  (~5x ISM330 datasheet 80µg/√Hz)
 #define IMU_SIGMA_GYRO          (0.00035f)  // rad/s/√Hz (~5x ISM330 datasheet 3.8mdps/√Hz)
-#define IMU_SIGMA_ACCEL_BIAS    (0.002f)    // accel bias random walk (m/s²/√Hz) — loosened so filter can track bias changes
-#define IMU_SIGMA_GYRO_BIAS     (0.0005f)   // gyro bias random walk (rad/s/√Hz) — loosened so heading can converge with GNSS
+#define IMU_SIGMA_ACCEL_BIAS    (0.0005f)   // accel bias random walk (m/s²/√Hz)
+#define IMU_SIGMA_GYRO_BIAS     (0.0001f)   // gyro bias random walk (rad/s/√Hz)
 #define IMU_COVAR_POS   2.0f
 #define IMU_COVAR_VEL   1.0f           // m/s
 #define IMU_COVAR_ATT   (2.0f*DEG2RAD) // rad
-#define IMU_COVAR_BA    0.5f           // m/s^2 (~0.05g 1σ: covers typical ISM330 accel bias residual)
-#define IMU_COVAR_BG    0.15f          // rad/s  (~8.6°/s 1σ: covers boot-cal residual up to ~6°/s)
+#define IMU_COVAR_BA    0.075f         // m/s^2
+#define IMU_COVAR_BG    0.01f          // rad/s
 
 
 static int cal_led_exported = 0;
@@ -383,9 +383,20 @@ static void cal_led_deinit( void ){
 
 
 //---------------------------------NON blocking blink helper ----------------------
-static void cal_led_update(bool cal_in_progress, bool cal_done, double now_s){
+static void cal_led_update(bool cal_in_progress, bool cal_done, bool logging_active, double now_s){
     static double last_toggle_s = 0.0;
     static int led_state = 0;
+
+    if( logging_active )
+    {
+        // Fast blink (5 Hz) while EKF is running and data is being logged
+        if( (now_s - last_toggle_s) >= 0.1 ){
+            led_state = !led_state;
+            cal_led_set(led_state);
+            last_toggle_s = now_s;
+        }
+        return;
+    }
 
     if( cal_done )
     {
@@ -400,6 +411,7 @@ static void cal_led_update(bool cal_in_progress, bool cal_done, double now_s){
         return;
     }
 
+    // Slow blink (1 Hz) during calibration
     if( (now_s - last_toggle_s) >= 0.5 ){
         led_state = !led_state;
         cal_led_set(led_state);
@@ -1084,8 +1096,6 @@ static void ins15_inject(ins15_t *S, const float dx[15]) {
     S->ba.x += dx[9];  S->ba.y += dx[10]; S->ba.z += dx[11];
     S->bg.x += dx[12]; S->bg.y += dx[13]; S->bg.z += dx[14];
 
-    // Optional: Joseph-form covariance update would be better; we do standard KF update,
-    // then reset: P = (I-KH)P(I-KH)^T + K R K^T (done in update), so no extra here.
 }
 
 // Read-only NIS computation — does NOT modify state or covariance
@@ -1629,7 +1639,10 @@ static void* gnss_thread(void *arg) {
 
         pthread_mutex_lock(&C->mtx);
 
-        C->have_gnss = false;
+        // NOTE: do NOT clear have_gnss here — let the fusion thread consume it.
+        // Clearing it on every poll iteration caused a race: the non-blocking ioctl
+        // returns cached data instantly, so the GNSS thread loops thousands of times/sec
+        // and overwrites have_gnss=true before the fusion thread can see it.
         C->gnss_have_fix = f.have_fix ? 1 : 0;
         double tmeas = now_sec();
         C->last_gnss_meas_s = tmeas;
@@ -1729,8 +1742,9 @@ static void* gnss_thread(void *arg) {
             C->gnss_vel_valid = false;
 #endif
 
-            C->have_gnss = (C->gnss_have_fix && new_fix) ;
-// Mark GNSS measurement presence (independent of EKF gating)
+            // Only SET have_gnss on new fixes — fusion thread clears it after consuming
+            if (C->gnss_have_fix && new_fix)
+                C->have_gnss = true;
 
 
 
@@ -1769,6 +1783,7 @@ static void* fusion_thread(void *arg) {
     ctx_t *C = (ctx_t*)arg;
     static yaw_learn_t yawL = {0};
     uint64_t last_tick_ns = monotonic_ns();
+    //int sh, h;
 
     while (__atomic_load_n(&C->running, __ATOMIC_ACQUIRE)) {
         pthread_mutex_lock(&C->mtx);
@@ -1817,13 +1832,13 @@ static void* fusion_thread(void *arg) {
             }
 
             // Blink LED while calibration
-            cal_led_update(true, false, tcal_now);
+            cal_led_update(true, false, false, tcal_now);
 
             bool done = apply_poweron_calibration(&cal_accum_boot, &C->imu_raw, acc_b, 10.0f, tcal_now);
             if (done) {
                 C->imu_cal_done = true;
                 C->imu_cal_in_progress = false;
-                cal_led_update(false, true, tcal_now); // steady ON
+                cal_led_update(false, true, false, tcal_now); // steady ON — nav not ready yet
 
                 // Re-calibrate to get corrected gravity vector for initial tilt estimation
                 vec3f acc_corrected;
@@ -1837,7 +1852,9 @@ static void* fusion_thread(void *arg) {
                 printf("       boot_acc_mean = [%.4f, %.4f, %.4f]\n", C->boot_acc_mean.x, C->boot_acc_mean.y, C->boot_acc_mean.z);
             }
         } else {
-            cal_led_update(false, true, tcal_now);
+            // Cal done: fast blink if logging, steady ON if waiting for nav
+            bool logging = C->nav_ready && (C->logf != NULL);
+            cal_led_update(false, true, logging, tcal_now);
         }
 
 
@@ -1857,8 +1874,50 @@ static void* fusion_thread(void *arg) {
                     t_navwait = tnw;
                 }
             }
-            // Wait for enough good GNSS fixes to skip cold-start transient,
-            // then set ENU reference AND init nav from the SAME fix (atomic).
+            #if 0
+            // Store recent fix history for consistency checking
+            if (C->have_gnss && C->gnss_have_fix) {
+                int idx = C->init_hist_count < NAV_INIT_HISTORY
+                        ? C->init_hist_count
+                        : NAV_INIT_HISTORY - 1;
+                // Shift history if full
+                if (C->init_hist_count >= NAV_INIT_HISTORY) {
+                    for (int sh = 0; sh < NAV_INIT_HISTORY - 1; sh++) {
+                        C->init_alt_history[sh] = C->init_alt_history[sh+1];
+                        C->init_lat_history[sh] = C->init_lat_history[sh+1];
+                        C->init_lon_history[sh] = C->init_lon_history[sh+1];
+                    }
+                    idx = NAV_INIT_HISTORY - 1;
+                }
+                C->init_alt_history[idx] = C->gnss_alt_m;
+                C->init_lat_history[idx] = C->gnss_lat_rad;
+                C->init_lon_history[idx] = C->gnss_lon_rad;
+                if (C->init_hist_count < NAV_INIT_HISTORY)
+                    C->init_hist_count++;
+            }
+
+            // Wait for enough good GNSS fixes AND position consistency
+            // before committing the ENU reference. File 1 showed a 550m altitude
+            // jump at fix #3 because the receiver hadn't converged yet.
+            bool init_consistent = false;
+            if (C->init_hist_count >= NAV_INIT_HISTORY) {
+                double alt_min = C->init_alt_history[0], alt_max = alt_min;
+                for (int h = 1; h < NAV_INIT_HISTORY; h++) {
+                    if (C->init_alt_history[h] < alt_min) alt_min = C->init_alt_history[h];
+                    if (C->init_alt_history[h] > alt_max) alt_max = C->init_alt_history[h];
+                }
+                init_consistent = (alt_max - alt_min) < NAV_INIT_ALT_SPREAD;
+                if (!init_consistent) {
+                    static double t_last_warn = 0;
+                    double tw = now_sec();
+                    if (tw - t_last_warn > 5.0) {
+                        printf("[NAV_INIT] alt spread %.1fm (need <%.0fm) — waiting for GNSS convergence\n",
+                               alt_max - alt_min, NAV_INIT_ALT_SPREAD);
+                        t_last_warn = tw;
+                    }
+                }
+            }
+            #endif 
             if (C->have_gnss && C->gnss_have_fix &&
                 C->gnss_fix_count >= NAV_INIT_MIN_FIXES &&
                 (!C->gnss_hdop_valid || C->gnss_hdop <= NAV_INIT_HDOP_MAX)) {
@@ -1942,6 +2001,9 @@ static void* fusion_thread(void *arg) {
                     p0_h * p0_h, p0_v * p0_v);
 
                 C->have_gnss = false; // consume
+            } else {
+                // Consume even if conditions not met — GNSS thread only sets, never clears
+                C->have_gnss = false;
             }
 
             pthread_mutex_unlock(&C->mtx);
@@ -2036,21 +2098,13 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
         float vnorm = v3_norm(C->ins.v);
 
         // Hard velocity cap: no road vehicle exceeds ~55 m/s (~200 km/h)
-        // During GNSS outage, bad IMU integration can push velocity to absurd values
         if (vnorm > MAX_GNSS_SPEED_MPS) {
             C->ins.v = v3_scale(C->ins.v, MAX_GNSS_SPEED_MPS / vnorm);
             vnorm = MAX_GNSS_SPEED_MPS;
         }
 
-        // Velocity decay: tiered by speed AND outage duration
-        if (!C->gnss_present && C->outage_s > 3.0) {
-            // During extended outage, gently decay velocity to prevent runaway drift
-            // Decay strengthens with outage length: 0.995 at 3s → 0.98 at 10s → 0.95 at 30s+
-            float outage_decay = (C->outage_s < 10.0) ? 0.995f :
-                                 (C->outage_s < 30.0) ? 0.98f  : 0.95f;
-            C->ins.v = v3_scale(C->ins.v, outage_decay);
-        } else if (vnorm < 0.10f) {
-            // Near-stationary: strong decay to suppress residual creep
+        // Near-stationary velocity decay to suppress residual creep
+        if (vnorm < 0.10f) {
             float decay = (vnorm < 0.02f) ? 0.90f : VEL_DECAY;
             C->ins.v = v3_scale(C->ins.v, decay);
         }
@@ -2166,7 +2220,8 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                 C->ab_time = tnow_gnss;
                 C->ab_vel  = C->gnss_vel_valid ? C->gnss_vel_enu : v3(0,0,0);
             } else {
-                // Compute NIS first (read-only) then gate before applying update
+                // Adaptive gating: instead of hard-rejecting when NIS > gate,
+                // inflate R so the fix is accepted with reduced weight.
                 float nis_pos = 0.0f;
                 bool ok_nis = ins15_nis_gnss_pos(&C->ins, zpos, Rpos, &nis_pos);
                 bool gate_pos = ok_nis && (nis_pos < gate_thr);
@@ -2180,7 +2235,6 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                 }
 
                 if (C->reacq_left > 0) {
-                    // count down each GNSS attempt during reacq, regardless of accept
                     C->reacq_left--;
                 }
             }
@@ -2221,6 +2275,7 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
             }
             C->have_gnss = false; // consumed
         } else {
+            C->have_gnss = false; // consume stale flag (GNSS thread only sets, never clears)
             // Dead-reckoning status prints at ~2 Hz
             static double t_last = 0.0;
             double t = now_sec();
