@@ -74,7 +74,7 @@
 #define SNAP_MIN_OUTAGE_S     15.0f    // allow snap after long outage
 #define SNAP_INNOV_M          120.0f   // if horizontal innovation exceeds, snap to GNSS
 #define SNAP_HDOP_MAX         2.5f     // require decent HDOP for snap (TAU1204 multi-constellation)
-#define NAV_INIT_HDOP_MAX     2.5f     // require decent HDOP before initializing nav
+#define NAV_INIT_HDOP_MAX     4.0f     // require decent HDOP before initializing nav (relaxed: TAU1204 can report >2.5 after cold start)
 #define NAV_INIT_MIN_FIXES    2        // skip first N fixes — receiver needs time to converge
 
 #define GRAVITY             9.80665f
@@ -382,9 +382,20 @@ static void cal_led_deinit( void ){
 
 
 //---------------------------------NON blocking blink helper ----------------------
-static void cal_led_update(bool cal_in_progress, bool cal_done, double now_s){
+static void cal_led_update(bool cal_in_progress, bool cal_done, bool logging_active, double now_s){
     static double last_toggle_s = 0.0;
     static int led_state = 0;
+
+    if( logging_active )
+    {
+        // Fast blink (5 Hz) while EKF is running and data is being logged
+        if( (now_s - last_toggle_s) >= 0.1 ){
+            led_state = !led_state;
+            cal_led_set(led_state);
+            last_toggle_s = now_s;
+        }
+        return;
+    }
 
     if( cal_done )
     {
@@ -399,6 +410,7 @@ static void cal_led_update(bool cal_in_progress, bool cal_done, double now_s){
         return;
     }
 
+    // Slow blink (1 Hz) during calibration
     if( (now_s - last_toggle_s) >= 0.5 ){
         led_state = !led_state;
         cal_led_set(led_state);
@@ -1815,13 +1827,13 @@ static void* fusion_thread(void *arg) {
             }
 
             // Blink LED while calibration
-            cal_led_update(true, false, tcal_now);
+            cal_led_update(true, false, false, tcal_now);
 
             bool done = apply_poweron_calibration(&cal_accum_boot, &C->imu_raw, acc_b, 10.0f, tcal_now);
             if (done) {
                 C->imu_cal_done = true;
                 C->imu_cal_in_progress = false;
-                cal_led_update(false, true, tcal_now); // steady ON
+                cal_led_update(false, true, false, tcal_now); // steady ON — nav not ready yet
 
                 // Re-calibrate to get corrected gravity vector for initial tilt estimation
                 vec3f acc_corrected;
@@ -1835,7 +1847,9 @@ static void* fusion_thread(void *arg) {
                 printf("       boot_acc_mean = [%.4f, %.4f, %.4f]\n", C->boot_acc_mean.x, C->boot_acc_mean.y, C->boot_acc_mean.z);
             }
         } else {
-            cal_led_update(false, true, tcal_now);
+            // Cal done: fast blink if logging, steady ON if waiting for nav
+            bool logging = C->nav_ready && (C->logf != NULL);
+            cal_led_update(false, true, logging, tcal_now);
         }
 
 
