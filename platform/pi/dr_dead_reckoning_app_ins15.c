@@ -1798,7 +1798,11 @@ static void* fusion_thread(void *arg) {
         float acc_norm = v3_norm(acc_b);
 
         // ZUPT-like stillness condition (used for both constraints and calibration)
-         bool zupt_cond =
+        // Inhibit ZUPT when GNSS shows vehicle is moving — prevents false ZUPT
+        // at constant highway speed where calibrated IMU looks nearly stationary.
+        bool gnss_shows_motion = (C->gnss_have_fix && C->gnss_speed_mps > 1.0f);
+        bool zupt_cond =
+            !gnss_shows_motion &&
             (fabsf(acc_norm - GRAVITY) < ZUPT_ACC_THR) &&
             (fabsf(gyro_b.x) < ZUPT_GYRO_THR) &&
             (fabsf(gyro_b.y) < ZUPT_GYRO_THR) &&
