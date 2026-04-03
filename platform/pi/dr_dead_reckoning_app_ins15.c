@@ -74,8 +74,10 @@
 #define SNAP_MIN_OUTAGE_S     15.0f    // allow snap after long outage
 #define SNAP_INNOV_M          120.0f   // if horizontal innovation exceeds, snap to GNSS
 #define SNAP_HDOP_MAX         2.5f     // require decent HDOP for snap (TAU1204 multi-constellation)
-#define NAV_INIT_HDOP_MAX     2.5f     // require decent HDOP before initializing nav
+#define NAV_INIT_HDOP_MAX     10.0f    // relaxed for first fix — get initialized fast
 #define NAV_INIT_MIN_FIXES    2        // skip first N fixes (TAU1204 converges faster than single-band)
+#define GNSS_FUSION_HDOP_MAX  2.5f     // strict HDOP gate after initial convergence
+#define GNSS_HDOP_CONVERGE_FIXES 5     // number of accepted fixes before tightening HDOP
 
 #define GRAVITY             9.80665f
 #ifndef M_PI
@@ -1495,6 +1497,7 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
     vec3f boot_acc_mean;        // mean accel from power-on calibration (for initial tilt)
     bool heading_observed;      // true after first GPS heading update at speed
     int  gnss_fix_count;        // counts valid GNSS fixes received (for cold-start skip)
+    int  gnss_accepted_count;   // counts GNSS position updates accepted by EKF (for adaptive HDOP)
 
 } ctx_t;
 
@@ -2126,6 +2129,18 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
             zpos.x, zpos.y, zpos.z, 
             C->ins.p.x, C->ins.p.y, C->ins.p.z);
             float hdop = (C->gnss_hdop_valid ? C->gnss_hdop : 1.0f);
+
+            // Adaptive HDOP gate: relaxed for first few fixes, strict after convergence
+            float hdop_limit = (C->gnss_accepted_count < GNSS_HDOP_CONVERGE_FIXES)
+                             ? NAV_INIT_HDOP_MAX       // 10.0 — accept anything to converge
+                             : GNSS_FUSION_HDOP_MAX;   //  2.5 — quality gate after convergence
+            if (C->gnss_hdop_valid && hdop > hdop_limit) {
+                dbg_printf(C, "GNSS_HDOP_REJECT hdop=%.2f limit=%.1f accepted=%d",
+                           hdop, hdop_limit, C->gnss_accepted_count);
+                C->have_gnss = false; // consumed — skip this fix
+                goto gnss_done;
+            }
+
             float Rpos = R_GNSS_POS_VAR * hdop * hdop;
 
             // Reacquisition: if we haven't ACCEPTED GNSS for a while, relax gating and inflate R
@@ -2164,6 +2179,7 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                 C->last_gnss_used_pos = 1;
                 C->snap_applied = true;
                 C->last_nis_pos = 0.0f;
+                C->gnss_accepted_count++;
                 C->reacq_left = 0; // done
                 // Reset alpha-beta tracker so it re-seeds from snapped position
                 C->ab_pos  = zpos;
@@ -2181,6 +2197,7 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                     C->last_gnss_used_s = tnow2;
                     C->gnss_valid = true;
                     C->last_gnss_used_pos = 1;
+                    C->gnss_accepted_count++;
                 }
 
                 if (C->reacq_left > 0) {
@@ -2223,6 +2240,7 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                 ins15_update_heading(&C->ins, C->gnss_heading_rad, R_hdg);
                 if (!C->heading_observed) C->heading_observed = true;
             }
+            gnss_done:
             C->have_gnss = false; // consumed
         } else {
             // Dead-reckoning status prints at ~2 Hz
