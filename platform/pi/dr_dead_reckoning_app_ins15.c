@@ -76,7 +76,8 @@
 #define SNAP_HDOP_MAX         2.5f     // require decent HDOP for snap (TAU1204 multi-constellation)
 #define NAV_INIT_HDOP_MAX     10.0f    // relaxed for first fix — get initialized fast
 #define NAV_INIT_MIN_FIXES    2        // skip first N fixes (TAU1204 converges faster than single-band)
-#define GNSS_FUSION_HDOP_MAX  2.5f     // strict HDOP gate after initial convergence
+#define GNSS_FUSION_HDOP_MAX  4.0f     // strict HDOP gate after initial convergence
+                                       // (TAU1204 typically reports 2.0-3.5, must not reject these)
 #define GNSS_HDOP_CONVERGE_FIXES 5     // number of accepted fixes before tightening HDOP
 
 #define GRAVITY             9.80665f
@@ -2049,13 +2050,14 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
             vnorm = MAX_GNSS_SPEED_MPS;
         }
 
-        // Velocity decay: tiered by speed AND outage duration
+        // Velocity decay: tiered by outage duration, TIME-BASED (per-second rates)
+        // NOTE: decay must use powf(rate, dt) because this runs at IMU rate (~100 Hz).
+        // Without dt scaling, a "0.95" factor applied 100x/sec kills velocity instantly.
         if (!C->gnss_present && C->outage_s > 3.0) {
-            // During extended outage, gently decay velocity to prevent runaway drift
-            // Decay strengthens with outage length: 0.995 at 3s → 0.98 at 10s → 0.95 at 30s+
-            float outage_decay = (C->outage_s < 10.0) ? 0.995f :
-                                 (C->outage_s < 30.0) ? 0.98f  : 0.95f;
-            C->ins.v = v3_scale(C->ins.v, outage_decay);
+            // Per-second retention: 95% → 90% → 80% as outage grows
+            float decay_per_s = (C->outage_s < 10.0f) ? 0.95f :
+                                (C->outage_s < 30.0f) ? 0.90f : 0.80f;
+            C->ins.v = v3_scale(C->ins.v, powf(decay_per_s, dt));
         } else if (vnorm < 0.10f) {
             // Near-stationary: strong decay to suppress residual creep
             float decay = (vnorm < 0.02f) ? 0.90f : VEL_DECAY;
