@@ -1499,6 +1499,7 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
     bool heading_observed;      // true after first GPS heading update at speed
     int  gnss_fix_count;        // counts valid GNSS fixes received (for cold-start skip)
     int  gnss_accepted_count;   // counts GNSS position updates accepted by EKF (for adaptive HDOP)
+    double last_moving_s;       // last time EKF velocity exceeded motion threshold (for ZUPT inhibit)
 
 } ctx_t;
 
@@ -1801,12 +1802,23 @@ static void* fusion_thread(void *arg) {
 
         float acc_norm = v3_norm(acc_b);
 
-        // ZUPT-like stillness condition (used for both constraints and calibration)
-        // Inhibit ZUPT when GNSS shows vehicle is moving — prevents false ZUPT
-        // at constant highway speed where calibrated IMU looks nearly stationary.
+        // ZUPT inhibition: multiple signals to prevent false stillness during driving.
+        // Problem: on smooth roads, calibrated IMU looks nearly stationary, and GNSS speed
+        // is often 0 (TAU1204 doesn't always report speed). ZUPT then fires while driving,
+        // killing velocity and freezing position — destroying dead-reckoning.
+        //
+        // Solution: track when EKF velocity was last significant. If the vehicle was recently
+        // moving, ZUPT cannot fire even if IMU looks "still". This breaks the ZUPT→zero-vel
+        // death spiral because EKF velocity persists from the last good state.
+        double tnow_zupt = now_sec();
+        float ekf_speed = v3_norm(C->ins.v);
+        if (ekf_speed > 0.5f) {
+            C->last_moving_s = tnow_zupt;
+        }
         bool gnss_shows_motion = (C->gnss_have_fix && C->gnss_speed_mps > 1.0f);
+        bool recently_moving = (C->last_moving_s > 0 && (tnow_zupt - C->last_moving_s) < 30.0);
         bool zupt_cond =
-            !gnss_shows_motion &&
+            !(gnss_shows_motion || recently_moving) &&
             (fabsf(acc_norm - GRAVITY) < ZUPT_ACC_THR) &&
             (fabsf(gyro_b.x) < ZUPT_GYRO_THR) &&
             (fabsf(gyro_b.y) < ZUPT_GYRO_THR) &&
@@ -2050,14 +2062,13 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
             vnorm = MAX_GNSS_SPEED_MPS;
         }
 
-        // Velocity decay: tiered by outage duration, TIME-BASED (per-second rates)
-        // NOTE: decay must use powf(rate, dt) because this runs at IMU rate (~100 Hz).
-        // Without dt scaling, a "0.95" factor applied 100x/sec kills velocity instantly.
-        if (!C->gnss_present && C->outage_s > 3.0) {
-            // Per-second retention: 95% → 90% → 80% as outage grows
-            float decay_per_s = (C->outage_s < 10.0f) ? 0.95f :
-                                (C->outage_s < 30.0f) ? 0.90f : 0.80f;
-            C->ins.v = v3_scale(C->ins.v, powf(decay_per_s, dt));
+        // Velocity decay during GNSS outage: very gentle, TIME-BASED.
+        // DR relies on IMU-propagated velocity. Aggressive decay defeats dead-reckoning.
+        // The EKF Q-inflation already models growing uncertainty during outage.
+        // Only apply mild decay to prevent truly runaway drift after very long outages.
+        if (!C->gnss_present && C->outage_s > 30.0) {
+            // 99% retention per second → halves in ~70 seconds. Gentle enough for DR.
+            C->ins.v = v3_scale(C->ins.v, powf(0.99f, dt));
         } else if (vnorm < 0.10f) {
             // Near-stationary: strong decay to suppress residual creep
             float decay = (vnorm < 0.02f) ? 0.90f : VEL_DECAY;
@@ -2245,14 +2256,22 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
             gnss_done:
             C->have_gnss = false; // consumed
         } else {
-            // Dead-reckoning status prints at ~2 Hz
+            // Dead-reckoning status prints at ~2 Hz (enhanced for DR debugging)
             static double t_last = 0.0;
             double t = now_sec();
             if (t - t_last > 0.5) {
-                dbg_printf(C, "DR: outage=%.1fs qS=%.1f p=(%.1f,%.1f,%.1f) v=(%.2f,%.2f,%.2f)\n",
+                float dr_speed = v3_norm(C->ins.v);
+                float since_moving = (C->last_moving_s > 0) ? (float)(t - C->last_moving_s) : -1.0f;
+                dbg_printf(C, "DR: outage=%.1fs qS=%.1f p=(%.1f,%.1f,%.1f) v=(%.2f,%.2f,%.2f) "
+                        "|v|=%.2f zupt=%d anchor=%d since_mov=%.1fs gnss_spd=%.1f",
                         C->outage_s, C->qscale,
                         C->ins.p.x, C->ins.p.y, C->ins.p.z,
-                        C->ins.v.x, C->ins.v.y, C->ins.v.z);
+                        C->ins.v.x, C->ins.v.y, C->ins.v.z,
+                        dr_speed,
+                        (C->zupt_count >= ZUPT_COUNT_REQUIRED) ? 1 : 0,
+                        C->anchor_set ? 1 : 0,
+                        since_moving,
+                        C->gnss_speed_mps);
                 t_last = t;
             }
         }
