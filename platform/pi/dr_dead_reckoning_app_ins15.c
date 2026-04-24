@@ -1890,19 +1890,27 @@ static void* fusion_thread(void *arg) {
             // Stage 5: bump detection — acceleration magnitude deviates from 1g
             bool bump = (fabsf(acc_mag - GRAVITY) > BUMP_ACC_THR_MPS2);
 
-            // Stage 6: acceleration limiting/suppression
-            // If bump: scale body-frame acc so |acc| <= g + BUMP_THR, preserving direction
-            vec3f acc_proc  = acc_lpf;
-            vec3f gyro_proc = gyro_lpf;
-            if (bump && acc_mag > 0.01f) {
-                float lim = GRAVITY + BUMP_ACC_THR_MPS2;
-                acc_proc = v3_scale(acc_lpf, lim / acc_mag);
-                dbg_printf(C, "BUMP: |a|=%.2f dev=%.2f vib_e=%.4f",
+            // Stage 6: bump filtering — gate corrupted acc out of the EKF.
+            // On a bump the accelerometer spike must not integrate into velocity.
+            // Replace acc_b with gravity-in-body-frame so the specific force
+            // is exactly zero in ENU → EKF coasts at constant velocity.
+            // Gyro is kept: attitude must keep tracking through the bump.
+            if (!bump) {
+                acc_b  = acc_lpf;
+                gyro_b = gyro_lpf;
+            } else {
+                // R maps body→ENU (from ins15_predict convention).
+                // Gravity in body = R^T * [0,0,g] = column 2 of R scaled by g.
+                // Column 2 of R: [R[2], R[5], R[8]] (row-major).
+                float Rmat[9]; R_from_q(C->ins.q, Rmat);
+                vec3f grav_body = v3(Rmat[2]*GRAVITY, Rmat[5]*GRAVITY, Rmat[8]*GRAVITY);
+                // acc_b = ba + grav_body  →  specific force (acc_b - ba) = grav_body
+                // →  f_enu = R * grav_body = [0,0,g]  →  a_enu = 0
+                acc_b  = v3_add(C->ins.ba, grav_body);
+                gyro_b = gyro_lpf;
+                dbg_printf(C, "BUMP_FILTERED: |a|=%.2f dev=%.2f vib_e=%.4f -> zero-acc coast",
                            acc_mag, acc_mag - GRAVITY, gyro_vib_e);
             }
-
-            acc_b  = acc_proc;
-            gyro_b = gyro_proc;
         }
 
         float acc_norm = v3_norm(acc_b);
