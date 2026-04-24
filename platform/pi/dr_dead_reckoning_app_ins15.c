@@ -142,6 +142,12 @@
 #define MAX_GNSS_SPEED_MPS  55.0f    // ~200 km/h absolute cap
 #define MAX_GNSS_ACCEL_MPS2  8.0f    // max speed change per second (~0.8g between 1 Hz fixes)
 
+// IMU signal processing pipeline
+#define MEDFILT_LEN        5        // median filter window: 5 samples = 50 ms @ 100 Hz
+#define IMU_LPF_ALPHA      0.3f     // IIR low-pass weight on new sample (~20 Hz cutoff @ 100 Hz)
+#define BUMP_ACC_THR_MPS2  4.0f     // |acc_mag - g| to declare bump (m/s²; ~0.4g above 1g)
+#define BUMP_GYRO_THR_RS   (8.0f * DEG2RAD)  // per-axis gyro vibration threshold (rad/s)
+
 // GNSS sawtooth correction: alpha-beta position-velocity tracker
 // 2nd-order filter that tracks both position and velocity, removing
 // the 1 Hz PVT sawtooth without creating N-sample oscillations.
@@ -223,6 +229,17 @@ static inline double now_sec(void) { return (double)monotonic_ns() * 1e-9; }
 
 static inline float clampf(float x, float lo, float hi) {
     return (x < lo) ? lo : (x > hi) ? hi : x;
+}
+
+static float medf5(const float buf[5]) {
+    float s[5]; int i, j; float t;
+    s[0]=buf[0]; s[1]=buf[1]; s[2]=buf[2]; s[3]=buf[3]; s[4]=buf[4];
+    for (i = 1; i < 5; i++) {
+        t = s[i]; j = i-1;
+        while (j >= 0 && s[j] > t) { s[j+1] = s[j]; j--; }
+        s[j+1] = t;
+    }
+    return s[2];
 }
 
 static inline float wrap_pi(float a) {
@@ -437,6 +454,39 @@ static void ecef2enu(ecef_t e, lla_t ref, ecef_t e0, double out[3]) {
     out[0] = -s0*dx + c0*dy;                          // East
     out[1] = -s1*c0*dx - s1*s0*dy + c1*dz;             // North
     out[2] =  c1*c0*dx + c1*s0*dy + s1*dz;             // Up
+}
+
+static ecef_t enu2ecef(double e_m, double n_m, double u_m, lla_t ref, ecef_t e0) {
+    double s1 = sin(ref.lat), c1 = cos(ref.lat);
+    double s0 = sin(ref.lon), c0 = cos(ref.lon);
+    ecef_t r;
+    r.x = e0.x + (-s0)*e_m + (-s1*c0)*n_m + (c1*c0)*u_m;
+    r.y = e0.y + ( c0)*e_m + (-s1*s0)*n_m + (c1*s0)*u_m;
+    r.z = e0.z +             (    c1)*n_m  + (   s1)*u_m;
+    return r;
+}
+
+static lla_t ecef2lla(ecef_t e) {
+    lla_t L;
+    int i;
+    L.lon = atan2(e.y, e.x);
+    double p = sqrt(e.x*e.x + e.y*e.y);
+    double lat = atan2(e.z, p*(1.0 - e2));
+    for (i = 0; i < 10; i++) {
+        double s = sin(lat);
+        double N = aWGS / sqrt(1.0 - e2*s*s);
+        double h = p / cos(lat) - N;
+        double lat_new = atan2(e.z, p*(1.0 - e2*(N/(N+h))));
+        if (fabs(lat_new - lat) < 1e-12) { lat = lat_new; break; }
+        lat = lat_new;
+    }
+    {
+        double s = sin(lat);
+        double N_val = aWGS / sqrt(1.0 - e2*s*s);
+        L.lat = lat;
+        L.h = p / cos(lat) - N_val;
+    }
+    return L;
 }
 
 // ------------------------- Calibration (persistent + online trims ) -------------------------
@@ -1526,7 +1576,7 @@ static void make_log_file(ctx_t *C) {
 
     fprintf(C->logf,
         "time_s,"
-        "E,N,U,"
+        "ekf_lat,ekf_lon,"
         "V_E,V_N,V_U,"
         "A_E,A_N,A_U,"
         "yaw_deg,"
@@ -1799,6 +1849,61 @@ static void* fusion_thread(void *arg) {
         vec3f acc_b, gyro_b;
         calib_accel(&C->imu_raw, &acc_b);
         calib_gyro(&C->imu_raw, &gyro_b);
+
+        // --- IMU signal processing pipeline ---
+        // Stage 1: median filter (spike removal)
+        {
+            static float ax_buf[MEDFILT_LEN], ay_buf[MEDFILT_LEN], az_buf[MEDFILT_LEN];
+            static float gx_buf[MEDFILT_LEN], gy_buf[MEDFILT_LEN], gz_buf[MEDFILT_LEN];
+            static int   mf_idx = 0;
+            static bool  mf_rdy = false;
+
+            ax_buf[mf_idx] = acc_b.x;  ay_buf[mf_idx] = acc_b.y;  az_buf[mf_idx] = acc_b.z;
+            gx_buf[mf_idx] = gyro_b.x; gy_buf[mf_idx] = gyro_b.y; gz_buf[mf_idx] = gyro_b.z;
+            mf_idx = (mf_idx + 1) % MEDFILT_LEN;
+            if (mf_idx == 0) mf_rdy = true;
+
+            vec3f acc_med = acc_b, gyro_med = gyro_b;
+            if (mf_rdy) {
+                acc_med  = v3(medf5(ax_buf), medf5(ay_buf), medf5(az_buf));
+                gyro_med = v3(medf5(gx_buf), medf5(gy_buf), medf5(gz_buf));
+            }
+
+            // Stage 2: IIR low-pass filter (vibration reduction)
+            static vec3f acc_lpf, gyro_lpf;
+            static bool  lpf_init = false;
+            if (!lpf_init) { acc_lpf = acc_med; gyro_lpf = gyro_med; lpf_init = true; }
+            acc_lpf.x  = IMU_LPF_ALPHA * acc_med.x  + (1.0f - IMU_LPF_ALPHA) * acc_lpf.x;
+            acc_lpf.y  = IMU_LPF_ALPHA * acc_med.y  + (1.0f - IMU_LPF_ALPHA) * acc_lpf.y;
+            acc_lpf.z  = IMU_LPF_ALPHA * acc_med.z  + (1.0f - IMU_LPF_ALPHA) * acc_lpf.z;
+            gyro_lpf.x = IMU_LPF_ALPHA * gyro_med.x + (1.0f - IMU_LPF_ALPHA) * gyro_lpf.x;
+            gyro_lpf.y = IMU_LPF_ALPHA * gyro_med.y + (1.0f - IMU_LPF_ALPHA) * gyro_lpf.y;
+            gyro_lpf.z = IMU_LPF_ALPHA * gyro_med.z + (1.0f - IMU_LPF_ALPHA) * gyro_lpf.z;
+
+            // Stage 3: acceleration magnitude from filtered signal
+            float acc_mag = v3_norm(acc_lpf);
+
+            // Stage 4: gyro vibration energy (high-frequency component power)
+            vec3f gyro_hf = v3_sub(gyro_med, gyro_lpf);
+            float gyro_vib_e = gyro_hf.x*gyro_hf.x + gyro_hf.y*gyro_hf.y + gyro_hf.z*gyro_hf.z;
+
+            // Stage 5: bump detection — acceleration magnitude deviates from 1g
+            bool bump = (fabsf(acc_mag - GRAVITY) > BUMP_ACC_THR_MPS2);
+
+            // Stage 6: acceleration limiting/suppression
+            // If bump: scale body-frame acc so |acc| <= g + BUMP_THR, preserving direction
+            vec3f acc_proc  = acc_lpf;
+            vec3f gyro_proc = gyro_lpf;
+            if (bump && acc_mag > 0.01f) {
+                float lim = GRAVITY + BUMP_ACC_THR_MPS2;
+                acc_proc = v3_scale(acc_lpf, lim / acc_mag);
+                dbg_printf(C, "BUMP: |a|=%.2f dev=%.2f vib_e=%.4f",
+                           acc_mag, acc_mag - GRAVITY, gyro_vib_e);
+            }
+
+            acc_b  = acc_proc;
+            gyro_b = gyro_proc;
+        }
 
         float acc_norm = v3_norm(acc_b);
 
@@ -2296,9 +2401,20 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                     errH = sqrtf(errE*errE + errN*errN);
                 }
 
+                // Convert EKF ENU position to lat/lon for CSV (Google Maps compatible)
+                double ekf_lat_deg = 0.0, ekf_lon_deg = 0.0;
+                if (C->enu_ref_set) {
+                    ecef_t ekf_ecef = enu2ecef(
+                        (double)C->ins.p.x, (double)C->ins.p.y, (double)C->ins.p.z,
+                        C->enu_ref_lla, C->enu_ref_ecef);
+                    lla_t ekf_lla = ecef2lla(ekf_ecef);
+                    ekf_lat_deg = ekf_lla.lat * (180.0 / M_PI);
+                    ekf_lon_deg = ekf_lla.lon * (180.0 / M_PI);
+                }
+
                 fprintf(C->logf,
                     "%.3f,"
-                    "%.3f,%.3f,%.3f,"
+                    "%.9f,%.9f,"
                     "%.3f,%.3f,%.3f,"
                     "%.3f,%.3f,%.3f,"
                     "%.2f,"
@@ -2311,7 +2427,7 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                     "%.3f,%.2f,%.2f,%.2f,%.3f,"
                     "%.3f,%.3f,%.3f,%d,%d\n",
                     tlog,
-                    C->ins.p.x, C->ins.p.y, C->ins.p.z,
+                    ekf_lat_deg, ekf_lon_deg,
                     C->ins.v.x, C->ins.v.y, C->ins.v.z,
                     C->last_aw.x, C->last_aw.y, C->last_aw.z,
                     yaw_deg,
