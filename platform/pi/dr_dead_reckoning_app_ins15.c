@@ -109,27 +109,34 @@
 #define VEL_DECAY           0.98f
 #define VEL_EPS             1e-3f
 
-// Outage-tiered Q inflation (conservative: prevent covariance blow-up)
+// Outage-tiered Q inflation
+// Profile: gentle in the first ~10 s (IMU integration still reliable), then
+// faster growth so EKF position covariance honestly reflects DR drift bound.
+// Capped at 6× to avoid covariance blow-up that historically caused position
+// snaps when GNSS came back.
 #define TIER_A  2.0f
 #define TIER_B  10.0f
 #define TIER_C  60.0f
-#define QSCL_A  1.2f       // first 2s: barely inflate (IMU still reliable short-term)
-#define QSCL_B  2.0f       // 2-10s: moderate inflation
-#define QSCL_C  3.0f       // 10-60s: cap growth (was 6.0 — caused position blow-up)
-#define QSCL_D  4.0f       // >60s: ceiling (was 15.0 — made covariance explode)
+#define QSCL_A  1.3f       // first 2 s: minimal inflate
+#define QSCL_B  2.5f       // 2-10 s: moderate
+#define QSCL_C  4.0f       // 10-60 s: meaningful drift growth
+#define QSCL_D  6.0f       // >60 s: ceiling — honest about long-DR uncertainty
 
 // GNSS gating and fade-in
-#define CHI2_3DOF_GATE      16.0f            // chi2(3) 99.9% = 16.27 — rejects multipath outliers
-#define R_GNSS_POS_VAR      1.0f             // base (m^2), TAU1204 CEP<1m (0.81m measured), ×HDOP^2
+// Gate relaxed to chi²(3) 99.99% so transient prediction errors (e.g. brief
+// IMU spike, attitude correction) don't reject otherwise-good GNSS fixes.
+// Outliers are still caught — chi²=24 means innovation σ-distance > 4.9.
+#define CHI2_3DOF_GATE      24.0f            // chi²(3) 99.99% = 23.93 (was 16.0)
+#define R_GNSS_POS_VAR      0.6f             // base (m^2), TAU1204 CEP<1m → tighten so GNSS pulls EKF harder
 #define FADE_IN_FACT_INIT   4.0f
 #define FADE_IN_STEPS       3
 
-// Measurement noise
-#define RV_VEL_E            (0.02f)          // (0.14 m/s)^2 — TAU1204 dual-band velocity accuracy ~0.1 m/s
-#define RV_VEL_N            (0.02f)
-#define RV_VEL_U            (0.36f)          // (0.60 m/s)^2
-#define R_NHC_VY            (0.015f)         // (m/s)^2 — slightly relaxed for turn robustness
-#define R_NHC_VZ            (0.04f)
+// Measurement noise — TAU1204 dual-band: position CEP <1 m, velocity ~0.1 m/s
+#define RV_VEL_E            (0.01f)          // (0.10 m/s)^2 — was 0.02
+#define RV_VEL_N            (0.01f)
+#define RV_VEL_U            (0.25f)          // (0.50 m/s)^2 — was 0.36
+#define R_NHC_VY            (0.01f)          // (0.10 m/s)^2 — stricter no-slip for ground vehicle
+#define R_NHC_VZ            (0.025f)         // (0.16 m/s)^2 — stricter no-jump
 #define R_ZUPT_V            (0.0004f)        // (m/s)^2
 
 // GNSS yaw fusion (optional complementary yaw correction)
@@ -145,7 +152,7 @@
 // IMU signal processing pipeline
 #define MEDFILT_LEN        5        // median filter window: 5 samples = 50 ms @ 100 Hz
 #define IMU_LPF_ALPHA      0.3f     // IIR low-pass weight on new sample (~20 Hz cutoff @ 100 Hz)
-#define BUMP_ACC_THR_MPS2  4.0f     // |acc_mag - g| to declare bump (m/s²; ~0.4g above 1g)
+#define BUMP_ACC_THR_MPS2  5.0f     // |acc_vert - g| to declare bump (m/s²; ~0.5g, vertical axis only)
 #define BUMP_GYRO_THR_RS   (8.0f * DEG2RAD)  // per-axis gyro vibration threshold (rad/s)
 
 // GNSS sawtooth correction: alpha-beta position-velocity tracker
@@ -201,12 +208,17 @@
 /* Noise Figures of IMU — ISM330DLC datasheet + practical margin
  * Datasheet typical: accel 80 µg/√Hz = 7.85e-4 m/s²/√Hz
  *                    gyro  3.8 mdps/√Hz = 6.63e-5 rad/s/√Hz
- * Using ~5x datasheet to account for vibration, mounting, vehicle dynamics.
+ * Tuning rationale:
+ *   - Process noise (SIGMA_ACCEL/GYRO) sized at ~10× datasheet — real on-vehicle
+ *     noise is dominated by suspension/engine vibration, not sensor floor.
+ *     Higher Q lets GNSS pull tighter in steady-state (less EKF overconfidence).
+ *   - Bias random walks (BIAS) tightened — once biases converge from GNSS/ZUPT,
+ *     they should stay stable through outages so DR drifts only from velocity noise.
  */
-#define IMU_SIGMA_ACCEL         (0.004f)    // m/s²/√Hz  (~5x ISM330 datasheet 80µg/√Hz)
-#define IMU_SIGMA_GYRO          (0.00035f)  // rad/s/√Hz (~5x ISM330 datasheet 3.8mdps/√Hz)
-#define IMU_SIGMA_ACCEL_BIAS    (0.002f)    // accel bias random walk (m/s²/√Hz) — loosened so filter can track bias changes
-#define IMU_SIGMA_GYRO_BIAS     (0.0005f)   // gyro bias random walk (rad/s/√Hz) — loosened so heading can converge with GNSS
+#define IMU_SIGMA_ACCEL         (0.008f)    // m/s²/√Hz — 10× datasheet, vibration-aware
+#define IMU_SIGMA_GYRO          (0.0007f)   // rad/s/√Hz — 10× datasheet, road-coupling aware
+#define IMU_SIGMA_ACCEL_BIAS    (0.0008f)   // m/s²/√Hz — slow walk so bias survives DR outages
+#define IMU_SIGMA_GYRO_BIAS     (0.0002f)   // rad/s/√Hz — slow walk for stable heading in DR
 #define IMU_COVAR_POS   2.0f
 #define IMU_COVAR_VEL   1.0f           // m/s
 #define IMU_COVAR_ATT   (2.0f*DEG2RAD) // rad
@@ -1880,36 +1892,45 @@ static void* fusion_thread(void *arg) {
             gyro_lpf.y = IMU_LPF_ALPHA * gyro_med.y + (1.0f - IMU_LPF_ALPHA) * gyro_lpf.y;
             gyro_lpf.z = IMU_LPF_ALPHA * gyro_med.z + (1.0f - IMU_LPF_ALPHA) * gyro_lpf.z;
 
-            // Stage 3: acceleration magnitude from filtered signal
-            float acc_mag = v3_norm(acc_lpf);
+            // Attitude-based vertical direction in body frame.
+            // R maps body→ENU; column 2 of R = [R[2], R[5], R[8]] is the body-frame
+            // up-axis expressed in ENU, i.e. R^T * [0,0,1] is up in body coords.
+            float Rmat[9]; R_from_q(C->ins.q, Rmat);
+            vec3f up_body = v3(Rmat[2], Rmat[5], Rmat[8]);
+
+            // Stage 3: vertical and total acceleration magnitude
+            // Only the vertical component is relevant for bump detection.
+            // Cornering adds centripetal force horizontally — using total |a|
+            // would falsely trigger at every turn (e.g. 60 km/h / 30 m radius
+            // gives centripetal ≈ 9 m/s², |a_total| ≈ 13.5 m/s², deviation ≈ 3.7 m/s²).
+            float acc_vert  = v3_dot(acc_lpf, up_body);   // component along gravity axis
+            vec3f acc_horiz = v3_sub(acc_lpf, v3_scale(up_body, acc_vert)); // lateral+forward
+            float acc_mag   = v3_norm(acc_lpf);           // kept for logging only
 
             // Stage 4: gyro vibration energy (high-frequency component power)
             vec3f gyro_hf = v3_sub(gyro_med, gyro_lpf);
             float gyro_vib_e = gyro_hf.x*gyro_hf.x + gyro_hf.y*gyro_hf.y + gyro_hf.z*gyro_hf.z;
 
-            // Stage 5: bump detection — acceleration magnitude deviates from 1g
-            bool bump = (fabsf(acc_mag - GRAVITY) > BUMP_ACC_THR_MPS2);
+            // Stage 5: bump detection — VERTICAL acceleration deviates from g.
+            // Cornering does not affect acc_vert (centripetal is horizontal),
+            // so only genuine road bumps trigger this gate.
+            bool bump = (fabsf(acc_vert - GRAVITY) > BUMP_ACC_THR_MPS2);
 
-            // Stage 6: bump filtering — gate corrupted acc out of the EKF.
-            // On a bump the accelerometer spike must not integrate into velocity.
-            // Replace acc_b with gravity-in-body-frame so the specific force
-            // is exactly zero in ENU → EKF coasts at constant velocity.
-            // Gyro is kept: attitude must keep tracking through the bump.
+            // Stage 6: vertical-only bump clamping.
+            // Clamp only the vertical component to g ± BUMP_THR.
+            // Horizontal (forward/lateral) dynamics are fully preserved so the
+            // EKF can still track acceleration, braking, and cornering correctly.
+            // Gyro is always kept — attitude must track through the bump.
+            gyro_b = gyro_lpf;
             if (!bump) {
-                acc_b  = acc_lpf;
-                gyro_b = gyro_lpf;
+                acc_b = acc_lpf;
             } else {
-                // R maps body→ENU (from ins15_predict convention).
-                // Gravity in body = R^T * [0,0,g] = column 2 of R scaled by g.
-                // Column 2 of R: [R[2], R[5], R[8]] (row-major).
-                float Rmat[9]; R_from_q(C->ins.q, Rmat);
-                vec3f grav_body = v3(Rmat[2]*GRAVITY, Rmat[5]*GRAVITY, Rmat[8]*GRAVITY);
-                // acc_b = ba + grav_body  →  specific force (acc_b - ba) = grav_body
-                // →  f_enu = R * grav_body = [0,0,g]  →  a_enu = 0
-                acc_b  = v3_add(C->ins.ba, grav_body);
-                gyro_b = gyro_lpf;
-                dbg_printf(C, "BUMP_FILTERED: |a|=%.2f dev=%.2f vib_e=%.4f -> zero-acc coast",
-                           acc_mag, acc_mag - GRAVITY, gyro_vib_e);
+                float vert_clamped = clampf(acc_vert,
+                                            -(GRAVITY + BUMP_ACC_THR_MPS2),
+                                             (GRAVITY + BUMP_ACC_THR_MPS2));
+                acc_b = v3_add(acc_horiz, v3_scale(up_body, vert_clamped));
+                dbg_printf(C, "BUMP: |a|=%.2f a_vert=%.2f dev=%.2f vib_e=%.4f -> vert clamped",
+                           acc_mag, acc_vert, acc_vert - GRAVITY, gyro_vib_e);
             }
         }
 
