@@ -229,6 +229,134 @@
 static int cal_led_exported = 0;
 static int cal_led_value_fd = -1;
 
+// ------------------------- Small math utils -------------------------
+
+static inline uint64_t monotonic_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+static inline double now_sec(void) { return (double)monotonic_ns() * 1e-9; }
+
+static inline float clampf(float x, float lo, float hi) {
+    return (x < lo) ? lo : (x > hi) ? hi : x;
+}
+
+static float medf5(const float buf[5]) {
+    float s[5]; int i, j; float t;
+    s[0]=buf[0]; s[1]=buf[1]; s[2]=buf[2]; s[3]=buf[3]; s[4]=buf[4];
+    for (i = 1; i < 5; i++) {
+        t = s[i]; j = i-1;
+        while (j >= 0 && s[j] > t) { s[j+1] = s[j]; j--; }
+        s[j+1] = t;
+    }
+    return s[2];
+}
+
+static inline float wrap_pi(float a) {
+    while (a > (float)M_PI) a -= 2.0f*(float)M_PI;
+    while (a <= -(float)M_PI) a += 2.0f*(float)M_PI;
+    return a;
+}
+
+typedef struct { float w, x, y, z; } quatf;
+typedef struct { float x, y, z; } vec3f;
+
+static inline vec3f v3(float x, float y, float z) { return (vec3f){x,y,z}; }
+
+static inline float v3_norm(vec3f a) { return sqrtf(a.x*a.x + a.y*a.y + a.z*a.z); }
+
+static inline vec3f v3_add(vec3f a, vec3f b) { return v3(a.x+b.x, a.y+b.y, a.z+b.z); }
+static inline vec3f v3_sub(vec3f a, vec3f b) { return v3(a.x-b.x, a.y-b.y, a.z-b.z); }
+static inline vec3f v3_scale(vec3f a, float s) { return v3(a.x*s, a.y*s, a.z*s); }
+
+static inline vec3f v3_cross(vec3f a, vec3f b) {
+    return v3(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x);
+}
+
+static inline float v3_dot(vec3f a, vec3f b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
+
+static inline quatf q_identity(void) { return (quatf){1,0,0,0}; }
+
+static inline quatf q_normalize(quatf q) {
+    float n = sqrtf(q.w*q.w + q.x*q.x + q.y*q.y + q.z*q.z);
+    if (n <= 0) return q_identity();
+    float inv = 1.0f / n;
+    return (quatf){q.w*inv, q.x*inv, q.y*inv, q.z*inv};
+}
+
+static inline quatf q_mul(quatf a, quatf b) {
+    return (quatf){
+        a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z,
+        a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
+        a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
+        a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w
+    };
+}
+
+static inline quatf q_from_small_angle(vec3f dtheta) {
+    // small-angle quaternion: [1, 0.5*dtheta]
+    return q_normalize((quatf){1.0f, 0.5f*dtheta.x, 0.5f*dtheta.y, 0.5f*dtheta.z});
+}
+
+static inline void R_from_q(quatf q, float R[9]) {
+    // ENU: columns are body axes in world? Here: R maps body->world: v_w = R * v_b
+    q = q_normalize(q);
+    float w=q.w, x=q.x, y=q.y, z=q.z;
+    R[0] = 1 - 2*(y*y + z*z);  R[1] = 2*(x*y - w*z);      R[2] = 2*(x*z + w*y);
+    R[3] = 2*(x*y + w*z);      R[4] = 1 - 2*(x*x + z*z);  R[5] = 2*(y*z - w*x);
+    R[6] = 2*(x*z - w*y);      R[7] = 2*(y*z + w*x);      R[8] = 1 - 2*(x*x + y*y);
+}
+
+static inline float yaw_from_q(quatf q) {
+    // yaw about +Z in ENU
+    float siny_cosp = 2.0f * (q.w*q.z + q.x*q.y);
+    float cosy_cosp = 1.0f - 2.0f * (q.y*q.y + q.z*q.z);
+    return atan2f(siny_cosp, cosy_cosp);
+}
+
+static inline quatf q_from_yaw_delta(float dpsi) {
+    float half = 0.5f*dpsi;
+    return (quatf){cosf(half), 0.0f, 0.0f, sinf(half)};
+}
+
+// Quaternion from Euler angles (ZYX convention: yaw, pitch, roll)
+// Produces body→ENU quaternion
+static inline quatf q_from_euler(float roll, float pitch, float yaw) {
+    float cr = cosf(0.5f*roll),  sr = sinf(0.5f*roll);
+    float cp = cosf(0.5f*pitch), sp = sinf(0.5f*pitch);
+    float cy = cosf(0.5f*yaw),   sy = sinf(0.5f*yaw);
+    return q_normalize((quatf){
+        cr*cp*cy + sr*sp*sy,
+        sr*cp*cy - cr*sp*sy,
+        cr*sp*cy + sr*cp*sy,
+        cr*cp*sy - sr*sp*cy
+    });
+}
+
+static bool mat3_inv(const float A[9], float invA[9]) {
+    float a=A[0], b=A[1], c=A[2];
+    float d=A[3], e=A[4], f=A[5];
+    float g=A[6], h=A[7], i=A[8];
+    float A11 = (e*i - f*h);
+    float A12 = -(d*i - f*g);
+    float A13 = (d*h - e*g);
+    float det = a*A11 + b*A12 + c*A13;
+    if (fabsf(det) < 1e-12f) return false;
+    float invdet = 1.0f/det;
+    invA[0] = A11*invdet;
+    invA[1] = (c*h - b*i)*invdet;
+    invA[2] = (b*f - c*e)*invdet;
+    invA[3] = A12*invdet;
+    invA[4] = (a*i - c*g)*invdet;
+    invA[5] = (c*d - a*f)*invdet;
+    invA[6] = A13*invdet;
+    invA[7] = (b*g - a*h)*invdet;
+    invA[8] = (a*e - b*d)*invdet;
+    return true;
+}
+
 // ========================== EKF MODE SELECTION ==========================
 // set to 1 for 2D EKF (recommeded for ground vehicles), 0 for 3D EKF
 #ifndef USE_2D_EKF
@@ -726,133 +854,7 @@ static float ins2d_get_forward_accel(vec3f acc_b, quatf q) {
 }
 #endif // USE_2D_EKF
 
-// ------------------------- Small math utils -------------------------
 
-static inline uint64_t monotonic_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-}
-
-static inline double now_sec(void) { return (double)monotonic_ns() * 1e-9; }
-
-static inline float clampf(float x, float lo, float hi) {
-    return (x < lo) ? lo : (x > hi) ? hi : x;
-}
-
-static float medf5(const float buf[5]) {
-    float s[5]; int i, j; float t;
-    s[0]=buf[0]; s[1]=buf[1]; s[2]=buf[2]; s[3]=buf[3]; s[4]=buf[4];
-    for (i = 1; i < 5; i++) {
-        t = s[i]; j = i-1;
-        while (j >= 0 && s[j] > t) { s[j+1] = s[j]; j--; }
-        s[j+1] = t;
-    }
-    return s[2];
-}
-
-static inline float wrap_pi(float a) {
-    while (a > (float)M_PI) a -= 2.0f*(float)M_PI;
-    while (a <= -(float)M_PI) a += 2.0f*(float)M_PI;
-    return a;
-}
-
-typedef struct { float w, x, y, z; } quatf;
-typedef struct { float x, y, z; } vec3f;
-
-static inline vec3f v3(float x, float y, float z) { return (vec3f){x,y,z}; }
-
-static inline float v3_norm(vec3f a) { return sqrtf(a.x*a.x + a.y*a.y + a.z*a.z); }
-
-static inline vec3f v3_add(vec3f a, vec3f b) { return v3(a.x+b.x, a.y+b.y, a.z+b.z); }
-static inline vec3f v3_sub(vec3f a, vec3f b) { return v3(a.x-b.x, a.y-b.y, a.z-b.z); }
-static inline vec3f v3_scale(vec3f a, float s) { return v3(a.x*s, a.y*s, a.z*s); }
-
-static inline vec3f v3_cross(vec3f a, vec3f b) {
-    return v3(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x);
-}
-
-static inline float v3_dot(vec3f a, vec3f b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
-
-static inline quatf q_identity(void) { return (quatf){1,0,0,0}; }
-
-static inline quatf q_normalize(quatf q) {
-    float n = sqrtf(q.w*q.w + q.x*q.x + q.y*q.y + q.z*q.z);
-    if (n <= 0) return q_identity();
-    float inv = 1.0f / n;
-    return (quatf){q.w*inv, q.x*inv, q.y*inv, q.z*inv};
-}
-
-static inline quatf q_mul(quatf a, quatf b) {
-    return (quatf){
-        a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z,
-        a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
-        a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
-        a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w
-    };
-}
-
-static inline quatf q_from_small_angle(vec3f dtheta) {
-    // small-angle quaternion: [1, 0.5*dtheta]
-    return q_normalize((quatf){1.0f, 0.5f*dtheta.x, 0.5f*dtheta.y, 0.5f*dtheta.z});
-}
-
-static inline void R_from_q(quatf q, float R[9]) {
-    // ENU: columns are body axes in world? Here: R maps body->world: v_w = R * v_b
-    q = q_normalize(q);
-    float w=q.w, x=q.x, y=q.y, z=q.z;
-    R[0] = 1 - 2*(y*y + z*z);  R[1] = 2*(x*y - w*z);      R[2] = 2*(x*z + w*y);
-    R[3] = 2*(x*y + w*z);      R[4] = 1 - 2*(x*x + z*z);  R[5] = 2*(y*z - w*x);
-    R[6] = 2*(x*z - w*y);      R[7] = 2*(y*z + w*x);      R[8] = 1 - 2*(x*x + y*y);
-}
-
-static inline float yaw_from_q(quatf q) {
-    // yaw about +Z in ENU
-    float siny_cosp = 2.0f * (q.w*q.z + q.x*q.y);
-    float cosy_cosp = 1.0f - 2.0f * (q.y*q.y + q.z*q.z);
-    return atan2f(siny_cosp, cosy_cosp);
-}
-
-static inline quatf q_from_yaw_delta(float dpsi) {
-    float half = 0.5f*dpsi;
-    return (quatf){cosf(half), 0.0f, 0.0f, sinf(half)};
-}
-
-// Quaternion from Euler angles (ZYX convention: yaw, pitch, roll)
-// Produces body→ENU quaternion
-static inline quatf q_from_euler(float roll, float pitch, float yaw) {
-    float cr = cosf(0.5f*roll),  sr = sinf(0.5f*roll);
-    float cp = cosf(0.5f*pitch), sp = sinf(0.5f*pitch);
-    float cy = cosf(0.5f*yaw),   sy = sinf(0.5f*yaw);
-    return q_normalize((quatf){
-        cr*cp*cy + sr*sp*sy,
-        sr*cp*cy - cr*sp*sy,
-        cr*sp*cy + sr*cp*sy,
-        cr*cp*sy - sr*sp*cy
-    });
-}
-
-static bool mat3_inv(const float A[9], float invA[9]) {
-    float a=A[0], b=A[1], c=A[2];
-    float d=A[3], e=A[4], f=A[5];
-    float g=A[6], h=A[7], i=A[8];
-    float A11 = (e*i - f*h);
-    float A12 = -(d*i - f*g);
-    float A13 = (d*h - e*g);
-    float det = a*A11 + b*A12 + c*A13;
-    if (fabsf(det) < 1e-12f) return false;
-    float invdet = 1.0f/det;
-    invA[0] = A11*invdet;
-    invA[1] = (c*h - b*i)*invdet;
-    invA[2] = (b*f - c*e)*invdet;
-    invA[3] = A12*invdet;
-    invA[4] = (a*i - c*g)*invdet;
-    invA[5] = (c*d - a*f)*invdet;
-    invA[6] = A13*invdet;
-    invA[7] = (b*g - a*h)*invdet;
-    invA[8] = (a*e - b*d)*invdet;
-    return true;
-}
 
 static void cal_led_init( void )
 {
