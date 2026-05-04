@@ -536,11 +536,16 @@ static bool mat2_inv(const float A[4], float invA[4])
             Phi[r*7 + c] += F[r*7 + c] * dt;
         }
     }
-    //Process Noise Matrix Q (7x7)
-    float sa2 = q_scale * INS2D_SIGMA_ACCEL * INS2D_SIGMA_ACCEL;
-    float sg2 = q_scale * INS2D_SIGMA_GYRO * INS2D_SIGMA_GYRO;
-    float sba2 = q_scale * INS2D_SIGMA_BA * INS2D_SIGMA_BA;
-    float sbg2 = q_scale * INS2D_SIGMA_BG * INS2D_SIGMA_BG;
+    //Process Noise Matrix Q (7x7).
+    // q_scale (outage tier) inflates STATE noise (acc/gyro) only — NOT bias walks.
+    // Inflating bias walk during outage lets b_a, b_g wander with no measurement
+    // to constrain them; when GNSS comes back the bias estimate is junk and the
+    // EKF takes a long time (or never) to recover. Hold biases at their last
+    // good value through the outage.
+    float sa2  = q_scale * INS2D_SIGMA_ACCEL * INS2D_SIGMA_ACCEL;
+    float sg2  = q_scale * INS2D_SIGMA_GYRO  * INS2D_SIGMA_GYRO;
+    float sba2 = INS2D_SIGMA_BA * INS2D_SIGMA_BA;   // no q_scale
+    float sbg2 = INS2D_SIGMA_BG * INS2D_SIGMA_BG;   // no q_scale
     float Q[7*7] = {0};
     memset(Q, 0, sizeof(Q));
     Q[0*7 + 0] = sa2 * dt * dt * dt / 3.0f; // var(p_E)
@@ -763,6 +768,67 @@ static bool ins2d_update_2d( ins2d_t *S, const float H[2*7], const float z[2], c
     }
 
     return true;
+}
+
+// ---- NIS-only computation for the 2D update (state and P unchanged) ----
+// Returns true and writes NIS = nu^T * (H P H^T + R)^-1 * nu.
+// Use this to gate-check before calling the actual update functions, so an
+// outlier never gets injected into the state.
+static bool ins2d_nis_2d(const ins2d_t *S, const float H[2*7], const float z[2],
+                         const float h[2], const float Rdiag[2], float *out_NIS)
+{
+    float HP[2*7];
+    int i;
+    for (i = 0; i < 2; i++) {
+        int j;
+        for (j = 0; j < 7; j++) {
+            HP[i*7 + j] = 0.0f;
+            int k;
+            for (k = 0; k < 7; k++) HP[i*7 + j] += H[i*7 + k] * S->P[k*7 + j];
+        }
+    }
+    float S22[4];
+    for (i = 0; i < 2; i++) {
+        int j;
+        for (j = 0; j < 2; j++) {
+            S22[i*2 + j] = 0.0f;
+            int k;
+            for (k = 0; k < 7; k++) S22[i*2 + j] += HP[i*7 + k] * H[j*7 + k];
+            if (i == j) S22[i*2 + j] += Rdiag[i];
+        }
+    }
+    float Sinv[4];
+    if (!mat2_inv(S22, Sinv)) return false;
+    float nu[2] = { z[0] - h[0], z[1] - h[1] };
+    float tmp[2] = {0};
+    for (i = 0; i < 2; i++) {
+        int j;
+        for (j = 0; j < 2; j++) tmp[i] += Sinv[i*2 + j] * nu[j];
+    }
+    if (out_NIS) *out_NIS = tmp[0]*nu[0] + tmp[1]*nu[1];
+    return true;
+}
+
+static bool ins2d_nis_gnss_pos(const ins2d_t *S, float z_E, float z_N, float R_pos, float *out_NIS)
+{
+    float H[2*7] = {0};
+    H[0*7 + 0] = 1.0f;
+    H[1*7 + 1] = 1.0f;
+    float h[2] = { S->p_E, S->p_N };
+    float Rd[2] = { R_pos, R_pos };
+    float z[2]  = { z_E, z_N };
+    return ins2d_nis_2d(S, H, z, h, Rd, out_NIS);
+}
+
+static bool ins2d_nis_gnss_vel(const ins2d_t *S, float z_vE, float z_vN, float R_vel, float *out_NIS)
+{
+    float H[2*7] = {0};
+    H[0*7 + 2] = 1.0f;
+    H[1*7 + 3] = 1.0f;
+    float h[2] = { S->v_E, S->v_N };
+    float Rd[2] = { R_vel, R_vel };
+    float z[2]  = { z_vE, z_vN };
+    return ins2d_nis_2d(S, H, z, h, Rd, out_NIS);
 }
 
 // GNSS position update (E, N only )
@@ -2743,15 +2809,34 @@ if (nav_age <= GNSS_TIMEOUT_S) {
             C->anchor_set = false;
 
         }
-        //Velocity Cap
+        // Velocity management: hard cap + outage decay
+        // Without these, IMU bias + heading drift integrates unbounded into v
+        // and the position diverges by km after a 60-s outage.
         float vnorm = sqrtf(C->ins2d.v_E*C->ins2d.v_E + C->ins2d.v_N*C->ins2d.v_N);
+
+        // Hard cap at typical road-vehicle max
         if (vnorm > MAX_GNSS_SPEED_MPS) {
             float scale = MAX_GNSS_SPEED_MPS / vnorm;
             C->ins2d.v_E *= scale;
             C->ins2d.v_N *= scale;
+            vnorm = MAX_GNSS_SPEED_MPS;
         }
 
-#else 
+        // Gentle time-based decay during long outage. 99% retention/sec halves
+        // velocity in ~70 s — gentle enough to preserve real DR motion but
+        // bounds the runaway drift seen in earlier logs (v hit cap and stayed).
+        if (!C->gnss_present && C->outage_s > 30.0) {
+            float decay = powf(0.99f, dt);
+            C->ins2d.v_E *= decay;
+            C->ins2d.v_N *= decay;
+        } else if (vnorm < 0.10f) {
+            // Near-stationary: stronger decay to suppress residual creep
+            float decay = (vnorm < 0.02f) ? 0.90f : VEL_DECAY;
+            C->ins2d.v_E *= decay;
+            C->ins2d.v_N *= decay;
+        }
+
+#else
 // GNSS Yaw rate learner: Feed IMU every step (turn-segment integration)
 // Compute GNSS quality gates
 bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_heading_valid &&
@@ -2909,42 +2994,111 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
 
             #if USE_2D_EKF
                 float Rpos = INS2D_R_POS * hdop * hdop;
-                float nis_pos = 0.0f;
+                double tnow2 = now_sec();
 
-                // Position Update
-                if( ins2d_update_gnss_pos(&C->ins2d, zpos.x, zpos.y, Rpos, &nis_pos) ){
-                    if (nis_pos < INS2D_CHI2_2DOF_GATE) {
-                        C->last_gnss_used_s = tnow;
+                // -------- Reacquisition mode --------
+                // If we haven't ACCEPTED a GNSS fix for >5s, relax R and gate
+                // for the next REACQ_STEPS attempts so the filter can re-lock.
+                if ((tnow2 - C->last_gnss_used_s) > REACQ_MIN_OUTAGE_S && C->reacq_left <= 0) {
+                    C->reacq_left = REACQ_STEPS;
+                }
+                float gate_thr = INS2D_CHI2_2DOF_GATE;
+                if (C->reacq_left > 0) {
+                    Rpos *= REACQ_R_MULT;
+                    gate_thr = REACQ_CHI2_GATE;
+                    C->reacq_active = true;   // latched for 1 Hz log
+                }
+
+                // -------- Snap-to-GNSS safety net --------
+                // After SNAP_MIN_OUTAGE_S without an accepted fix and a large
+                // innovation, teleport position (and velocity) to GNSS so the
+                // filter can resume — otherwise the NIS gate stays closed
+                // forever once the EKF has drifted by >100m.
+                float innov_e = zpos.x - C->ins2d.p_E;
+                float innov_n = zpos.y - C->ins2d.p_N;
+                float innov_h = sqrtf(innov_e*innov_e + innov_n*innov_n);
+                bool allow_snap = ((tnow2 - C->last_gnss_used_s) > SNAP_MIN_OUTAGE_S);
+                dbg_printf(C, "GNSS_INNOV(2D) innov=(%.2f,%.2f) |innov|=%.2f hdop=%.2f qS=%.2f reacq=%d",
+                           innov_e, innov_n, innov_h, hdop, C->qscale, C->reacq_left);
+
+                if (allow_snap && (!C->gnss_hdop_valid || hdop <= SNAP_HDOP_MAX) && innov_h > SNAP_INNOV_M) {
+                    C->ins2d.p_E = zpos.x;
+                    C->ins2d.p_N = zpos.y;
+                    if (C->gnss_vel_valid && !C->gnss_speed_rejected) {
+                        C->ins2d.v_E = C->gnss_vel_enu.x;
+                        C->ins2d.v_N = C->gnss_vel_enu.y;
+                    }
+                    // Inflate position covariance so subsequent updates aren't over-confident
+                    if (C->ins2d.P[0*7+0] < 25.0f) C->ins2d.P[0*7+0] = 25.0f;
+                    if (C->ins2d.P[1*7+1] < 25.0f) C->ins2d.P[1*7+1] = 25.0f;
+                    // Also pull heading toward GNSS course if available
+                    if (C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN) {
+                        C->ins2d.psi = C->gnss_heading_rad;
+                        C->att_q = q_normalize(q_mul(C->att_q,
+                            q_from_yaw_delta(wrap_pi(C->gnss_heading_rad - C->ins2d.psi))));
+                    }
+                    C->last_gnss_used_s = tnow2;
+                    C->gnss_valid = true;
+                    C->last_gnss_used_pos = 1;
+                    C->snap_applied = true;
+                    C->last_nis_pos = 0.0f;
+                    C->gnss_accepted_count++;
+                    C->reacq_left = 0;
+                    // Reset alpha-beta tracker so it re-seeds from snapped position
+                    C->ab_pos  = zpos;
+                    C->ab_time = tnow_gnss;
+                    C->ab_vel  = C->gnss_vel_valid ? C->gnss_vel_enu : v3(0,0,0);
+                    dbg_printf(C, "SNAP_2D innov=%.1fm outage=%.1fs -> teleport to GNSS",
+                               innov_h, (float)(tnow2 - C->last_gnss_used_s));
+                } else {
+                    // -------- Position update with NIS gate BEFORE applying --------
+                    // ins2d_update_gnss_pos applies the update unconditionally and
+                    // returns NIS as a diagnostic. Compute NIS first so an outlier
+                    // never reaches the state.
+                    float nis_pos = 0.0f;
+                    bool ok_nis = ins2d_nis_gnss_pos(&C->ins2d, zpos.x, zpos.y, Rpos, &nis_pos);
+                    bool gate_pos = ok_nis && (nis_pos < gate_thr);
+                    C->last_nis_pos = nis_pos;
+
+                    if (gate_pos) {
+                        ins2d_update_gnss_pos(&C->ins2d, zpos.x, zpos.y, Rpos, NULL);
+                        C->last_gnss_used_s = tnow2;
                         C->gnss_valid = true;
                         C->last_gnss_used_pos = 1;
                         C->gnss_accepted_count++;
-                    } 
-                    C->last_nis_pos = nis_pos;
+                    }
+                    if (C->reacq_left > 0) C->reacq_left--;
                 }
-                // Velocity Update
+
+                // -------- Velocity update with NIS gate --------
                 if (C->gnss_vel_valid && !C->gnss_speed_rejected) {
                     float R_vel = INS2D_R_VEL;
-                    if ( C->gnss_speed_mps < 1.0f ){
-                        R_vel *= 10.0f; // Inflate velocity noise when speed is low
-                    }
+                    if (C->gnss_speed_mps < 1.0f) R_vel *= 10.0f;  // course-derived vel is noisy at low speed
                     float nis_vel = 0.0f;
-                    if( ins2d_update_gnss_vel(&C->ins2d, C->gnss_vel_enu.x, C->gnss_vel_enu.y, R_vel, &nis_vel) ){
-                        C->last_nis_vel = nis_vel;
-                        
+                    bool ok_nis_v = ins2d_nis_gnss_vel(&C->ins2d, C->gnss_vel_enu.x, C->gnss_vel_enu.y, R_vel, &nis_vel);
+                    bool gate_vel = ok_nis_v && (nis_vel < INS2D_CHI2_2DOF_GATE);
+                    C->last_nis_vel = nis_vel;
+                    if (gate_vel) {
+                        ins2d_update_gnss_vel(&C->ins2d, C->gnss_vel_enu.x, C->gnss_vel_enu.y, R_vel, NULL);
+                        C->last_gnss_used_vel = 1;
+                        C->last_gnss_used_s = tnow2;
+                        C->gnss_valid = true;
                     }
-                    C->last_gnss_used_vel = 1;
+                } else {
+                    C->last_nis_vel = 0.0f;
                 }
-                // Heading update (Critical for 2D EKF stability)
+
+                // -------- Heading update (critical for 2D EKF stability) --------
                 if (C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN)
                 {
-                    float sigma_hdg = fmaxf(0.5f, 5.0f / C->gnss_speed_mps) * DEG2RAD; // Dynamic heading noise: tighter at higher speeds
+                    float sigma_hdg = fmaxf(0.5f, 5.0f / C->gnss_speed_mps) * DEG2RAD;
                     float R_hdg = sigma_hdg * sigma_hdg;
-
-                    // Also update attitude quaternion yaw to stay consistent;
+                    // Pull att_q yaw toward GNSS course (10% per fix), so gravity
+                    // compensation rotation stays consistent with EKF heading.
                     float yaw_err = wrap_pi(C->gnss_heading_rad - C->ins2d.psi);
-                    C->att_q = q_normalize(q_mul(C->att_q, q_from_yaw_delta(yaw_err* 0.1f)));
+                    C->att_q = q_normalize(q_mul(C->att_q, q_from_yaw_delta(yaw_err * 0.1f)));
                     ins2d_update_heading(&C->ins2d, C->gnss_heading_rad, R_hdg, NULL);
-                    if(!C->heading_observed){
+                    if (!C->heading_observed) {
                         C->heading_observed = true;
                         dbg_printf(C, "HEADING_OBSERVED at speed=%.2f m/s — heading fusion enabled", C->gnss_speed_mps);
                     }
