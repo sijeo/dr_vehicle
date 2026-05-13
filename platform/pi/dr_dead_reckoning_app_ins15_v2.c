@@ -358,6 +358,12 @@ static inline float wrap_pi(float a) {
     return a;
 }
 
+/* Forward declaration: calibration log helper.
+ * Defined alongside dbg_printf further down. Used by the calibration
+ * helpers (boot cal, runtime cal, load/save) so their output lands in
+ * the per-run debug file instead of on stdout. */
+static void cal_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
 typedef struct { float w, x, y, z; } quatf;
 typedef struct { float x, y, z; } vec3f;
 
@@ -1699,8 +1705,8 @@ static bool runtime_gyro_cal_update(const float gyro_vehicle_rps[3],
 
     g_imu_cal.valid_flags |= CAL_FLAG_RUNTIME_OK;
 
-    fprintf(stdout, "[CAL_RUNTIME gyro_bias_update] old=(%.4f,%.4f,%.4f)°/s new=(%.4f,%.4f,%.4f)°/s "
-                    "win=%.1fs N=%d var=(%.2g,%.2g,%.2g)\n",
+    cal_log("[CAL_RUNTIME gyro_bias_update] old=(%.4f,%.4f,%.4f)deg/s new=(%.4f,%.4f,%.4f)deg/s "
+            "win=%.1fs N=%d var=(%.2g,%.2g,%.2g)",
             old_bias_rps[0]/DEG2RAD, old_bias_rps[1]/DEG2RAD, old_bias_rps[2]/DEG2RAD,
             new_bias_rps[0]/DEG2RAD, new_bias_rps[1]/DEG2RAD, new_bias_rps[2]/DEG2RAD,
             (float)(now_s - g_rt_cal.t_start), g_rt_cal.N, v0, v1, v2);
@@ -1998,15 +2004,15 @@ static void ahrs_update(ahrs_state_t *A,
         A->pitch_var *= (1.0f - A->roll_pitch_alpha);
         A->accept_accel_count++;
 #if ENABLE_AHRS_DEBUG_LOGS
-        printf("[AHRS_ACCEL_ACCEPT] roll_acc=%.2f pitch_acc=%.2f\n",
-               roll_acc/DEG2RAD, pitch_acc/DEG2RAD);
+        cal_log("[AHRS_ACCEL_ACCEPT] roll_acc=%.2f pitch_acc=%.2f",
+                roll_acc/DEG2RAD, pitch_acc/DEG2RAD);
 #endif
     } else {
         A->reject_accel_count++;
 #if ENABLE_AHRS_DEBUG_LOGS
-        printf("[AHRS_ACCEL_REJECT] reason=%s accel_norm=%.2f gyro_norm=%.2f\n",
-               g_imu_quality_degraded ? "bump" : "dynamic",
-               amag, gmag/DEG2RAD);
+        cal_log("[AHRS_ACCEL_REJECT] reason=%s accel_norm=%.2f gyro_norm=%.2f",
+                g_imu_quality_degraded ? "bump" : "dynamic",
+                amag, gmag/DEG2RAD);
 #endif
     }
 #endif /* ENABLE_AHRS_ACCEL_CORR */
@@ -2030,8 +2036,8 @@ static void ahrs_update(ahrs_state_t *A,
         A->gnss_yaw_update_count++;
         A->last_yaw_obs_s = now_s;
 #if ENABLE_AHRS_DEBUG_LOGS
-        printf("[AHRS_GNSS_YAW_UPDATE] old=%.2f gnss=%.2f new=%.2f innov=%.2f\n",
-               y_cur2/DEG2RAD, gnss_heading_rad/DEG2RAD, y_new/DEG2RAD, innov/DEG2RAD);
+        cal_log("[AHRS_GNSS_YAW_UPDATE] old=%.2f gnss=%.2f new=%.2f innov=%.2f",
+                y_cur2/DEG2RAD, gnss_heading_rad/DEG2RAD, y_new/DEG2RAD, innov/DEG2RAD);
 #endif
     }
 #endif /* ENABLE_AHRS_GNSS_YAW */
@@ -2119,8 +2125,8 @@ static int apply_poweron_calibration(still_accum_t *A,
     if (moving) {
         static double t_last_warn = 0.0;
         if (now_s - t_last_warn > BOOT_CAL_RESET_GRACE_S) {
-            printf("[CAL_BOOT moved] restarting reason=|g_dev|=%.2f gyro=(%.2f,%.2f,%.2f)°/s\n",
-                   acc_dev, gx_rps/DEG2RAD, gy_rps/DEG2RAD, gz_rps/DEG2RAD);
+            cal_log("[CAL_BOOT moved] restarting reason=|g_dev|=%.2f gyro=(%.2f,%.2f,%.2f)deg/s",
+                    acc_dev, gx_rps/DEG2RAD, gy_rps/DEG2RAD, gz_rps/DEG2RAD);
             t_last_warn = now_s;
         }
         still_reset(A);
@@ -2159,8 +2165,8 @@ static int apply_poweron_calibration(still_accum_t *A,
     /* 1 Hz progress log */
     if (now_s - A->t_last_progress >= 1.0) {
         float elapsed = (float)(now_s - A->t0);
-        printf("[CAL_BOOT progress] samples=%d stable_s=%.1f/%g accel_norm=%.3f gyro_norm=%.3f°/s\n",
-               A->N, elapsed, still_required_s, acc_norm, gyro_norm/DEG2RAD);
+        cal_log("[CAL_BOOT progress] samples=%d stable_s=%.1f/%g accel_norm=%.3f gyro_norm=%.3f deg/s",
+                A->N, elapsed, still_required_s, acc_norm, gyro_norm/DEG2RAD);
         A->t_last_progress = now_s;
     }
 
@@ -2242,13 +2248,13 @@ static int apply_poweron_calibration(still_accum_t *A,
     /* 4) Sanity-check the candidate before committing */
     int rej = imu_calib_validate(&cand);
     if (rej != 0) {
-        printf("[CAL_BOOT rejected] reason=%d gyro_bias=(%.3f,%.3f,%.3f)°/s "
-               "accel_bias=(%.3f,%.3f,%.3f) acc_norm=%.3f±%.3f var=(%.4f,%.4f,%.4f)\n",
-               rej,
-               cand.gyro_bias[0]/DEG2RAD, cand.gyro_bias[1]/DEG2RAD, cand.gyro_bias[2]/DEG2RAD,
-               cand.accel_bias[0], cand.accel_bias[1], cand.accel_bias[2],
-               cand.boot_accel_norm_mean, cand.boot_accel_norm_std,
-               cand.boot_accel_var[0], cand.boot_accel_var[1], cand.boot_accel_var[2]);
+        cal_log("[CAL_BOOT rejected] reason=%d gyro_bias=(%.3f,%.3f,%.3f)deg/s "
+                "accel_bias=(%.3f,%.3f,%.3f) acc_norm=%.3f+/-%.3f var=(%.4f,%.4f,%.4f)",
+                rej,
+                cand.gyro_bias[0]/DEG2RAD, cand.gyro_bias[1]/DEG2RAD, cand.gyro_bias[2]/DEG2RAD,
+                cand.accel_bias[0], cand.accel_bias[1], cand.accel_bias[2],
+                cand.boot_accel_norm_mean, cand.boot_accel_norm_std,
+                cand.boot_accel_var[0], cand.boot_accel_var[1], cand.boot_accel_var[2]);
         still_reset(A);
         return -2;
     }
@@ -2281,19 +2287,19 @@ static int apply_poweron_calibration(still_accum_t *A,
     int save_rc = imu_calib_save_atomic(IMU_CALIB_PATH, &g_imu_cal);
     if (save_rc == 0) {
         g_last_calib_save_s = now_s;
-        printf("[CAL_BOOT success] samples=%u path=%s gyro_bias=(%.3f,%.3f,%.3f)°/s "
-               "accel_bias=(%.3f,%.3f,%.3f) acc_norm=%.3f±%.3f\n",
-               cand.boot_sample_count, IMU_CALIB_PATH,
-               cand.gyro_bias[0]/DEG2RAD, cand.gyro_bias[1]/DEG2RAD, cand.gyro_bias[2]/DEG2RAD,
-               cand.accel_bias[0], cand.accel_bias[1], cand.accel_bias[2],
-               cand.boot_accel_norm_mean, cand.boot_accel_norm_std);
+        cal_log("[CAL_BOOT success] samples=%u path=%s gyro_bias=(%.3f,%.3f,%.3f)deg/s "
+                "accel_bias=(%.3f,%.3f,%.3f) acc_norm=%.3f+/-%.3f",
+                cand.boot_sample_count, IMU_CALIB_PATH,
+                cand.gyro_bias[0]/DEG2RAD, cand.gyro_bias[1]/DEG2RAD, cand.gyro_bias[2]/DEG2RAD,
+                cand.accel_bias[0], cand.accel_bias[1], cand.accel_bias[2],
+                cand.boot_accel_norm_mean, cand.boot_accel_norm_std);
     } else {
-        printf("[CAL_BOOT success (no-persist)] samples=%u save_rc=%d gyro_bias=(%.3f,%.3f,%.3f)°/s\n",
-               cand.boot_sample_count, save_rc,
-               cand.gyro_bias[0]/DEG2RAD, cand.gyro_bias[1]/DEG2RAD, cand.gyro_bias[2]/DEG2RAD);
+        cal_log("[CAL_BOOT success (no-persist)] samples=%u save_rc=%d gyro_bias=(%.3f,%.3f,%.3f)deg/s",
+                cand.boot_sample_count, save_rc,
+                cand.gyro_bias[0]/DEG2RAD, cand.gyro_bias[1]/DEG2RAD, cand.gyro_bias[2]/DEG2RAD);
     }
 #else
-    printf("[CAL_BOOT success (persist disabled)] samples=%u\n", cand.boot_sample_count);
+    cal_log("[CAL_BOOT success (persist disabled)] samples=%u", cand.boot_sample_count);
 #endif
 
     g_imu_quality_degraded = 0;
@@ -3238,6 +3244,39 @@ static void dbg_printf(ctx_t *C, const char *fmt, ... ){
     pthread_mutex_unlock(&dbglog_mtx);
 }
 
+/* Calibration log: writes to the debug log when available, otherwise stdout.
+ *
+ * The boot/runtime/load/save calibration helpers do not have a ctx_t *
+ * available (they are called from contexts that pre-date thread/context
+ * setup, or from generic library code). g_cal_log is set in main() right
+ * after make_debug_log_file() so that every line from those helpers ends
+ * up in the per-run debug file instead of on the console.
+ *
+ * Falls back to stdout only during the very first few lines of startup
+ * before the debug log is opened. */
+static FILE *g_cal_log = NULL;
+
+static void cal_log(const char *fmt, ...)
+{
+    pthread_mutex_lock(&dbglog_mtx);
+    FILE *out = g_cal_log ? g_cal_log : stdout;
+
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    fprintf(out, "[%lld.%03lld]", (long long)ts.tv_sec, (long long)(ts.tv_nsec/1000000));
+
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(out, fmt, ap);
+    va_end(ap);
+
+    /* The format strings supplied by callers do not include a trailing '\n'
+     * (matching dbg_printf), so append one here for line-buffered output. */
+    size_t n = strlen(fmt);
+    if (n == 0 || fmt[n-1] != '\n') fputc('\n', out);
+    pthread_mutex_unlock(&dbglog_mtx);
+}
+
 static void* gnss_thread(void *arg) {
     ctx_t *C = (ctx_t*)arg;
     int fd = open_gnss();
@@ -3522,8 +3561,7 @@ static void* fusion_thread(void *arg) {
                 // increases its process noise and avoids over-trusting accel.
                 if (duty > 25.0f) {
                     if (!g_imu_quality_degraded) {
-                        dbg_printf(C, "IMU_QUALITY degraded (bump_duty=%.1f%%) — inflating Q", duty);
-                        printf("[IMU_QUALITY degraded] bump_duty=%.1f%% over 10 s\n", duty);
+                        dbg_printf(C, "IMU_QUALITY degraded (bump_duty=%.1f%%) -- inflating Q", duty);
                     }
                     g_imu_quality_degraded = 1;
                     g_imu_cal.valid_flags |= CAL_FLAG_DEGRADED;
@@ -3614,7 +3652,7 @@ static void* fusion_thread(void *arg) {
                 C->imu_cal_in_progress = true;
                 C->imu_cal_start_s = tcal_now;
                 still_reset(&cal_accum_boot);
-                printf("[CAL] Power on IMU Calibration started: Keep vehicle still... \n");
+                cal_log("[CAL] Power on IMU Calibration started: Keep vehicle still ...");
             }
 
             // Blink LED while calibration
@@ -3632,13 +3670,13 @@ static void* fusion_thread(void *arg) {
                 calib_accel(&C->imu_raw, &acc_corrected);
                 C->boot_acc_mean = acc_corrected;
 
-                printf("[CAL] Power-On IMU calibration complete.\n");
-                printf("       gyro_bias_counts = [%.3f, %.3f, %.3f]\n",
-                       g_cal.gyro_bias_counts[0], g_cal.gyro_bias_counts[1], g_cal.gyro_bias_counts[2]);
-                printf("       accel_O = [%.6f, %.6f, %.6f]\n",
-                       g_cal.accel_O[0], g_cal.accel_O[1], g_cal.accel_O[2]);
-                printf("       boot_acc_mean = [%.4f, %.4f, %.4f]\n",
-                       C->boot_acc_mean.x, C->boot_acc_mean.y, C->boot_acc_mean.z);
+                cal_log("[CAL] Power-On IMU calibration complete.");
+                cal_log("       gyro_bias_counts = [%.3f, %.3f, %.3f]",
+                        g_cal.gyro_bias_counts[0], g_cal.gyro_bias_counts[1], g_cal.gyro_bias_counts[2]);
+                cal_log("       accel_O = [%.6f, %.6f, %.6f]",
+                        g_cal.accel_O[0], g_cal.accel_O[1], g_cal.accel_O[2]);
+                cal_log("       boot_acc_mean = [%.4f, %.4f, %.4f]",
+                        C->boot_acc_mean.x, C->boot_acc_mean.y, C->boot_acc_mean.z);
             } else if (boot_rc == -2) {
                 /* Cal completed but failed sanity. If a previously-saved cal
                  * is on disk it's already loaded (see main); otherwise we
@@ -3648,8 +3686,8 @@ static void* fusion_thread(void *arg) {
                 g_imu_quality_degraded = 1;
                 g_imu_cal.valid_flags |= CAL_FLAG_DEGRADED;
                 cal_led_update(false, true, tcal_now);
-                printf("[CAL_BOOT rejected] proceeding with prior/default calibration — "
-                       "IMU quality marked degraded.\n");
+                cal_log("[CAL_BOOT rejected] proceeding with prior/default calibration -- "
+                        "IMU quality marked degraded.");
             }
             /* boot_rc == 0 (in progress) or -1 (motion) — keep blinking */
         } else {
@@ -4616,6 +4654,9 @@ C.gnss_speed_rejected = false;
 
     make_log_file(&C);
     make_debug_log_file(&C);
+    /* Route all calibration helpers (boot cal, runtime cal, file load/save)
+     * to the per-run debug log file instead of stdout. */
+    g_cal_log = C.dbglog;
     cal_set_defaults_from_lsq();
 
     /* ---- Load production calibration (imu_calib_t) ---- */
@@ -4636,26 +4677,26 @@ C.gnss_speed_rejected = false;
             g_cal.accel_O[2] -= g_imu_cal.accel_bias[2];
             time_t cal_t = (time_t)g_imu_cal.created_unix_s;
             double age_s = (cal_t > 0) ? difftime(time(NULL), cal_t) : -1.0;
-            printf("[CAL_LOAD ok] path=%s age_s=%.0f gyro_bias=(%.3f,%.3f,%.3f)°/s "
-                   "accel_bias=(%.3f,%.3f,%.3f) flags=0x%x\n",
-                   IMU_CALIB_PATH, age_s,
-                   g_imu_cal.gyro_bias[0]/DEG2RAD, g_imu_cal.gyro_bias[1]/DEG2RAD, g_imu_cal.gyro_bias[2]/DEG2RAD,
-                   g_imu_cal.accel_bias[0], g_imu_cal.accel_bias[1], g_imu_cal.accel_bias[2],
-                   g_imu_cal.valid_flags);
+            cal_log("[CAL_LOAD ok] path=%s age_s=%.0f gyro_bias=(%.3f,%.3f,%.3f)deg/s "
+                    "accel_bias=(%.3f,%.3f,%.3f) flags=0x%x",
+                    IMU_CALIB_PATH, age_s,
+                    g_imu_cal.gyro_bias[0]/DEG2RAD, g_imu_cal.gyro_bias[1]/DEG2RAD, g_imu_cal.gyro_bias[2]/DEG2RAD,
+                    g_imu_cal.accel_bias[0], g_imu_cal.accel_bias[1], g_imu_cal.accel_bias[2],
+                    g_imu_cal.valid_flags);
         } else if (rc == -1 && errno == ENOENT) {
-            printf("[CAL_DEFAULT] no saved calibration at %s — using identity calibration\n",
-                   IMU_CALIB_PATH);
+            cal_log("[CAL_DEFAULT] no saved calibration at %s -- using identity calibration",
+                    IMU_CALIB_PATH);
         } else {
-            printf("[CAL_LOAD rejected] reason=%d path=%s — using identity calibration; "
-                   "EKF process noise will be inflated until boot cal completes.\n",
-                   rc, IMU_CALIB_PATH);
+            cal_log("[CAL_LOAD rejected] reason=%d path=%s -- using identity calibration; "
+                    "EKF process noise will be inflated until boot cal completes.",
+                    rc, IMU_CALIB_PATH);
             imu_calib_set_defaults(&g_imu_cal);
             g_imu_quality_degraded = 1;     /* be cautious until boot cal validates */
         }
         imu_calib_sync_from_g_cal(&g_imu_cal);
     }
 
-    printf("[CAL] Power-on IMU calibration will run on every boot (will refine and persist).\n");
+    cal_log("[CAL] Power-on IMU calibration will run on every boot (will refine and persist).");
 
     C.imu_cal_done =false;
     C.imu_cal_in_progress = false;
@@ -4686,8 +4727,8 @@ C.gnss_speed_rejected = false;
 #if ENABLE_CAL_FILE_SAVE
     if ((g_imu_cal.valid_flags & (CAL_FLAG_BOOT_OK | CAL_FLAG_RUNTIME_OK)) != 0) {
         if (imu_calib_save_atomic(IMU_CALIB_PATH, &g_imu_cal) == 0) {
-            printf("[CAL_EXIT] saved calibration to %s (flags=0x%x)\n",
-                   IMU_CALIB_PATH, g_imu_cal.valid_flags);
+            cal_log("[CAL_EXIT] saved calibration to %s (flags=0x%x)",
+                    IMU_CALIB_PATH, g_imu_cal.valid_flags);
         }
     }
 #endif
