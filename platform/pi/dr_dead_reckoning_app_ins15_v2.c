@@ -45,6 +45,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -193,9 +194,83 @@
 #define  e2         ((aWGS*aWGS - bWGS*bWGS) / (aWGS*aWGS))
 
 
-#define CAL_FILE_PATH   "/home/sijeo/dr_vehicle/imu_cal.bin"
-#define CAL_MAGIC       0x43414C31u /* 'CAL1' */
-#define CAL_VERSION     1u
+#define CAL_FILE_PATH       "/home/sijeo/dr_vehicle/imu_cal.bin"
+#define CAL_MAGIC           0x43414C31u /* 'CAL1' — legacy dr_cal_t blob */
+#define CAL_VERSION         1u
+
+// Production calibration framework (imu_calib_t)
+#define IMU_CALIB_MAGIC     0x494D4332u /* 'IMC2' */
+#define IMU_CALIB_VERSION   2u
+#define IMU_CALIB_PATH      "/home/sijeo/dr_vehicle/imu_calib.bin"
+
+// ---------- Compile-time switches for production calibration ----------
+// All default ON except verbose IMU-rate debug logging.
+#ifndef ENABLE_BOOT_CALIBRATION
+#define ENABLE_BOOT_CALIBRATION      1   // stationary-verified boot-time bias estimation
+#endif
+#ifndef ENABLE_RUNTIME_GYRO_CAL
+#define ENABLE_RUNTIME_GYRO_CAL      1   // slow gyro-bias refinement during stops
+#endif
+#ifndef ENABLE_CAL_FILE_SAVE
+#define ENABLE_CAL_FILE_SAVE         1   // persist imu_calib_t to flash
+#endif
+#ifndef ENABLE_IMU_DEBUG_LOGS
+#define ENABLE_IMU_DEBUG_LOGS        0   // 1 = per-step IMU_PREP / BUMP_STATS spam
+#endif
+#ifndef ENABLE_MOUNT_MATRIX
+#define ENABLE_MOUNT_MATRIX          1   // apply mount_R_bv inside preprocess
+#endif
+
+// Sanity limits used by imu_calib_validate(). A loaded calibration is rejected
+// (and defaults are used) if any of these are exceeded.
+#define CAL_SANITY_GYRO_BIAS_MAX    (5.0f * DEG2RAD)  // 5 °/s
+#define CAL_SANITY_ACCEL_BIAS_MAX   (1.0f)             // 1 m/s²  (~0.1 g)
+#define CAL_SANITY_ACCEL_NORM_MIN   (9.0f)             // m/s²
+#define CAL_SANITY_ACCEL_NORM_MAX   (10.6f)            // m/s²
+#define CAL_SANITY_ACC_VAR_MAX      (0.25f)            // (0.5 m/s²)² — stationary variance
+#define CAL_SANITY_GYRO_VAR_MAX     ((0.5f*DEG2RAD)*(0.5f*DEG2RAD))   // (0.5 °/s)²
+
+// Runtime gyro-bias-learner gating
+#define RT_CAL_WINDOW_S              2.0f                  // continuous-still window required
+#define RT_CAL_ALPHA                 0.005f                // slow LPF on bias
+#define RT_CAL_GYRO_STILL_RAD        (1.0f * DEG2RAD)     // gyro magnitude threshold
+#define RT_CAL_ACC_DEV_MPS2          (0.30f)               // |a|-g threshold
+#define RT_CAL_EKF_SPEED_MAX         (0.20f)               // m/s
+#define RT_CAL_GNSS_SPEED_MAX        (0.30f)               // m/s
+#define RT_CAL_MIN_SAVE_INTERVAL_S   60.0                  // persist at most every 60 s
+
+// =====================================================================
+//   AHRS / complementary attitude filter (runs at IMU rate before EKF)
+// =====================================================================
+#ifndef ENABLE_AHRS_FILTER
+#define ENABLE_AHRS_FILTER           1
+#endif
+#ifndef ENABLE_AHRS_GNSS_YAW
+#define ENABLE_AHRS_GNSS_YAW         1
+#endif
+#ifndef ENABLE_AHRS_ACCEL_CORR
+#define ENABLE_AHRS_ACCEL_CORR       1
+#endif
+#ifndef ENABLE_AHRS_DEBUG_LOGS
+#define ENABLE_AHRS_DEBUG_LOGS       0
+#endif
+
+// Complementary gains (per IMU update at ~100 Hz)
+#define AHRS_ROLLPITCH_ALPHA         0.02f      // 2 %/sample — slow accel correction
+#define AHRS_YAW_GNSS_ALPHA          0.05f      // 5 %/GNSS-update yaw correction
+
+// Accelerometer-trust gates
+#define AHRS_ACCEL_NORM_TOL          1.5f                  // m/s² — | |a|-g | bound
+#define AHRS_ACCEL_TRUST_GYRO_MAX    (10.0f * DEG2RAD)     // per-axis gyro cap during accel correction
+#define AHRS_ACCEL_DOT_SPEED_MIN_S   0.6f                  // (m/s) per second longitudinal — reject during hard accel/brake
+
+// GNSS-yaw-trust gates
+#define AHRS_GNSS_YAW_SPEED_MIN      2.0f                  // m/s — below this COG is too noisy
+#define AHRS_GNSS_YAW_HDOP_MAX       3.0f
+#define AHRS_YAW_INNOV_MAX           (45.0f * DEG2RAD)     // reject wild jumps
+
+// EKF yaw-measurement-update noise sigma when AHRS yaw is taken as truth
+#define AHRS_TO_EKF_R_YAW            ((3.0f*DEG2RAD)*(3.0f*DEG2RAD))
 
 /**--------------------------GNSS yaw-rate learner tuning --------------------
  * Learn gyro Z scale using GNSS course/heading during turns.
@@ -1125,23 +1200,229 @@ static const float GYRO_B[3] = { -153.461f, 69.446f, 992.782f };*/
 
 static dr_cal_t g_cal;
 
-/* ---- tincy CRC32 ( good enough for a small blob ) ---- */
-#if 0
-static uint32_t crc32_simple( const void *data, size_t nbytes ) {
+/* =====================================================================
+ * Production IMU calibration framework (imu_calib_t).
+ *
+ * Frame conventions:
+ *   IMU/body frame:  X = sensor X (forward when mounted with X→front)
+ *                    Y = sensor Y (left when mounted with Y→left)
+ *                    Z = sensor Z (up when mounted Z→up)
+ *   Vehicle frame:   X_v = vehicle forward (along chassis)
+ *                    Y_v = vehicle left
+ *                    Z_v = vehicle up
+ *
+ * mount_R_bv is the rotation that converts IMU-frame vectors to vehicle
+ * frame:  v_vehicle = mount_R_bv * v_imu_body.
+ *
+ * Default mount_R_bv = identity (assumes IMU is physically aligned with
+ * the vehicle chassis). After an installation calibration is performed
+ * (drive a straight line at constant speed, compare GNSS course with
+ * gyro-integrated heading) update mount_R_bv and persist it.
+ * ===================================================================== */
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+
+    float    accel_bias[3];        // m/s²    (subtract from calibrated accel)
+    float    gyro_bias[3];         // rad/s   (subtract from calibrated gyro)
+
+    float    accel_scale[3];       // unitless scale correction (default 1)
+    float    gyro_scale[3];        // unitless scale correction (default 1)
+
+    float    accel_misalign[3][3]; // optional cross-axis correction (default I)
+    float    mount_R_bv[3][3];     // IMU → vehicle frame (default I)
+
+    float    temperature_c;        // sensor temperature at calibration time
+    uint64_t created_unix_s;       // wall-clock at creation
+
+    // Quality metrics captured during the boot-stationary window
+    float    boot_accel_var[3];          // per-axis accel sample variance (m²/s⁴)
+    float    boot_gyro_var[3];           // per-axis gyro  sample variance (rad²/s²)
+    float    boot_accel_norm_mean;       // mean(|acc|) — should be ≈ 9.80665
+    float    boot_accel_norm_std;
+    float    boot_gyro_norm_mean;        // mean(|gyro|) — should be ≈ 0
+    float    boot_gyro_norm_std;
+
+    uint32_t boot_sample_count;
+    uint32_t valid_flags;          // bit0 boot-cal ok, bit1 runtime-cal active,
+                                   // bit2 mount matrix verified
+    uint32_t checksum;             // CRC32 over the rest (this field zeroed)
+} imu_calib_t;
+
+#define CAL_FLAG_BOOT_OK         (1u << 0)
+#define CAL_FLAG_RUNTIME_OK      (1u << 1)
+#define CAL_FLAG_MOUNT_OK        (1u << 2)
+#define CAL_FLAG_DEGRADED        (1u << 3)
+
+static imu_calib_t g_imu_cal;
+
+/* IMU quality state — set by boot/runtime cal and bump detector.
+ * Used by the EKF to inflate process noise when the sensor is unreliable. */
+static volatile int g_imu_quality_degraded = 0;
+static double       g_last_calib_save_s    = 0.0;
+
+/* ---- CRC32 (IEEE 802.3 polynomial, reflected — good enough for a small blob) ---- */
+static uint32_t crc32_simple(const void *data, size_t nbytes) {
     size_t i;
     int b;
     const uint8_t *p = (const uint8_t*)data;
     uint32_t crc = 0xFFFFFFFFu;
-    for( i=0; i<nbytes; i++ ){
+    for (i = 0; i < nbytes; i++) {
         crc ^= p[i];
-        for( b=0; b<8; b++ ){
-            uint32_t m = -(crc & 1u);
+        for (b = 0; b < 8; b++) {
+            uint32_t m = (uint32_t)-(int32_t)(crc & 1u);
             crc = (crc >> 1) ^ (0xEDB88320u & m);
         }
     }
     return ~crc;
 }
+
+static uint32_t imu_calib_checksum(const imu_calib_t *cal) {
+    imu_calib_t tmp = *cal;
+    tmp.checksum = 0;
+    return crc32_simple(&tmp, sizeof(tmp));
+}
+
+/* 3x3 matrix helpers (used by mount-rotation and misalignment) */
+static void mat3_identity(float R[3][3]) {
+    int i, j;
+    for (i = 0; i < 3; i++)
+        for (j = 0; j < 3; j++)
+            R[i][j] = (i == j) ? 1.0f : 0.0f;
+}
+
+static void mat3_mul_vec(const float R[3][3], const float v[3], float out[3]) {
+    out[0] = R[0][0]*v[0] + R[0][1]*v[1] + R[0][2]*v[2];
+    out[1] = R[1][0]*v[0] + R[1][1]*v[1] + R[1][2]*v[2];
+    out[2] = R[2][0]*v[0] + R[2][1]*v[1] + R[2][2]*v[2];
+}
+
+static void apply_mount_rotation(const imu_calib_t *cal,
+                                 const float imu_vec[3],
+                                 float vehicle_vec[3])
+{
+#if ENABLE_MOUNT_MATRIX
+    mat3_mul_vec(cal->mount_R_bv, imu_vec, vehicle_vec);
+#else
+    vehicle_vec[0] = imu_vec[0];
+    vehicle_vec[1] = imu_vec[1];
+    vehicle_vec[2] = imu_vec[2];
 #endif
+}
+
+static void imu_calib_set_defaults(imu_calib_t *cal) {
+    memset(cal, 0, sizeof(*cal));
+    cal->magic         = IMU_CALIB_MAGIC;
+    cal->version       = IMU_CALIB_VERSION;
+    cal->accel_scale[0] = cal->accel_scale[1] = cal->accel_scale[2] = 1.0f;
+    cal->gyro_scale [0] = cal->gyro_scale [1] = cal->gyro_scale [2] = 1.0f;
+    mat3_identity(cal->accel_misalign);
+    mat3_identity(cal->mount_R_bv);
+    cal->temperature_c = 25.0f;
+    cal->valid_flags   = 0;
+}
+
+/* Sanity validation — returns 0 if ok, negative reason code otherwise.
+ *   -1 = magic/version mismatch
+ *   -2 = checksum mismatch (caller should compute before)
+ *   -3 = gyro bias out of range
+ *   -4 = accel bias out of range
+ *   -5 = accel norm mean out of plausible gravity range
+ *   -6 = variance excessive (vibration / motion during cal)
+ *   -7 = NaN/Inf in any field
+ */
+static int imu_calib_validate(const imu_calib_t *cal) {
+    int i, j;
+    if (cal->magic != IMU_CALIB_MAGIC)   return -1;
+    if (cal->version != IMU_CALIB_VERSION) return -1;
+    // NaN/Inf scan over float members
+    const float *f = (const float *)&cal->accel_bias[0];
+    size_t nf = (offsetof(imu_calib_t, temperature_c) +
+                 sizeof(cal->temperature_c) -
+                 offsetof(imu_calib_t, accel_bias)) / sizeof(float);
+    for (i = 0; i < (int)nf; i++) {
+        float v = f[i];
+        if (!(v == v) || (v > 1e30f) || (v < -1e30f)) return -7;
+    }
+    for (i = 0; i < 3; i++) {
+        if (fabsf(cal->gyro_bias[i])  > CAL_SANITY_GYRO_BIAS_MAX)  return -3;
+        if (fabsf(cal->accel_bias[i]) > CAL_SANITY_ACCEL_BIAS_MAX) return -4;
+        // Scales must be near 1
+        if (cal->accel_scale[i] < 0.5f || cal->accel_scale[i] > 1.5f) return -4;
+        if (cal->gyro_scale [i] < 0.5f || cal->gyro_scale [i] > 1.5f) return -3;
+    }
+    if (cal->boot_sample_count > 0) {
+        if (cal->boot_accel_norm_mean < CAL_SANITY_ACCEL_NORM_MIN ||
+            cal->boot_accel_norm_mean > CAL_SANITY_ACCEL_NORM_MAX) return -5;
+        for (i = 0; i < 3; i++) {
+            if (cal->boot_accel_var[i] > CAL_SANITY_ACC_VAR_MAX)  return -6;
+            if (cal->boot_gyro_var [i] > CAL_SANITY_GYRO_VAR_MAX) return -6;
+        }
+    }
+    // Mount/misalign rows finite and not absurd
+    for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) {
+        float m = cal->mount_R_bv[i][j];
+        if (!(m == m) || fabsf(m) > 2.0f) return -7;
+        float a = cal->accel_misalign[i][j];
+        if (!(a == a) || fabsf(a) > 2.0f) return -7;
+    }
+    return 0;
+}
+
+static int imu_calib_load(const char *path, imu_calib_t *cal) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    imu_calib_t tmp;
+    ssize_t rd = read(fd, &tmp, sizeof(tmp));
+    close(fd);
+    if (rd != (ssize_t)sizeof(tmp)) return -2;
+    uint32_t saved = tmp.checksum;
+    uint32_t calc  = imu_calib_checksum(&tmp);
+    if (saved != calc) return -2;
+    int reason = imu_calib_validate(&tmp);
+    if (reason != 0) return reason;
+    *cal = tmp;
+    return 0;
+}
+
+static int imu_calib_save_atomic(const char *path, const imu_calib_t *cal) {
+#if !ENABLE_CAL_FILE_SAVE
+    (void)path; (void)cal;
+    return 0;
+#else
+    imu_calib_t tmp = *cal;
+    tmp.checksum = imu_calib_checksum(&tmp);
+    char tmp_path[256];
+    int n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    if (n <= 0 || n >= (int)sizeof(tmp_path)) return -1;
+    int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return -2;
+    ssize_t wr = write(fd, &tmp, sizeof(tmp));
+    if (wr != (ssize_t)sizeof(tmp)) {
+        close(fd); unlink(tmp_path); return -3;
+    }
+    if (fsync(fd) != 0) { close(fd); unlink(tmp_path); return -4; }
+    close(fd);
+    if (rename(tmp_path, path) != 0) { unlink(tmp_path); return -5; }
+    return 0;
+#endif
+}
+
+/* Bridge: convert legacy g_cal (LSQ + raw gyro counts) into the production
+ * imu_calib_t bias fields. The 6-position LSQ accelerometer matrix in g_cal
+ * already corrects for scale and cross-axis errors, so accel_misalign/scale
+ * here stay at identity and the residual offset is folded into accel_bias.
+ * Called whenever g_cal changes (boot cal completes or a fresh default load). */
+static void imu_calib_sync_from_g_cal(imu_calib_t *cal) {
+    int i;
+    const float L = DEG2RAD / GYRO_LSB_PER_DPS;
+    for (i = 0; i < 3; i++) {
+        cal->gyro_bias[i]  = g_cal.gyro_bias_counts[i] * L;
+        cal->accel_bias[i] = 0.0f;   // accel offset is baked into g_cal.accel_O
+    }
+    cal->gyro_scale[2] *= g_cal.gyro_z_scale;
+}
 
 static void cal_set_defaults_from_lsq( void ) {
     memset(&g_cal, 0, sizeof(g_cal));
@@ -1257,26 +1538,558 @@ static void calib_gyro(const struct mpu6050_sample *raw, vec3f *gyro_radps) {
     gyro_radps->z = dps2 * DEG2RAD;
 }
 
-/* ---------------- Stillness based calibration ( first install + runtime ) -------------------*/
-typedef struct {
-    bool active;
-    int N;
-    double t0;
-    double gyro_sum[3];     /* raw counts */
-    double acc_sum[3];      /* m/s^2 (after LSQ) */
+/* =====================================================================
+ * Centralized IMU preprocessing
+ *
+ * Source-of-truth convention for biases (avoid double-subtract):
+ *   g_cal              — owns the APPLIED bias / LSQ matrix / scale used
+ *                        by calib_accel() and calib_gyro().
+ *   g_imu_cal.*_bias   — mirrors the same SI bias values for persistence
+ *                        and diagnostics ONLY.
+ * imu_preprocess_sample() therefore does NOT re-subtract g_imu_cal.*_bias
+ * (it would be applied twice). It only adds the corrections that g_cal
+ * cannot represent: per-axis residual scale, cross-axis misalignment and
+ * the mount→vehicle rotation.
+ *
+ * Order of operations:
+ *   1. raw counts → physical units            (calib_accel / calib_gyro)
+ *   2. accel_misalign (3×3, default identity)
+ *   3. per-axis residual scale (gyro_scale, accel_scale)
+ *   4. mount_R_bv: rotate IMU/body frame into vehicle frame
+ *
+ * The output vectors are in vehicle frame and SI units:
+ *   accel_vehicle[] = m/s² with gravity still present
+ *   gyro_vehicle[]  = rad/s
+ *
+ * Median/low-pass filtering is applied separately in the fusion thread
+ * after this function returns, because the filter state is shared with
+ * the bump detector. ===================================================*/
+static void imu_preprocess_sample(const imu_calib_t *cal,
+                                  const struct mpu6050_sample *raw,
+                                  float accel_vehicle[3],
+                                  float gyro_vehicle[3])
+{
+    /* 1) Raw → SI using legacy g_cal (bias already removed inside) */
+    vec3f acc_b, gyro_b;
+    calib_accel(raw,  &acc_b);
+    calib_gyro (raw,  &gyro_b);
 
-}still_accum_t;
+    /* 2) Optional accel cross-axis (misalignment) correction */
+    float a_in[3]  = { acc_b.x,  acc_b.y,  acc_b.z };
+    float a_aligned[3];
+    mat3_mul_vec(cal->accel_misalign, a_in, a_aligned);
 
-static void still_reset(still_accum_t *A ){
-    A->active = false;
-    A->N = 0;
-    A->t0 = 0.0;
-    A->gyro_sum[0] = A->gyro_sum[1] = A->gyro_sum[2] = 0.0;
-    A->acc_sum[0] = A->acc_sum[1] = A->acc_sum[2] = 0.0;
+    /* 3) Per-axis residual scale (default 1.0 — no-op until set by runtime) */
+    a_aligned[0] *= cal->accel_scale[0];
+    a_aligned[1] *= cal->accel_scale[1];
+    a_aligned[2] *= cal->accel_scale[2];
 
+    float g_in[3] = { gyro_b.x, gyro_b.y, gyro_b.z };
+    g_in[0] *= cal->gyro_scale[0];
+    g_in[1] *= cal->gyro_scale[1];
+    g_in[2] *= cal->gyro_scale[2];
+
+    /* 4) IMU/body → vehicle frame (default mount = identity) */
+    apply_mount_rotation(cal, a_aligned, accel_vehicle);
+    apply_mount_rotation(cal, g_in,      gyro_vehicle);
 }
 
-static bool apply_poweron_calibration(still_accum_t *A,
+/* =====================================================================
+ * Conservative runtime gyro-bias learner.
+ *
+ * Updates g_imu_cal.gyro_bias (and the legacy g_cal counts) with a slow
+ * LPF only when the vehicle has been confirmed stationary for at least
+ * RT_CAL_WINDOW_S seconds. Accelerometer bias is intentionally NOT
+ * updated at runtime — that requires confident attitude.
+ *
+ * Save is throttled to RT_CAL_MIN_SAVE_INTERVAL_S between persistence
+ * writes; the file write is also performed on clean program exit.
+ *
+ * Returns true if a bias update was applied this call. =================*/
+typedef struct {
+    bool   armed;
+    double t_start;
+    double sum[3];        // rad/s
+    double sum_sq[3];     // rad²/s²
+    int    N;
+} rt_cal_t;
+
+static rt_cal_t g_rt_cal;
+
+#if ENABLE_RUNTIME_GYRO_CAL
+static bool runtime_gyro_cal_update(const float gyro_vehicle_rps[3],
+                                    const float accel_vehicle_mps2[3],
+                                    bool ekf_speed_low,
+                                    bool gnss_speed_low,
+                                    double now_s)
+{
+    float gnorm = sqrtf(gyro_vehicle_rps[0]*gyro_vehicle_rps[0] +
+                        gyro_vehicle_rps[1]*gyro_vehicle_rps[1] +
+                        gyro_vehicle_rps[2]*gyro_vehicle_rps[2]);
+    float anorm = sqrtf(accel_vehicle_mps2[0]*accel_vehicle_mps2[0] +
+                        accel_vehicle_mps2[1]*accel_vehicle_mps2[1] +
+                        accel_vehicle_mps2[2]*accel_vehicle_mps2[2]);
+    float adev  = fabsf(anorm - GRAVITY);
+    bool still = (gnorm < (RT_CAL_GYRO_STILL_RAD * 1.7320508f)) &&  // ~root3 of per-axis
+                 (adev  < RT_CAL_ACC_DEV_MPS2) &&
+                 ekf_speed_low && gnss_speed_low &&
+                 !g_imu_quality_degraded;
+
+    if (!still) {
+        g_rt_cal.armed = false;
+        return false;
+    }
+
+    if (!g_rt_cal.armed) {
+        g_rt_cal.armed   = true;
+        g_rt_cal.t_start = now_s;
+        g_rt_cal.N       = 0;
+        g_rt_cal.sum[0] = g_rt_cal.sum[1] = g_rt_cal.sum[2] = 0.0;
+        g_rt_cal.sum_sq[0] = g_rt_cal.sum_sq[1] = g_rt_cal.sum_sq[2] = 0.0;
+    }
+    g_rt_cal.sum[0]    += gyro_vehicle_rps[0];
+    g_rt_cal.sum[1]    += gyro_vehicle_rps[1];
+    g_rt_cal.sum[2]    += gyro_vehicle_rps[2];
+    g_rt_cal.sum_sq[0] += (double)gyro_vehicle_rps[0] * gyro_vehicle_rps[0];
+    g_rt_cal.sum_sq[1] += (double)gyro_vehicle_rps[1] * gyro_vehicle_rps[1];
+    g_rt_cal.sum_sq[2] += (double)gyro_vehicle_rps[2] * gyro_vehicle_rps[2];
+    g_rt_cal.N++;
+
+    if ((now_s - g_rt_cal.t_start) < RT_CAL_WINDOW_S || g_rt_cal.N < 50)
+        return false;
+
+    /* Variance gate — verifies the window really was still */
+    double invN = 1.0 / (double)g_rt_cal.N;
+    double v0 = g_rt_cal.sum_sq[0]*invN - (g_rt_cal.sum[0]*invN)*(g_rt_cal.sum[0]*invN);
+    double v1 = g_rt_cal.sum_sq[1]*invN - (g_rt_cal.sum[1]*invN)*(g_rt_cal.sum[1]*invN);
+    double v2 = g_rt_cal.sum_sq[2]*invN - (g_rt_cal.sum[2]*invN)*(g_rt_cal.sum[2]*invN);
+    if (v0 > CAL_SANITY_GYRO_VAR_MAX || v1 > CAL_SANITY_GYRO_VAR_MAX || v2 > CAL_SANITY_GYRO_VAR_MAX) {
+        g_rt_cal.armed = false;
+        return false;
+    }
+
+    float mean[3] = { (float)(g_rt_cal.sum[0]*invN),
+                      (float)(g_rt_cal.sum[1]*invN),
+                      (float)(g_rt_cal.sum[2]*invN) };
+
+    /* The gyro samples passed into this function were produced by
+     * calib_gyro(), which already subtracted g_cal.gyro_bias_counts.
+     * The residual 'mean' is therefore the small drift not yet accounted
+     * for. We push that residual directly into g_cal.gyro_bias_counts
+     * (the single source of truth used by every preprocessing path),
+     * scaled by RT_CAL_ALPHA so adaptation is slow. */
+    float old_bias_rps[3] = {
+        g_cal.gyro_bias_counts[0] * (DEG2RAD / GYRO_LSB_PER_DPS),
+        g_cal.gyro_bias_counts[1] * (DEG2RAD / GYRO_LSB_PER_DPS),
+        g_cal.gyro_bias_counts[2] * (DEG2RAD / GYRO_LSB_PER_DPS)
+    };
+    const float counts_per_rps = GYRO_LSB_PER_DPS / DEG2RAD;
+    g_cal.gyro_bias_counts[0] += RT_CAL_ALPHA * mean[0] * counts_per_rps;
+    g_cal.gyro_bias_counts[1] += RT_CAL_ALPHA * mean[1] * counts_per_rps;
+    g_cal.gyro_bias_counts[2] += RT_CAL_ALPHA * mean[2] * counts_per_rps;
+    float new_bias_rps[3] = {
+        g_cal.gyro_bias_counts[0] * (DEG2RAD / GYRO_LSB_PER_DPS),
+        g_cal.gyro_bias_counts[1] * (DEG2RAD / GYRO_LSB_PER_DPS),
+        g_cal.gyro_bias_counts[2] * (DEG2RAD / GYRO_LSB_PER_DPS)
+    };
+    /* Keep g_imu_cal in sync with g_cal so a save captures the latest. */
+    g_imu_cal.gyro_bias[0] = new_bias_rps[0];
+    g_imu_cal.gyro_bias[1] = new_bias_rps[1];
+    g_imu_cal.gyro_bias[2] = new_bias_rps[2];
+
+    g_imu_cal.valid_flags |= CAL_FLAG_RUNTIME_OK;
+
+    fprintf(stdout, "[CAL_RUNTIME gyro_bias_update] old=(%.4f,%.4f,%.4f)°/s new=(%.4f,%.4f,%.4f)°/s "
+                    "win=%.1fs N=%d var=(%.2g,%.2g,%.2g)\n",
+            old_bias_rps[0]/DEG2RAD, old_bias_rps[1]/DEG2RAD, old_bias_rps[2]/DEG2RAD,
+            new_bias_rps[0]/DEG2RAD, new_bias_rps[1]/DEG2RAD, new_bias_rps[2]/DEG2RAD,
+            (float)(now_s - g_rt_cal.t_start), g_rt_cal.N, v0, v1, v2);
+
+    /* Throttled persistence */
+#if ENABLE_CAL_FILE_SAVE
+    if ((now_s - g_last_calib_save_s) >= RT_CAL_MIN_SAVE_INTERVAL_S) {
+        if (imu_calib_save_atomic(IMU_CALIB_PATH, &g_imu_cal) == 0) {
+            g_last_calib_save_s = now_s;
+        }
+    }
+#endif
+
+    /* Reset accumulator so we sample a fresh window next stop */
+    g_rt_cal.armed = false;
+    return true;
+}
+#endif /* ENABLE_RUNTIME_GYRO_CAL */
+
+/* =====================================================================
+ *   AHRS / complementary attitude filter
+ *
+ * Vehicle (= body) frame conventions in this file:
+ *     X = vehicle forward
+ *     Y = vehicle left
+ *     Z = vehicle up
+ *     +ωz (gyro Z) = counter-clockwise from above = left turn = +yaw rate
+ *
+ * Yaw convention (ENU, matching the rest of this codebase):
+ *     yaw = 0     → vehicle X axis points East
+ *     yaw = +π/2  → vehicle X axis points North
+ *
+ * State:
+ *   roll, pitch, yaw — Euler angles, derived from quaternion q after each
+ *                      update. q is the authoritative attitude (body→ENU).
+ *
+ * Update sequence on each IMU step (called from fusion_thread):
+ *   1. gyro integration             → predict q
+ *   2. accelerometer correction     → blend roll/pitch toward acc-derived
+ *                                      angles, gated by ahrs_accel_is_trusted
+ *   3. GNSS course correction       → blend yaw toward GNSS course, gated by
+ *                                      ahrs_gnss_yaw_is_trusted
+ *   4. extract Euler outputs        → roll/pitch/yaw used by ahrs_remove_gravity
+ *                                      and by the 2D EKF as the yaw reference
+ * ===================================================================== */
+
+typedef enum {
+    AHRS_QUALITY_GOOD            = 0,
+    AHRS_QUALITY_ACCEL_REJECTED  = 1,   // accel correction skipped (this step)
+    AHRS_QUALITY_BUMP            = 2,   // bump detector flagged degraded IMU
+    AHRS_QUALITY_YAW_UNOBSERVED  = 3,   // no recent GNSS yaw correction
+    AHRS_QUALITY_BAD             = 4    // both accel and yaw observations unavailable
+} ahrs_quality_t;
+
+typedef struct {
+    /* Authoritative attitude */
+    quatf q;        // body → ENU
+
+    /* Euler outputs (derived from q after each step) */
+    float roll;     // rad — right wing down positive
+    float pitch;    // rad — nose up positive
+    float yaw;      // rad — ENU heading, wrapped to (-π, π]
+
+    /* (optional) Per-AHRS gyro bias estimate. Currently mirrors g_imu_cal so
+     * the AHRS doesn't run a second bias estimator that diverges from the EKF. */
+    float gyro_bias[3];
+
+    /* Smoothed scalar diagnostics */
+    float accel_norm_lpf;   // m/s²
+    float gyro_norm_lpf;    // rad/s
+
+    double last_update_s;
+    int    initialized;
+
+    /* Latched gate results from the most recent ahrs_update() call */
+    int    accel_trusted;
+    int    gnss_yaw_trusted;
+
+    /* Configurable gains (set at init, may be tuned per quality) */
+    float  roll_pitch_alpha;
+    float  yaw_alpha_gnss;
+
+    /* Uncertainty proxies (variance, rad²). Grow when corrections are
+     * rejected; shrink when corrections are accepted. Read by EKF for
+     * adaptive process-noise scaling. */
+    float  roll_var;
+    float  pitch_var;
+    float  yaw_var;
+
+    /* Heading observation latch */
+    double last_yaw_obs_s;       // time of last accepted GNSS yaw correction
+
+    ahrs_quality_t quality;
+
+    /* Diagnostic counters */
+    uint32_t reject_accel_count;
+    uint32_t accept_accel_count;
+    uint32_t gnss_yaw_update_count;
+} ahrs_state_t;
+
+/* (Reserved) Tracking for hard-accel detection via GNSS Δv / dt.
+ * Not used yet — ahrs_accel_is_trusted currently gates on accel-norm/gyro/bump
+ * which is sufficient for ground vehicles at IMU rate. */
+
+/* Quaternion → Euler (ZYX) extraction used by the AHRS.
+ *   yaw   = atan2(2(wz + xy), 1 - 2(y² + z²))
+ *   pitch = asin (2(wy - zx))            — clamped before asin
+ *   roll  = atan2(2(wx + yz), 1 - 2(x² + y²))
+ * Same convention as q_from_euler() defined earlier in this file. */
+static void q_to_euler_zyx(quatf q, float *roll, float *pitch, float *yaw) {
+    q = q_normalize(q);
+    float w = q.w, x = q.x, y = q.y, z = q.z;
+    float sinp = 2.0f * (w*y - z*x);
+    if (sinp >  1.0f) sinp =  1.0f;
+    if (sinp < -1.0f) sinp = -1.0f;
+    *pitch = asinf(sinp);
+    *roll  = atan2f(2.0f*(w*x + y*z), 1.0f - 2.0f*(x*x + y*y));
+    *yaw   = atan2f(2.0f*(w*z + x*y), 1.0f - 2.0f*(y*y + z*z));
+}
+
+/* Initialize AHRS from a stationary accelerometer sample and (optional) GNSS yaw.
+ *   accel_vehicle[]   — vehicle-frame specific force, gravity present (m/s²).
+ *   initial_yaw_rad   — ENU course (used only if yaw_valid != 0).
+ *   yaw_valid         — 1 if GNSS heading was reliable, 0 otherwise. */
+static void ahrs_init_from_accel(ahrs_state_t *A,
+                                 const float accel_vehicle[3],
+                                 float initial_yaw_rad,
+                                 int yaw_valid)
+{
+    memset(A, 0, sizeof(*A));
+
+    float amag = sqrtf(accel_vehicle[0]*accel_vehicle[0] +
+                       accel_vehicle[1]*accel_vehicle[1] +
+                       accel_vehicle[2]*accel_vehicle[2]);
+    if (amag > 1.0f) {
+        // Standard stationary accel→tilt: gravity vector in body frame
+        // is [Rx, Ry, Rz]*g  ≈  accel_vehicle when at rest.
+        A->pitch = atan2f(-accel_vehicle[0],
+                          sqrtf(accel_vehicle[1]*accel_vehicle[1] +
+                                accel_vehicle[2]*accel_vehicle[2]));
+        A->roll  = atan2f(accel_vehicle[1], accel_vehicle[2]);
+    } else {
+        A->roll  = 0.0f;
+        A->pitch = 0.0f;
+    }
+
+    if (yaw_valid) {
+        A->yaw     = wrap_pi(initial_yaw_rad);
+        A->yaw_var = (5.0f * DEG2RAD) * (5.0f * DEG2RAD);   // GNSS course σ≈3°
+        A->quality = AHRS_QUALITY_GOOD;
+    } else {
+        A->yaw     = 0.0f;
+        A->yaw_var = (60.0f * DEG2RAD) * (60.0f * DEG2RAD); // unknown
+        A->quality = AHRS_QUALITY_YAW_UNOBSERVED;
+    }
+
+    A->q = q_from_euler(A->roll, A->pitch, A->yaw);
+
+    A->roll_var          = (5.0f * DEG2RAD) * (5.0f * DEG2RAD);
+    A->pitch_var         = (5.0f * DEG2RAD) * (5.0f * DEG2RAD);
+    A->accel_norm_lpf    = amag;
+    A->gyro_norm_lpf     = 0.0f;
+    A->roll_pitch_alpha  = AHRS_ROLLPITCH_ALPHA;
+    A->yaw_alpha_gnss    = AHRS_YAW_GNSS_ALPHA;
+
+    A->initialized       = 1;
+    A->accel_trusted     = 1;
+    A->gnss_yaw_trusted  = yaw_valid;
+    A->last_update_s     = now_sec();
+    A->last_yaw_obs_s    = yaw_valid ? A->last_update_s : 0.0;
+}
+
+/* Accelerometer trust check.
+ * Trusted iff the body is in quasi-static motion:
+ *     accel norm close to gravity AND gyro low AND no bump active AND
+ *     no large longitudinal acceleration inferred from GNSS speed change. */
+static int ahrs_accel_is_trusted(const float accel_vehicle[3],
+                                 const float gyro_vehicle[3],
+                                 float vehicle_speed_mps)
+{
+    (void)vehicle_speed_mps;
+    float amag = sqrtf(accel_vehicle[0]*accel_vehicle[0] +
+                       accel_vehicle[1]*accel_vehicle[1] +
+                       accel_vehicle[2]*accel_vehicle[2]);
+    if (fabsf(amag - GRAVITY) > AHRS_ACCEL_NORM_TOL) return 0;
+    if (fabsf(gyro_vehicle[0]) > AHRS_ACCEL_TRUST_GYRO_MAX) return 0;
+    if (fabsf(gyro_vehicle[1]) > AHRS_ACCEL_TRUST_GYRO_MAX) return 0;
+    if (fabsf(gyro_vehicle[2]) > AHRS_ACCEL_TRUST_GYRO_MAX) return 0;
+    if (g_imu_quality_degraded) return 0;   // bump detector vetoes accel correction
+    return 1;
+}
+
+/* GNSS-yaw trust check. */
+static int ahrs_gnss_yaw_is_trusted(int gnss_heading_valid,
+                                    float gnss_heading_rad,
+                                    float gnss_speed_mps,
+                                    float gnss_hdop,
+                                    float current_yaw_rad)
+{
+    if (!gnss_heading_valid) return 0;
+    if (gnss_speed_mps < AHRS_GNSS_YAW_SPEED_MIN) return 0;
+    if (gnss_hdop > AHRS_GNSS_YAW_HDOP_MAX) return 0;
+    float innov = wrap_pi(gnss_heading_rad - current_yaw_rad);
+    if (fabsf(innov) > AHRS_YAW_INNOV_MAX) return 0;
+    return 1;
+}
+
+/* Remove the gravity contribution from accel_vehicle using AHRS attitude.
+ * Output is the linear (vehicle-frame) acceleration excluding gravity.
+ *
+ *   gravity_body = R^T * [0, 0, g]  with  R = R_from_q(A->q)  (body→ENU)
+ *   lin_accel    = accel_vehicle − gravity_body
+ *
+ * For a level vehicle, gravity_body = [0, 0, g] and lin_accel[2] removes g,
+ * lin_accel[0] is forward acceleration, lin_accel[1] is lateral. */
+static void ahrs_remove_gravity(const ahrs_state_t *A,
+                                const float accel_vehicle[3],
+                                float lin_accel_vehicle[3])
+{
+    float R[9]; R_from_q(A->q, R);
+    /* R^T column 2 = R row 2 = [R[6], R[7], R[8]] — gravity expressed in body. */
+    float gx_b = R[6] * GRAVITY;
+    float gy_b = R[7] * GRAVITY;
+    float gz_b = R[8] * GRAVITY;
+    lin_accel_vehicle[0] = accel_vehicle[0] - gx_b;
+    lin_accel_vehicle[1] = accel_vehicle[1] - gy_b;
+    lin_accel_vehicle[2] = accel_vehicle[2] - gz_b;
+}
+
+/* Central AHRS update.
+ * Must be called every IMU step AFTER imu_preprocess_sample() and BEFORE
+ * ins2d_predict(). Updates A->q and the derived euler outputs.            */
+static void ahrs_update(ahrs_state_t *A,
+                        const float accel_vehicle[3],
+                        const float gyro_vehicle[3],
+                        float dt,
+                        int   gnss_heading_valid,
+                        float gnss_heading_rad,
+                        float gnss_speed_mps,
+                        float gnss_hdop)
+{
+#if !ENABLE_AHRS_FILTER
+    (void)A; (void)accel_vehicle; (void)gyro_vehicle; (void)dt;
+    (void)gnss_heading_valid; (void)gnss_heading_rad; (void)gnss_speed_mps; (void)gnss_hdop;
+    return;
+#else
+    if (!A->initialized) return;
+    double now_s = now_sec();
+    A->last_update_s = now_s;
+
+    /* Diagnostic norms (LPF over a few seconds for stability) */
+    const float dn_alpha = 0.05f;
+    float amag = sqrtf(accel_vehicle[0]*accel_vehicle[0] +
+                       accel_vehicle[1]*accel_vehicle[1] +
+                       accel_vehicle[2]*accel_vehicle[2]);
+    float gmag = sqrtf(gyro_vehicle [0]*gyro_vehicle [0] +
+                       gyro_vehicle [1]*gyro_vehicle [1] +
+                       gyro_vehicle [2]*gyro_vehicle [2]);
+    A->accel_norm_lpf = (1.0f - dn_alpha)*A->accel_norm_lpf + dn_alpha*amag;
+    A->gyro_norm_lpf  = (1.0f - dn_alpha)*A->gyro_norm_lpf  + dn_alpha*gmag;
+
+    /* 1) Predict: integrate gyro into the quaternion.
+     *    The gyro vector here is already vehicle-frame, bias-removed by the
+     *    preprocessor + runtime cal — we don't subtract another bias here. */
+    vec3f w = v3(gyro_vehicle[0], gyro_vehicle[1], gyro_vehicle[2]);
+    quatf dq = q_from_small_angle(v3_scale(w, dt));
+    A->q = q_normalize(q_mul(A->q, dq));
+
+    /* Process-noise-like growth of uncertainty per step */
+    float sigma_w_step2 = (0.5f * DEG2RAD)*(0.5f * DEG2RAD) * dt;   // (0.5°/s/√Hz)²·dt
+    A->roll_var  += sigma_w_step2;
+    A->pitch_var += sigma_w_step2;
+    A->yaw_var   += sigma_w_step2;
+
+    /* 2) Accelerometer roll/pitch correction (gated) */
+#if ENABLE_AHRS_ACCEL_CORR
+    int acc_ok = ahrs_accel_is_trusted(accel_vehicle, gyro_vehicle, gnss_speed_mps);
+    A->accel_trusted = acc_ok;
+    if (acc_ok) {
+        /* Tilt from gravity vector in vehicle frame */
+        float roll_acc  = atan2f(accel_vehicle[1], accel_vehicle[2]);
+        float pitch_acc = atan2f(-accel_vehicle[0],
+                                 sqrtf(accel_vehicle[1]*accel_vehicle[1] +
+                                       accel_vehicle[2]*accel_vehicle[2]));
+        /* Read current euler from q, then blend roll/pitch only, keep yaw */
+        float r_cur, p_cur, y_cur;
+        q_to_euler_zyx(A->q, &r_cur, &p_cur, &y_cur);
+        float r_new = (1.0f - A->roll_pitch_alpha)*r_cur + A->roll_pitch_alpha*roll_acc;
+        float p_new = (1.0f - A->roll_pitch_alpha)*p_cur + A->roll_pitch_alpha*pitch_acc;
+        A->q   = q_from_euler(r_new, p_new, y_cur);
+        A->roll  = r_new;
+        A->pitch = p_new;
+        A->yaw   = y_cur;
+        A->roll_var  *= (1.0f - A->roll_pitch_alpha);
+        A->pitch_var *= (1.0f - A->roll_pitch_alpha);
+        A->accept_accel_count++;
+#if ENABLE_AHRS_DEBUG_LOGS
+        printf("[AHRS_ACCEL_ACCEPT] roll_acc=%.2f pitch_acc=%.2f\n",
+               roll_acc/DEG2RAD, pitch_acc/DEG2RAD);
+#endif
+    } else {
+        A->reject_accel_count++;
+#if ENABLE_AHRS_DEBUG_LOGS
+        printf("[AHRS_ACCEL_REJECT] reason=%s accel_norm=%.2f gyro_norm=%.2f\n",
+               g_imu_quality_degraded ? "bump" : "dynamic",
+               amag, gmag/DEG2RAD);
+#endif
+    }
+#endif /* ENABLE_AHRS_ACCEL_CORR */
+
+    /* 3) GNSS yaw / course correction (gated) */
+#if ENABLE_AHRS_GNSS_YAW
+    /* Need a current yaw estimate that reflects step (1) and (2) */
+    float r_cur2, p_cur2, y_cur2;
+    q_to_euler_zyx(A->q, &r_cur2, &p_cur2, &y_cur2);
+    int yaw_ok = ahrs_gnss_yaw_is_trusted(gnss_heading_valid, gnss_heading_rad,
+                                          gnss_speed_mps, gnss_hdop, y_cur2);
+    A->gnss_yaw_trusted = yaw_ok;
+    if (yaw_ok) {
+        float innov = wrap_pi(gnss_heading_rad - y_cur2);
+        float y_new = wrap_pi(y_cur2 + A->yaw_alpha_gnss * innov);
+        A->q = q_from_euler(r_cur2, p_cur2, y_new);
+        A->roll  = r_cur2;
+        A->pitch = p_cur2;
+        A->yaw   = y_new;
+        A->yaw_var *= (1.0f - A->yaw_alpha_gnss);
+        A->gnss_yaw_update_count++;
+        A->last_yaw_obs_s = now_s;
+#if ENABLE_AHRS_DEBUG_LOGS
+        printf("[AHRS_GNSS_YAW_UPDATE] old=%.2f gnss=%.2f new=%.2f innov=%.2f\n",
+               y_cur2/DEG2RAD, gnss_heading_rad/DEG2RAD, y_new/DEG2RAD, innov/DEG2RAD);
+#endif
+    }
+#endif /* ENABLE_AHRS_GNSS_YAW */
+
+    /* 4) Refresh Euler outputs from authoritative q */
+    q_to_euler_zyx(A->q, &A->roll, &A->pitch, &A->yaw);
+
+    /* 5) Quality classification (used by EKF for process-noise adaptation) */
+    if (g_imu_quality_degraded) {
+        A->quality = AHRS_QUALITY_BUMP;
+    } else if (!A->accel_trusted && (now_s - A->last_yaw_obs_s) > 30.0) {
+        A->quality = AHRS_QUALITY_BAD;
+    } else if (!A->accel_trusted) {
+        A->quality = AHRS_QUALITY_ACCEL_REJECTED;
+    } else if ((now_s - A->last_yaw_obs_s) > 60.0) {
+        A->quality = AHRS_QUALITY_YAW_UNOBSERVED;
+    } else {
+        A->quality = AHRS_QUALITY_GOOD;
+    }
+#endif /* ENABLE_AHRS_FILTER */
+}
+
+/* EKF yaw-measurement update: feed AHRS yaw into the 2D EKF as a
+ * scalar heading observation. Keeps the two yaw integrators coupled
+ * so they cannot drift apart. */
+#if USE_2D_EKF
+static void ins2d_update_yaw_from_ahrs(ins2d_t *S, float ahrs_yaw, float R_yaw)
+{
+    /* Reuse the existing scalar heading update path. ins2d_update_heading
+     * already wraps the innovation correctly. */
+    ins2d_update_heading(S, ahrs_yaw, R_yaw, NULL);
+}
+#endif
+typedef struct {
+    bool   active;
+    int    N;
+    double t0;
+    double t_last_progress;     /* for 1-Hz progress logs */
+    double gyro_sum[3];         /* raw counts */
+    double acc_sum[3];          /* m/s^2 (after LSQ) */
+    double gyro_sum_sq[3];      /* raw counts²  — for variance */
+    double acc_sum_sq[3];       /* m²/s⁴        — for variance */
+    double acc_norm_sum;        /* |a|  — for norm mean/std */
+    double acc_norm_sum_sq;
+    double gyro_norm_sum;       /* |gyro| in rad/s */
+    double gyro_norm_sum_sq;
+} still_accum_t;
+
+static void still_reset(still_accum_t *A ){
+    memset(A, 0, sizeof(*A));
+}
+
+/* Boot calibration result code:
+ *    1 = success (g_cal & g_imu_cal updated, calibration persisted to flash)
+ *    0 = in progress
+ *   -1 = motion detected; accumulator reset
+ *   -2 = completed but rejected by sanity check (calibration NOT applied) */
+static int apply_poweron_calibration(still_accum_t *A,
     const struct mpu6050_sample *raw,
     vec3f acc_b_lsq,
     float still_required_s,
@@ -1294,81 +2107,198 @@ static bool apply_poweron_calibration(still_accum_t *A,
     float gx_rps = (float)raw->gx * Lgz_inv;
     float gy_rps = (float)raw->gy * Lgz_inv;
     float gz_rps = (float)raw->gz * Lgz_inv;
-    float acc_dev = fabsf(v3_norm(acc_b_lsq) - GRAVITY);
+    float acc_norm = v3_norm(acc_b_lsq);
+    float acc_dev = fabsf(acc_norm - GRAVITY);
+    float gyro_norm = sqrtf(gx_rps*gx_rps + gy_rps*gy_rps + gz_rps*gz_rps);
+
     bool moving = (fabsf(gx_rps) > BOOT_CAL_GYRO_STILL_RAD ||
                    fabsf(gy_rps) > BOOT_CAL_GYRO_STILL_RAD ||
                    fabsf(gz_rps) > BOOT_CAL_GYRO_STILL_RAD ||
                    acc_dev      > BOOT_CAL_ACC_STILL_MPS2);
 
     if (moving) {
-        // Drop everything accumulated so far — wait for sustained stillness.
         static double t_last_warn = 0.0;
         if (now_s - t_last_warn > BOOT_CAL_RESET_GRACE_S) {
-            printf("[CAL] Motion detected (|g_dev|=%.2f m/s² gyro=(%.2f,%.2f,%.2f)°/s) — "
-                   "restarting boot calibration. Keep the vehicle still.\n",
+            printf("[CAL_BOOT moved] restarting reason=|g_dev|=%.2f gyro=(%.2f,%.2f,%.2f)°/s\n",
                    acc_dev, gx_rps/DEG2RAD, gy_rps/DEG2RAD, gz_rps/DEG2RAD);
             t_last_warn = now_s;
         }
         still_reset(A);
-        return false;
+        return -1;
     }
 
     /* Start accumulation on first call (or after a reset) */
     if( !A->active ){
         A->active = true;
         A->t0 = now_s;
-        A->N = 0;
-        A->gyro_sum[0] = A->gyro_sum[1] = A->gyro_sum[2] = 0.0;
-        A->acc_sum[0] = A->acc_sum[1] = A->acc_sum[2] = 0.0;
+        A->t_last_progress = now_s;
     }
 
-    /* Accumulate raw gyro counts */
-    A->gyro_sum[0] += (double)raw->gx;
-    A->gyro_sum[1] += (double)raw->gy;
-    A->gyro_sum[2] += (double)raw->gz;
+    /* Accumulate raw gyro counts (and counts² for variance) */
+    A->gyro_sum   [0] += (double)raw->gx;
+    A->gyro_sum   [1] += (double)raw->gy;
+    A->gyro_sum   [2] += (double)raw->gz;
+    A->gyro_sum_sq[0] += (double)raw->gx * (double)raw->gx;
+    A->gyro_sum_sq[1] += (double)raw->gy * (double)raw->gy;
+    A->gyro_sum_sq[2] += (double)raw->gz * (double)raw->gz;
 
-    /*Accumulate LSQ-corrected accle(m/s2)*/
-    A->acc_sum[0] += (double)acc_b_lsq.x;
-    A->acc_sum[1] += (double)acc_b_lsq.y;
-    A->acc_sum[2] += (double)acc_b_lsq.z;
+    /* Accumulate LSQ-corrected accel and accel² */
+    A->acc_sum   [0] += (double)acc_b_lsq.x;
+    A->acc_sum   [1] += (double)acc_b_lsq.y;
+    A->acc_sum   [2] += (double)acc_b_lsq.z;
+    A->acc_sum_sq[0] += (double)acc_b_lsq.x * (double)acc_b_lsq.x;
+    A->acc_sum_sq[1] += (double)acc_b_lsq.y * (double)acc_b_lsq.y;
+    A->acc_sum_sq[2] += (double)acc_b_lsq.z * (double)acc_b_lsq.z;
+    A->acc_norm_sum     += (double)acc_norm;
+    A->acc_norm_sum_sq  += (double)acc_norm * (double)acc_norm;
+    A->gyro_norm_sum    += (double)gyro_norm;
+    A->gyro_norm_sum_sq += (double)gyro_norm * (double)gyro_norm;
 
     A->N++;
 
-    /* Check time condition only (stillness is already verified above) */
+    /* 1 Hz progress log */
+    if (now_s - A->t_last_progress >= 1.0) {
+        float elapsed = (float)(now_s - A->t0);
+        printf("[CAL_BOOT progress] samples=%d stable_s=%.1f/%g accel_norm=%.3f gyro_norm=%.3f°/s\n",
+               A->N, elapsed, still_required_s, acc_norm, gyro_norm/DEG2RAD);
+        A->t_last_progress = now_s;
+    }
+
     if((now_s - A->t0) < (double)still_required_s)
-        return false;
-    
+        return 0;
+
     /*--------------------Finalize calibration ----------------------*/
 
     double invN = 1.0 / (double)A->N;
 
-    /*1) Gyro bias in raw counts */
-    g_cal.gyro_bias_counts[0] = (float)(A->gyro_sum[0] * invN);
-    g_cal.gyro_bias_counts[1] = (float)(A->gyro_sum[1] * invN);
-    g_cal.gyro_bias_counts[2] = (float)(A->gyro_sum[2] * invN);
-
-    /**
-     * 2) Accel bias trim (no attitude needed )
-     * Enforce |acc| = g along measured gravity direction 
-     */
+    /* Means */
+    double gx_mean = A->gyro_sum[0] * invN;
+    double gy_mean = A->gyro_sum[1] * invN;
+    double gz_mean = A->gyro_sum[2] * invN;
     vec3f acc_mean = v3((float)(A->acc_sum[0] * invN),
                         (float)(A->acc_sum[1] * invN),
                         (float)(A->acc_sum[2] * invN));
 
-    float n = v3_norm(acc_mean);
-    if( n > 1e-3f ){
-        vec3f g_dir = v3_scale(acc_mean, 1.0f/n);   // measured gravity direction 
-        vec3f acc_exp = v3_scale(g_dir, GRAVITY);   // Expected Gravity vector
-        vec3f resid = v3_sub(acc_mean, acc_exp);    // bias-like residual
+    /* Sample variance (E[x²] - E[x]², counts²) */
+    double gx_var_raw = A->gyro_sum_sq[0]*invN - gx_mean*gx_mean;
+    double gy_var_raw = A->gyro_sum_sq[1]*invN - gy_mean*gy_mean;
+    double gz_var_raw = A->gyro_sum_sq[2]*invN - gz_mean*gz_mean;
+    // Convert gyro variance from raw² counts to rad²/s²
+    double gscale2 = (double)Lgz_inv * (double)Lgz_inv;
+    double gx_var = gx_var_raw * gscale2;
+    double gy_var = gy_var_raw * gscale2;
+    double gz_var = gz_var_raw * gscale2;
+    double ax_var = A->acc_sum_sq[0]*invN - (double)acc_mean.x*acc_mean.x;
+    double ay_var = A->acc_sum_sq[1]*invN - (double)acc_mean.y*acc_mean.y;
+    double az_var = A->acc_sum_sq[2]*invN - (double)acc_mean.z*acc_mean.z;
+    double acc_norm_mean   = A->acc_norm_sum * invN;
+    double acc_norm_var    = A->acc_norm_sum_sq*invN - acc_norm_mean*acc_norm_mean;
+    double gyro_norm_mean  = A->gyro_norm_sum * invN;
+    double gyro_norm_var   = A->gyro_norm_sum_sq*invN - gyro_norm_mean*gyro_norm_mean;
 
-        /* accel_b = C *  raw + O */
-        g_cal.accel_O[0] -= resid.x;
-        g_cal.accel_O[1] -= resid.y;
-        g_cal.accel_O[2] -= resid.z;
+    /* Build a candidate imu_calib_t */
+    imu_calib_t cand;
+    imu_calib_set_defaults(&cand);
+
+    /* 1) Gyro bias in raw counts (legacy g_cal) — also record in cand in SI */
+    float gyro_bias_counts[3] = { (float)gx_mean, (float)gy_mean, (float)gz_mean };
+    cand.gyro_bias[0] = gyro_bias_counts[0] * Lgz_inv;
+    cand.gyro_bias[1] = gyro_bias_counts[1] * Lgz_inv;
+    cand.gyro_bias[2] = gyro_bias_counts[2] * Lgz_inv;
+
+    /* 2) Accel offset trim — enforce |a| = g along measured gravity direction.
+     * NOTE: This is conservative; we do NOT assume axes are zero. We only push
+     *       the measured gravity vector to the correct magnitude. */
+    float acc_offset_trim[3] = {0,0,0};
+    float n = v3_norm(acc_mean);
+    if (n > 1e-3f) {
+        vec3f g_dir = v3_scale(acc_mean, 1.0f/n);
+        vec3f acc_exp = v3_scale(g_dir, GRAVITY);
+        vec3f resid   = v3_sub(acc_mean, acc_exp);
+        acc_offset_trim[0] = resid.x;
+        acc_offset_trim[1] = resid.y;
+        acc_offset_trim[2] = resid.z;
     }
+    cand.accel_bias[0] = acc_offset_trim[0];
+    cand.accel_bias[1] = acc_offset_trim[1];
+    cand.accel_bias[2] = acc_offset_trim[2];
+
+    /* 3) Quality metrics */
+    cand.boot_accel_var[0]    = (float)fmax(0.0, ax_var);
+    cand.boot_accel_var[1]    = (float)fmax(0.0, ay_var);
+    cand.boot_accel_var[2]    = (float)fmax(0.0, az_var);
+    cand.boot_gyro_var [0]    = (float)fmax(0.0, gx_var);
+    cand.boot_gyro_var [1]    = (float)fmax(0.0, gy_var);
+    cand.boot_gyro_var [2]    = (float)fmax(0.0, gz_var);
+    cand.boot_accel_norm_mean = (float)acc_norm_mean;
+    cand.boot_accel_norm_std  = (float)sqrt(fmax(0.0, acc_norm_var));
+    cand.boot_gyro_norm_mean  = (float)gyro_norm_mean;
+    cand.boot_gyro_norm_std   = (float)sqrt(fmax(0.0, gyro_norm_var));
+    cand.boot_sample_count    = (uint32_t)A->N;
+    cand.created_unix_s       = (uint64_t)time(NULL);
+    cand.temperature_c        = 25.0f;
+    cand.valid_flags          = CAL_FLAG_BOOT_OK;
+
+    /* 4) Sanity-check the candidate before committing */
+    int rej = imu_calib_validate(&cand);
+    if (rej != 0) {
+        printf("[CAL_BOOT rejected] reason=%d gyro_bias=(%.3f,%.3f,%.3f)°/s "
+               "accel_bias=(%.3f,%.3f,%.3f) acc_norm=%.3f±%.3f var=(%.4f,%.4f,%.4f)\n",
+               rej,
+               cand.gyro_bias[0]/DEG2RAD, cand.gyro_bias[1]/DEG2RAD, cand.gyro_bias[2]/DEG2RAD,
+               cand.accel_bias[0], cand.accel_bias[1], cand.accel_bias[2],
+               cand.boot_accel_norm_mean, cand.boot_accel_norm_std,
+               cand.boot_accel_var[0], cand.boot_accel_var[1], cand.boot_accel_var[2]);
+        still_reset(A);
+        return -2;
+    }
+
+    /* 5) Commit: legacy g_cal (used by calib_accel/calib_gyro) AND g_imu_cal */
+    g_cal.gyro_bias_counts[0] = gyro_bias_counts[0];
+    g_cal.gyro_bias_counts[1] = gyro_bias_counts[1];
+    g_cal.gyro_bias_counts[2] = gyro_bias_counts[2];
+    g_cal.accel_O[0] -= acc_offset_trim[0];
+    g_cal.accel_O[1] -= acc_offset_trim[1];
+    g_cal.accel_O[2] -= acc_offset_trim[2];
+    g_cal.calibrated_once = 1;
+
+    /* Keep mount/misalign/scale from g_imu_cal — they survive boot cal */
+    {
+        float saved_scale_a[3] = { g_imu_cal.accel_scale[0], g_imu_cal.accel_scale[1], g_imu_cal.accel_scale[2] };
+        float saved_scale_g[3] = { g_imu_cal.gyro_scale[0],  g_imu_cal.gyro_scale[1],  g_imu_cal.gyro_scale[2] };
+        float saved_mount[3][3], saved_mis[3][3];
+        memcpy(saved_mount, g_imu_cal.mount_R_bv,     sizeof(saved_mount));
+        memcpy(saved_mis,   g_imu_cal.accel_misalign, sizeof(saved_mis));
+        g_imu_cal = cand;
+        memcpy(g_imu_cal.mount_R_bv,     saved_mount, sizeof(saved_mount));
+        memcpy(g_imu_cal.accel_misalign, saved_mis,   sizeof(saved_mis));
+        memcpy(g_imu_cal.accel_scale,    saved_scale_a, sizeof(saved_scale_a));
+        memcpy(g_imu_cal.gyro_scale,     saved_scale_g, sizeof(saved_scale_g));
+    }
+
+    /* 6) Persist atomically */
+#if ENABLE_CAL_FILE_SAVE
+    int save_rc = imu_calib_save_atomic(IMU_CALIB_PATH, &g_imu_cal);
+    if (save_rc == 0) {
+        g_last_calib_save_s = now_s;
+        printf("[CAL_BOOT success] samples=%u path=%s gyro_bias=(%.3f,%.3f,%.3f)°/s "
+               "accel_bias=(%.3f,%.3f,%.3f) acc_norm=%.3f±%.3f\n",
+               cand.boot_sample_count, IMU_CALIB_PATH,
+               cand.gyro_bias[0]/DEG2RAD, cand.gyro_bias[1]/DEG2RAD, cand.gyro_bias[2]/DEG2RAD,
+               cand.accel_bias[0], cand.accel_bias[1], cand.accel_bias[2],
+               cand.boot_accel_norm_mean, cand.boot_accel_norm_std);
+    } else {
+        printf("[CAL_BOOT success (no-persist)] samples=%u save_rc=%d gyro_bias=(%.3f,%.3f,%.3f)°/s\n",
+               cand.boot_sample_count, save_rc,
+               cand.gyro_bias[0]/DEG2RAD, cand.gyro_bias[1]/DEG2RAD, cand.gyro_bias[2]/DEG2RAD);
+    }
+#else
+    printf("[CAL_BOOT success (persist disabled)] samples=%u\n", cand.boot_sample_count);
+#endif
+
+    g_imu_quality_degraded = 0;
     still_reset(A);
-    return true;
- 
+    return 1;
 }
 
 #if 0
@@ -2104,7 +3034,8 @@ typedef struct {
     #if USE_2D_EKF
     // 2D EKF state (x=[p_x, p_y, v_x, v_y, theta], no biases)
     ins2d_t ins2d;
-    quatf att_q;
+    quatf       att_q;       // legacy mirror of ahrs.q (kept for downstream readers)
+    ahrs_state_t ahrs;       // production complementary attitude filter
     vec3f last_aw;
     #else
     // INS
@@ -2486,10 +3417,16 @@ static void* fusion_thread(void *arg) {
             continue;
         }
 
-        // Calibrate IMU
+        // Calibrate IMU through the centralized preprocessor (g_cal + g_imu_cal).
+        // Output is in vehicle frame (mount_R_bv applied) and SI units, with
+        // gravity still present in accel_vehicle.
         vec3f acc_b, gyro_b;
-        calib_accel(&C->imu_raw, &acc_b);
-        calib_gyro(&C->imu_raw, &gyro_b);
+        {
+            float a_v[3], g_v[3];
+            imu_preprocess_sample(&g_imu_cal, &C->imu_raw, a_v, g_v);
+            acc_b  = v3(a_v[0], a_v[1], a_v[2]);
+            gyro_b = v3(g_v[0], g_v[1], g_v[2]);
+        }
 
         // --- IMU signal processing pipeline ---
         // Stage 1: median filter (spike removal)
@@ -2526,7 +3463,10 @@ static void* fusion_thread(void *arg) {
             // up-axis expressed in ENU, i.e. R^T * [0,0,1] is up in body coords.
             float Rmat[9];
         #if USE_2D_EKF
-            R_from_q(C->att_q, Rmat);
+            /* Use the AHRS quaternion (single source of truth for attitude).
+             * att_q is kept in sync by ahrs_update but lives one IMU step
+             * behind during the very first sample — use ahrs.q to avoid that. */
+            R_from_q(C->ahrs.q, Rmat);
         #else
             R_from_q(C->ins.q, Rmat);
         #endif
@@ -2550,21 +3490,66 @@ static void* fusion_thread(void *arg) {
             // so only genuine road bumps trigger this gate.
             bool bump = (fabsf(acc_vert - GRAVITY) > BUMP_ACC_THR_MPS2);
 
-            // Stage 6: vertical-only bump clamping.
-            // Clamp only the vertical component to g ± BUMP_THR.
-            // Horizontal (forward/lateral) dynamics are fully preserved so the
-            // EKF can still track acceleration, braking, and cornering correctly.
+            // Stage 6: vertical-only bump clamping with CORRECT symmetric range.
+            // Expected vertical specific force on level ground = +GRAVITY (≈+9.81).
+            // Allow ± BUMP_THR around that, NOT ± (GRAVITY + BUMP_THR) which let
+            // through pure-negative readings as if they were valid. With the
+            // proper window, gravity is locked in and only vibration-driven
+            // excursions are limited. Horizontal dynamics preserved.
             // Gyro is always kept — attitude must track through the bump.
             gyro_b = gyro_lpf;
+            // ---- Bump statistics for diagnostics & quality scoring ----
+            static int    bump_count_in_window = 0;
+            static int    sample_count_in_window = 0;
+            static float  bump_max_dev = 0.0f;
+            static double bump_window_t0 = 0.0;
+            double t_bump_now = now_sec();
+            if (bump_window_t0 == 0.0) bump_window_t0 = t_bump_now;
+            sample_count_in_window++;
+            if (bump) {
+                bump_count_in_window++;
+                float dev = fabsf(acc_vert - GRAVITY);
+                if (dev > bump_max_dev) bump_max_dev = dev;
+            }
+            if (t_bump_now - bump_window_t0 >= 10.0) {
+                float duty = (sample_count_in_window > 0)
+                           ? (100.0f * bump_count_in_window / (float)sample_count_in_window) : 0.0f;
+                dbg_printf(C, "BUMP_STATS count=%d/%d duty=%.1f%% max_dev=%.2f a_norm=%.2f g_norm=%.2f",
+                           bump_count_in_window, sample_count_in_window,
+                           duty, bump_max_dev, acc_mag, sqrtf(gyro_vib_e));
+                // If bump is firing on >25% of samples the IMU/mount is bad —
+                // do not silently clamp; mark quality degraded so the EKF
+                // increases its process noise and avoids over-trusting accel.
+                if (duty > 25.0f) {
+                    if (!g_imu_quality_degraded) {
+                        dbg_printf(C, "IMU_QUALITY degraded (bump_duty=%.1f%%) — inflating Q", duty);
+                        printf("[IMU_QUALITY degraded] bump_duty=%.1f%% over 10 s\n", duty);
+                    }
+                    g_imu_quality_degraded = 1;
+                    g_imu_cal.valid_flags |= CAL_FLAG_DEGRADED;
+                } else if (duty < 5.0f && g_imu_quality_degraded) {
+                    g_imu_quality_degraded = 0;
+                    g_imu_cal.valid_flags &= ~CAL_FLAG_DEGRADED;
+                    dbg_printf(C, "IMU_QUALITY good (bump_duty=%.1f%%)", duty);
+                }
+                bump_count_in_window = 0;
+                sample_count_in_window = 0;
+                bump_max_dev = 0.0f;
+                bump_window_t0 = t_bump_now;
+            }
+
             if (!bump) {
                 acc_b = acc_lpf;
             } else {
                 float vert_clamped = clampf(acc_vert,
-                                            -(GRAVITY + BUMP_ACC_THR_MPS2),
-                                             (GRAVITY + BUMP_ACC_THR_MPS2));
+                                            GRAVITY - BUMP_ACC_THR_MPS2,
+                                            GRAVITY + BUMP_ACC_THR_MPS2);
                 acc_b = v3_add(acc_horiz, v3_scale(up_body, vert_clamped));
-                dbg_printf(C, "BUMP: |a|=%.2f a_vert=%.2f dev=%.2f vib_e=%.4f -> vert clamped",
-                           acc_mag, acc_vert, acc_vert - GRAVITY, gyro_vib_e);
+#if ENABLE_IMU_DEBUG_LOGS
+                dbg_printf(C, "BUMP: |a|=%.2f a_vert=%.2f dev=%.2f vib_e=%.4f -> clamped to [%.2f,%.2f]",
+                           acc_mag, acc_vert, acc_vert - GRAVITY, gyro_vib_e,
+                           GRAVITY - BUMP_ACC_THR_MPS2, GRAVITY + BUMP_ACC_THR_MPS2);
+#endif
             }
         }
 
@@ -2596,6 +3581,24 @@ static void* fusion_thread(void *arg) {
             (fabsf(gyro_b.x) < ZUPT_GYRO_THR) &&
             (fabsf(gyro_b.y) < ZUPT_GYRO_THR) &&
             (fabsf(gyro_b.z) < ZUPT_GYRO_THR);
+
+#if ENABLE_RUNTIME_GYRO_CAL
+        /* Runtime gyro-bias refinement: only triggers when EKF and GNSS both
+         * agree the vehicle is stationary, accel is near gravity, and gyro
+         * magnitude is low. Updates are slow (alpha=0.5 %), persisted at most
+         * once per RT_CAL_MIN_SAVE_INTERVAL_S. */
+        if (C->imu_cal_done && C->nav_ready) {
+            float gyro_v[3] = { gyro_b.x, gyro_b.y, gyro_b.z };
+            float accel_v[3]= { acc_b.x,  acc_b.y,  acc_b.z };
+            bool gnss_speed_low = (!C->gnss_have_fix) ||
+                                   (C->gnss_speed_mps < RT_CAL_GNSS_SPEED_MAX);
+            (void)runtime_gyro_cal_update(gyro_v, accel_v,
+                                          (ekf_speed < RT_CAL_EKF_SPEED_MAX),
+                                          gnss_speed_low,
+                                          tnow_zupt);
+        }
+#endif
+
             if (zupt_cond) {
                 C->zupt_count++;
             } else {
@@ -2617,9 +3620,9 @@ static void* fusion_thread(void *arg) {
             // Blink LED while calibration
             cal_led_update(true, false, tcal_now);
 
-            bool done = apply_poweron_calibration(&cal_accum_boot, &C->imu_raw, acc_b,
-                                                  BOOT_CAL_DURATION_S, tcal_now);
-            if (done) {
+            int boot_rc = apply_poweron_calibration(&cal_accum_boot, &C->imu_raw, acc_b,
+                                                    BOOT_CAL_DURATION_S, tcal_now);
+            if (boot_rc == 1) {
                 C->imu_cal_done = true;
                 C->imu_cal_in_progress = false;
                 cal_led_update(false, true, tcal_now); // steady ON
@@ -2629,12 +3632,26 @@ static void* fusion_thread(void *arg) {
                 calib_accel(&C->imu_raw, &acc_corrected);
                 C->boot_acc_mean = acc_corrected;
 
-                printf("[CAL] Power-On IMU calibration complete. \n");
-                printf("       gyro_bias_counts = [%.3f, %.3f, %.3f]\n", g_cal.gyro_bias_counts[0], g_cal.gyro_bias_counts[1],
-                       g_cal.gyro_bias_counts[2]);
-                printf("       accel_O = [%.6f, %.6f, %.6f]\n", g_cal.accel_O[0], g_cal.accel_O[1], g_cal.accel_O[2]);
-                printf("       boot_acc_mean = [%.4f, %.4f, %.4f]\n", C->boot_acc_mean.x, C->boot_acc_mean.y, C->boot_acc_mean.z);
+                printf("[CAL] Power-On IMU calibration complete.\n");
+                printf("       gyro_bias_counts = [%.3f, %.3f, %.3f]\n",
+                       g_cal.gyro_bias_counts[0], g_cal.gyro_bias_counts[1], g_cal.gyro_bias_counts[2]);
+                printf("       accel_O = [%.6f, %.6f, %.6f]\n",
+                       g_cal.accel_O[0], g_cal.accel_O[1], g_cal.accel_O[2]);
+                printf("       boot_acc_mean = [%.4f, %.4f, %.4f]\n",
+                       C->boot_acc_mean.x, C->boot_acc_mean.y, C->boot_acc_mean.z);
+            } else if (boot_rc == -2) {
+                /* Cal completed but failed sanity. If a previously-saved cal
+                 * is on disk it's already loaded (see main); otherwise we
+                 * continue with safe defaults and mark IMU quality degraded. */
+                C->imu_cal_done = true;       // stop blocking nav
+                C->imu_cal_in_progress = false;
+                g_imu_quality_degraded = 1;
+                g_imu_cal.valid_flags |= CAL_FLAG_DEGRADED;
+                cal_led_update(false, true, tcal_now);
+                printf("[CAL_BOOT rejected] proceeding with prior/default calibration — "
+                       "IMU quality marked degraded.\n");
             }
+            /* boot_rc == 0 (in progress) or -1 (motion) — keep blinking */
         } else {
             cal_led_update(false, true, tcal_now);
         }
@@ -2687,18 +3704,20 @@ static void* fusion_thread(void *arg) {
                         C->ins2d.P[4*7+4] = (60.0f * DEG2RAD) * (60.0f * DEG2RAD); // 60° 1-sigma
                         dbg_printf(C, "NAV_INIT no heading — psi P widened to (60 deg)^2");
                     }
-                // Initialize attitude quaternion from boot accel 
-                float roll0 = 0.0f, pitch0 = 0.0f;
-                float amag = v3_norm(C->boot_acc_mean);
-                if (amag > 1.0f) {
-                    vec3f a = C->boot_acc_mean;
-                    pitch0 = atan2f(-a.x, sqrtf(a.y*a.y + a.z*a.z));
-                    roll0  = atan2f(a.y, a.z);
-                    dbg_printf(C, "NAV_INIT tilt: roll=%.2f pitch=%.2f deg",
-                               roll0/DEG2RAD, pitch0/DEG2RAD);
-                }
-                C->att_q = q_from_euler(roll0, pitch0, C->ins2d.psi);
-                dbg_printf(C, "NAV_INIT_2D p = (0,0) psi=%.1f deg", C->ins2d.psi/DEG2RAD);
+                /* Initialize the AHRS complementary filter from the stationary
+                 * boot accelerometer mean and (optional) GNSS course. The AHRS
+                 * owns roll/pitch/yaw from this point on; att_q is kept as a
+                 * legacy mirror for any downstream code still using it. */
+                float boot_a[3] = { C->boot_acc_mean.x, C->boot_acc_mean.y, C->boot_acc_mean.z };
+                int   yaw_valid = (C->heading_observed) ? 1 : 0;
+                float init_yaw  = (yaw_valid) ? C->gnss_heading_rad : 0.0f;
+                ahrs_init_from_accel(&C->ahrs, boot_a, init_yaw, yaw_valid);
+                /* Keep ins2d.psi in agreement with the AHRS yaw at init. */
+                C->ins2d.psi = C->ahrs.yaw;
+                C->att_q     = C->ahrs.q;
+                dbg_printf(C, "NAV_INIT_AHRS roll=%.2f pitch=%.2f yaw=%.2f yaw_valid=%d quality=%d",
+                           C->ahrs.roll/DEG2RAD, C->ahrs.pitch/DEG2RAD, C->ahrs.yaw/DEG2RAD,
+                           yaw_valid, (int)C->ahrs.quality);
                 #else
                     dbg_printf(C, "NAV_INIT ENU_REF set from fix #%d lat=%.9f lon=%.9f alt=%.3f hdop=%.1f",
                     C->gnss_fix_count,
@@ -2808,39 +3827,84 @@ if (nav_age <= GNSS_TIMEOUT_S) {
     C->outage_s = nav_age;
     C->qscale = compute_qscale(C->outage_s);
 }
+/* If the IMU quality is currently degraded (continuous bumps / vibration /
+ * boot-cal failed), inflate process noise so the EKF doesn't over-trust
+ * the predict step. Capped at 3× the base outage scale. */
+if (g_imu_quality_degraded) {
+    C->qscale *= 2.0f;
+    if (C->qscale > 12.0f) C->qscale = 12.0f;
+}
 #if USE_2D_EKF
     // Update attitude quaternion (for gravity compensation).
     // Subtract estimated gyro-z bias on the yaw axis so heading drift in att_q
     // matches the EKF heading state. Pitch/roll have no bias estimate in 2D
     // (filter doesn't track gx/gy biases), so leave those axes uncorrected —
     // pitch/roll drift gets absorbed by the b_a estimate via gravity compensation.
-    vec3f w_corr = v3(gyro_b.x, gyro_b.y, gyro_b.z - C->ins2d.b_g);
-    quatf dq = q_from_small_angle(v3_scale(w_corr, dt));
-    C->att_q = q_normalize(q_mul(C->att_q, dq));
-    // Get Gravity compensated forward acceleration
-    // Transform accel to world frame and remove gravity.
-    float R[9];
-    R_from_q(C->att_q, R);
-    vec3f a_world = v3( R[0]*acc_b.x + R[1]*acc_b.y + R[2]*acc_b.z,
-                        R[3]*acc_b.x + R[4]*acc_b.y + R[5]*acc_b.z,
-                        R[6]*acc_b.x + R[7]*acc_b.y + R[8]*acc_b.z - GRAVITY);
-        //Clamp world acceleration to prevent EKF divergence during spikes (e.g. dropping phone)
-        a_world.x = clampf(a_world.x, -MAX_ACCEL_ENU_MPS2, MAX_ACCEL_ENU_MPS2);
-        a_world.y = clampf(a_world.y, -MAX_ACCEL_ENU_MPS2, MAX_ACCEL_ENU_MPS2);
-        C->last_aw = a_world;
-        // Project to heading direction for forward accel 
-    float cpsi = cosf(C->ins2d.psi);
-    float spsi = sinf(C->ins2d.psi);
-    float a_fwd = a_world.x * cpsi + a_world.y * spsi;
+    /* ---------------- AHRS / complementary attitude filter ----------------
+     * Runs at IMU rate, BEFORE the EKF predict step. The AHRS owns roll,
+     * pitch and yaw. Roll/pitch are corrected from gravity (gated), yaw is
+     * corrected from GNSS course (gated). The 2D EKF receives only
+     *   - forward acceleration (vehicle X, gravity removed)
+     *   - yaw rate           (gyro Z)
+     *   - AHRS yaw via a measurement update further down                 */
+    float a_v[3] = { acc_b.x,  acc_b.y,  acc_b.z  };
+    float g_v[3] = { gyro_b.x, gyro_b.y, gyro_b.z };
+    ahrs_update(&C->ahrs, a_v, g_v, dt,
+                C->gnss_heading_valid ? 1 : 0,
+                C->gnss_heading_rad,
+                C->gnss_speed_mps,
+                C->gnss_hdop_valid ? C->gnss_hdop : 99.0f);
+    C->att_q = C->ahrs.q;            /* keep legacy mirror in sync */
 
-    // Yaw rate from gyro z
+    /* If the AHRS quality is anything other than GOOD, raise the global IMU
+     * quality flag so the existing qscale-inflation path (further up) widens
+     * EKF process noise. This blocks false-confident predictions during
+     * bumps and during accel/yaw-rejected windows. */
+    if (C->ahrs.quality == AHRS_QUALITY_BUMP ||
+        C->ahrs.quality == AHRS_QUALITY_BAD) {
+        g_imu_quality_degraded = 1;
+    }
+
+    /* Gravity-compensated vehicle-frame linear acceleration */
+    float lin_v[3];
+    ahrs_remove_gravity(&C->ahrs, a_v, lin_v);
+    /* Sanity clamp on forward and lateral components (z is unused by 2D EKF) */
+    lin_v[0] = clampf(lin_v[0], -MAX_ACCEL_ENU_MPS2, MAX_ACCEL_ENU_MPS2);
+    lin_v[1] = clampf(lin_v[1], -MAX_ACCEL_ENU_MPS2, MAX_ACCEL_ENU_MPS2);
+    C->last_aw = v3(lin_v[0], lin_v[1], lin_v[2]);
+
+    /* For ground vehicle (NHC), forward = vehicle X axis */
+    float a_fwd  = lin_v[0];
+
+    /* Yaw rate from gyro Z (vehicle frame). ins2d_predict subtracts b_g
+     * internally so we do not subtract it here. */
     float omega_z = gyro_b.z;
 
-    //2D EKF prediction
+    /* ---- 2D EKF prediction ---- */
     ins2d_predict(&C->ins2d, a_fwd, omega_z, dt, C->qscale);
 
-    // Snapshot position right after predict (before measurement updates) for diagnostic logging
+    /* Snapshot position right after predict (before measurement updates) */
     C->predict_p = v3(C->ins2d.p_E, C->ins2d.p_N, 0.0f);
+
+    /* ---- Yaw measurement update from AHRS (keeps EKF psi coupled to AHRS) ----
+     * AHRS yaw is integrated from gyro and corrected by GNSS course; without
+     * this measurement the EKF psi state would integrate gyro independently
+     * and could diverge from the AHRS during long DR. R_yaw is widened when
+     * the AHRS itself hasn't seen a yaw observation recently. */
+    {
+        float R_yaw = AHRS_TO_EKF_R_YAW;
+        if (C->ahrs.quality == AHRS_QUALITY_YAW_UNOBSERVED) R_yaw *= 25.0f;   // (5°)² → (25°)²
+        if (C->ahrs.quality == AHRS_QUALITY_BAD)            R_yaw *= 100.0f;  // (5°)² → (50°)²
+        float yaw_diff = wrap_pi(C->ahrs.yaw - C->ins2d.psi);
+        if (fabsf(yaw_diff) > AHRS_YAW_INNOV_MAX) {
+            /* Large disagreement — log and force EKF yaw to AHRS to avoid divergence */
+            dbg_printf(C, "AHRS_EKF_YAW_RESYNC ahrs=%.2f ekf=%.2f diff=%.2f",
+                       C->ahrs.yaw/DEG2RAD, C->ins2d.psi/DEG2RAD, yaw_diff/DEG2RAD);
+            C->ins2d.psi = C->ahrs.yaw;
+        } else {
+            ins2d_update_yaw_from_ahrs(&C->ins2d, C->ahrs.yaw, R_yaw);
+        }
+    }
 
     // NHC: only when confirmed moving and heading is trusted
     if (C->heading_observed && ekf_speed > 1.0f) {
@@ -3121,11 +4185,13 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                     // Inflate position covariance so subsequent updates aren't over-confident
                     if (C->ins2d.P[0*7+0] < 25.0f) C->ins2d.P[0*7+0] = 25.0f;
                     if (C->ins2d.P[1*7+1] < 25.0f) C->ins2d.P[1*7+1] = 25.0f;
-                    // Also pull heading toward GNSS course if available
+                    // Also pull heading toward GNSS course if available — keep AHRS in sync.
                     if (C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN) {
                         C->ins2d.psi = C->gnss_heading_rad;
-                        C->att_q = q_normalize(q_mul(C->att_q,
-                            q_from_yaw_delta(wrap_pi(C->gnss_heading_rad - C->ins2d.psi))));
+                        C->ahrs.yaw  = C->gnss_heading_rad;
+                        C->ahrs.q    = q_from_euler(C->ahrs.roll, C->ahrs.pitch, C->ahrs.yaw);
+                        C->ahrs.last_yaw_obs_s = now_sec();
+                        C->att_q = C->ahrs.q;
                     }
                     C->last_gnss_used_s = tnow2;
                     C->gnss_valid = true;
@@ -3179,15 +4245,19 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                 }
 
                 // -------- Heading update (critical for 2D EKF stability) --------
+                // The AHRS already applies a gated GNSS yaw correction every
+                // IMU step (5 % alpha), and the AHRS yaw is then injected into
+                // the EKF via ins2d_update_yaw_from_ahrs above. We still keep
+                // a direct EKF heading update here for fast initial lock — the
+                // R sigma is computed dynamically from speed (TAU1204 dual-band).
                 if (C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN)
                 {
                     float sigma_hdg = fmaxf(0.5f, 5.0f / C->gnss_speed_mps) * DEG2RAD;
                     float R_hdg = sigma_hdg * sigma_hdg;
-                    // Pull att_q yaw toward GNSS course (10% per fix), so gravity
-                    // compensation rotation stays consistent with EKF heading.
-                    float yaw_err = wrap_pi(C->gnss_heading_rad - C->ins2d.psi);
-                    C->att_q = q_normalize(q_mul(C->att_q, q_from_yaw_delta(yaw_err * 0.1f)));
                     ins2d_update_heading(&C->ins2d, C->gnss_heading_rad, R_hdg, NULL);
+                    /* Keep legacy mirror in sync with AHRS — AHRS itself was
+                     * already pulled toward this fix inside ahrs_update. */
+                    C->att_q = C->ahrs.q;
                     if (!C->heading_observed) {
                         C->heading_observed = true;
                         dbg_printf(C, "HEADING_OBSERVED at speed=%.2f m/s — heading fusion enabled", C->gnss_speed_mps);
@@ -3509,6 +4579,8 @@ int main(void) {
 #if USE_2D_EKF
     ins2d_init(&C.ins2d);
     C.att_q = q_identity();
+    memset(&C.ahrs, 0, sizeof(C.ahrs));
+    C.ahrs.q = q_identity();           /* initialized flag stays 0 until NAV_INIT */
 #else
     ins15_init(&C.ins);
 #endif
@@ -3546,7 +4618,44 @@ C.gnss_speed_rejected = false;
     make_debug_log_file(&C);
     cal_set_defaults_from_lsq();
 
-    printf("[CAL] Power-on IMU calibration will run on every boot (no file persistence).\n");
+    /* ---- Load production calibration (imu_calib_t) ---- */
+    imu_calib_set_defaults(&g_imu_cal);
+    {
+        imu_calib_t loaded;
+        int rc = imu_calib_load(IMU_CALIB_PATH, &loaded);
+        if (rc == 0) {
+            g_imu_cal = loaded;
+            /* Mirror the SI bias values into the legacy counts representation so
+             * calib_gyro()/calib_accel() reflect the saved state. */
+            const float counts_per_rps = GYRO_LSB_PER_DPS / DEG2RAD;
+            g_cal.gyro_bias_counts[0] = g_imu_cal.gyro_bias[0] * counts_per_rps;
+            g_cal.gyro_bias_counts[1] = g_imu_cal.gyro_bias[1] * counts_per_rps;
+            g_cal.gyro_bias_counts[2] = g_imu_cal.gyro_bias[2] * counts_per_rps;
+            g_cal.accel_O[0] -= g_imu_cal.accel_bias[0];
+            g_cal.accel_O[1] -= g_imu_cal.accel_bias[1];
+            g_cal.accel_O[2] -= g_imu_cal.accel_bias[2];
+            time_t cal_t = (time_t)g_imu_cal.created_unix_s;
+            double age_s = (cal_t > 0) ? difftime(time(NULL), cal_t) : -1.0;
+            printf("[CAL_LOAD ok] path=%s age_s=%.0f gyro_bias=(%.3f,%.3f,%.3f)°/s "
+                   "accel_bias=(%.3f,%.3f,%.3f) flags=0x%x\n",
+                   IMU_CALIB_PATH, age_s,
+                   g_imu_cal.gyro_bias[0]/DEG2RAD, g_imu_cal.gyro_bias[1]/DEG2RAD, g_imu_cal.gyro_bias[2]/DEG2RAD,
+                   g_imu_cal.accel_bias[0], g_imu_cal.accel_bias[1], g_imu_cal.accel_bias[2],
+                   g_imu_cal.valid_flags);
+        } else if (rc == -1 && errno == ENOENT) {
+            printf("[CAL_DEFAULT] no saved calibration at %s — using identity calibration\n",
+                   IMU_CALIB_PATH);
+        } else {
+            printf("[CAL_LOAD rejected] reason=%d path=%s — using identity calibration; "
+                   "EKF process noise will be inflated until boot cal completes.\n",
+                   rc, IMU_CALIB_PATH);
+            imu_calib_set_defaults(&g_imu_cal);
+            g_imu_quality_degraded = 1;     /* be cautious until boot cal validates */
+        }
+        imu_calib_sync_from_g_cal(&g_imu_cal);
+    }
+
+    printf("[CAL] Power-on IMU calibration will run on every boot (will refine and persist).\n");
 
     C.imu_cal_done =false;
     C.imu_cal_in_progress = false;
@@ -3572,5 +4681,15 @@ C.gnss_speed_rejected = false;
     
     if (C.logf) fclose(C.logf);
     cal_led_deinit();
+
+    /* Final persistence: flush any runtime-cal refinements to disk on clean exit. */
+#if ENABLE_CAL_FILE_SAVE
+    if ((g_imu_cal.valid_flags & (CAL_FLAG_BOOT_OK | CAL_FLAG_RUNTIME_OK)) != 0) {
+        if (imu_calib_save_atomic(IMU_CALIB_PATH, &g_imu_cal) == 0) {
+            printf("[CAL_EXIT] saved calibration to %s (flags=0x%x)\n",
+                   IMU_CALIB_PATH, g_imu_cal.valid_flags);
+        }
+    }
+#endif
     return 0;
 }
