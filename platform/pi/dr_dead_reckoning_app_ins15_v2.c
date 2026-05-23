@@ -83,6 +83,14 @@
 #define SNAP_MIN_OUTAGE_S     15.0f    // allow snap after long outage
 #define SNAP_INNOV_M          120.0f   // if horizontal innovation exceeds, snap to GNSS
 #define SNAP_HDOP_MAX         2.5f     // require decent HDOP for snap (TAU1204 multi-constellation)
+/* Snap-to-GNSS gating to prevent it being used as a workaround for filter
+ * instability. Snap is a controlled re-initialization; if the EKF is confident
+ * (small covariance) we must NOT snap — the disagreement is more likely a
+ * bad GNSS than a bad EKF state. */
+#define SNAP_SUSTAINED_COUNT  3        // consecutive high-innov fixes required
+#define SNAP_COV_MIN_M2       100.0f   // EKF pos covariance must be ≥ (10 m)² to justify snap
+/* EKF↔GNSS convergence/divergence classifier — δerr per CSV row */
+#define EKF_CONV_DELTA_M      1.0f     // |Δerr| > 1 m flags converging or diverging
 #define NAV_INIT_HDOP_MAX     10.0f    // relaxed for first fix — get initialized fast
 #define NAV_INIT_MIN_FIXES    2        // skip first N fixes (TAU1204 converges faster than single-band)
 #define GNSS_FUSION_HDOP_MAX  4.0f     // strict HDOP gate after initial convergence
@@ -194,14 +202,24 @@
 #define  e2         ((aWGS*aWGS - bWGS*bWGS) / (aWGS*aWGS))
 
 
+/* ============================================================
+ *   Canonical calibration-file path (single source of truth)
+ * ============================================================
+ * The application reads AND writes this exact path. Do NOT define a
+ * second filename — historically there were two (`imu_cal.bin` and
+ * `imu_calib.bin`) which silently caused "no saved calibration found"
+ * every restart. There is now exactly one macro: CAL_FILE_PATH.
+ *
+ * If the deployment ever needs to migrate the filename, change the
+ * value here ONLY; every load/save/log site uses this macro. */
 #define CAL_FILE_PATH       "/home/sijeo/dr_vehicle/imu_cal.bin"
-#define CAL_MAGIC           0x43414C31u /* 'CAL1' — legacy dr_cal_t blob */
+#define CAL_MAGIC           0x43414C31u /* 'CAL1' — legacy dr_cal_t blob (dead) */
 #define CAL_VERSION         1u
 
-// Production calibration framework (imu_calib_t)
+/* Production calibration framework (imu_calib_t) — magic/version for the
+ * blob written by imu_calib_save_atomic() and validated by imu_calib_load(). */
 #define IMU_CALIB_MAGIC     0x494D4332u /* 'IMC2' */
 #define IMU_CALIB_VERSION   2u
-#define IMU_CALIB_PATH      "/home/sijeo/dr_vehicle/imu_calib.bin"
 
 // ---------- Compile-time switches for production calibration ----------
 // All default ON except verbose IMU-rate debug logging.
@@ -363,6 +381,13 @@ static inline float wrap_pi(float a) {
  * helpers (boot cal, runtime cal, load/save) so their output lands in
  * the per-run debug file instead of on stdout. */
 static void cal_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+/* GNSS validation result, visible to the AHRS yaw-trust gate. Set by the
+ * fusion thread after gnss_validate_for_fusion() succeeds; cleared on
+ * rejection or when no fresh fix has arrived. Single-writer (fusion
+ * thread), single-reader (AHRS in same thread) — `volatile int` is
+ * sufficient since the AHRS runs in the same thread as the writer. */
+static volatile int g_gnss_last_fix_validated = 0;
 
 typedef struct { float w, x, y, z; } quatf;
 typedef struct { float x, y, z; } vec3f;
@@ -1083,29 +1108,111 @@ static void cal_led_deinit( void ){
 }
 
 
-//---------------------------------NON blocking blink helper ----------------------
-static void cal_led_update(bool cal_in_progress, bool cal_done, double now_s){
+/* =====================================================================
+ * Production calibration state machine + LED controller
+ *
+ * Why this exists:
+ *   In the previous build, navigation could start (NAV_READY) while boot
+ *   calibration was still restarting due to vehicle motion. The cause was
+ *   two-fold:
+ *     (a) NAV_INIT only gated on GNSS fix count, never on IMU calibration.
+ *     (b) The boot-cal handler set imu_cal_done=true on sanity rejection
+ *         (boot_rc == -2), turning the LED steady ON even though the
+ *         resulting calibration was garbage.
+ *
+ * The state machine below is the single source of truth: NAV_INIT and the
+ * LED both consult g_cal_state / g_calibration_valid. Navigation is
+ * blocked until calibration_valid is true, which requires EITHER a
+ * successfully-loaded saved file OR a successful boot calibration. ====*/
+
+typedef enum {
+    CAL_STATE_UNKNOWN              = 0,
+    CAL_STATE_LOADING              = 1,   /* trying to load file */
+    CAL_STATE_LOADED_VALID         = 2,   /* file loaded and validated → cal valid */
+    CAL_STATE_BOOT_RUNNING         = 3,   /* boot cal accumulating samples */
+    CAL_STATE_BOOT_RESTARTING      = 4,   /* boot cal saw motion, restarting */
+    CAL_STATE_BOOT_SUCCESS         = 5,   /* boot cal finished and was sanity-valid */
+    CAL_STATE_FAILED_RETRYING      = 6,   /* sanity rejected last attempt, retrying */
+    CAL_STATE_FAILED_NO_VALID_CAL  = 7    /* fatal: no path to a valid calibration */
+} cal_state_t;
+
+/* Single source of truth (set by main + the boot-cal handler, read everywhere).
+ * They're plain int/cal_state_t because they're written from one thread at a
+ * time (main during startup, fusion_thread once calibration begins). */
+static volatile cal_state_t g_cal_state               = CAL_STATE_UNKNOWN;
+static volatile int          g_calibration_valid       = 0;
+static volatile int          g_saved_calibration_loaded= 0;
+static volatile int          g_boot_calibration_success= 0;
+
+static const char *cal_state_name(cal_state_t s) {
+    switch (s) {
+        case CAL_STATE_UNKNOWN:             return "UNKNOWN";
+        case CAL_STATE_LOADING:             return "LOADING";
+        case CAL_STATE_LOADED_VALID:        return "LOADED_VALID";
+        case CAL_STATE_BOOT_RUNNING:        return "BOOT_RUNNING";
+        case CAL_STATE_BOOT_RESTARTING:     return "BOOT_RESTARTING";
+        case CAL_STATE_BOOT_SUCCESS:        return "BOOT_SUCCESS";
+        case CAL_STATE_FAILED_RETRYING:     return "FAILED_RETRYING";
+        case CAL_STATE_FAILED_NO_VALID_CAL: return "FAILED_NO_VALID_CAL";
+        default:                            return "?";
+    }
+}
+
+/* LED control state — set by cal_led_set_calibrating/success/error,
+ * applied each tick by cal_led_blink_update(). */
+typedef enum {
+    LED_MODE_OFF       = 0,
+    LED_MODE_BLINK_2HZ = 1,   /* slow blink — calibration in progress */
+    LED_MODE_BLINK_5HZ = 2,   /* fast blink — fatal error */
+    LED_MODE_STEADY_ON = 3
+} led_mode_t;
+
+static volatile led_mode_t g_led_mode = LED_MODE_OFF;
+
+static void cal_led_set_calibrating(void) { g_led_mode = LED_MODE_BLINK_2HZ; }
+static void cal_led_set_success    (void) { g_led_mode = LED_MODE_STEADY_ON; }
+static void cal_led_set_error      (void) { g_led_mode = LED_MODE_BLINK_5HZ; }
+
+/* Non-blocking blinker. Called every fusion-thread iteration so the LED
+ * reflects whatever mode cal_led_set_*() most recently set. */
+static void cal_led_blink_update(double now_s)
+{
     static double last_toggle_s = 0.0;
-    static int led_state = 0;
-
-    if( cal_done )
-    {
-        cal_led_set(1);
-        led_state = 1;
-        return;
+    static int    led_state     = 0;
+    switch (g_led_mode) {
+        case LED_MODE_OFF:
+            if (led_state != 0) { cal_led_set(0); led_state = 0; }
+            break;
+        case LED_MODE_STEADY_ON:
+            if (led_state != 1) { cal_led_set(1); led_state = 1; }
+            break;
+        case LED_MODE_BLINK_2HZ:
+            if (now_s - last_toggle_s >= 0.5) {           /* 0.5 s period → 1 Hz */
+                led_state = !led_state;
+                cal_led_set(led_state);
+                last_toggle_s = now_s;
+            }
+            break;
+        case LED_MODE_BLINK_5HZ:
+            if (now_s - last_toggle_s >= 0.1) {           /* 0.1 s period → 5 Hz */
+                led_state = !led_state;
+                cal_led_set(led_state);
+                last_toggle_s = now_s;
+            }
+            break;
     }
+}
 
-    if(!cal_in_progress ){
-        cal_led_set(0);
-        led_state = 0;
-        return;
-    }
+/* Forward declaration: defined later (uses cal_log which is declared earlier). */
+static void cal_state_set(cal_state_t new_state);
 
-    if( (now_s - last_toggle_s) >= 0.5 ){
-        led_state = !led_state;
-        cal_led_set(led_state);
-        last_toggle_s = now_s;
-    }
+/* Legacy API kept as a thin shim so any older call site still compiles. New
+ * code should use cal_led_set_calibrating / _success / _error directly. */
+static void cal_led_update(bool cal_in_progress, bool cal_done, double now_s){
+    (void)now_s;
+    if (cal_done)            cal_led_set_success();
+    else if (cal_in_progress) cal_led_set_calibrating();
+    else                      g_led_mode = LED_MODE_OFF;
 }
 
 // ------------------------- WGS84 helpers (LLA/ECEF/ENU) -------------------------
@@ -1714,7 +1821,7 @@ static bool runtime_gyro_cal_update(const float gyro_vehicle_rps[3],
     /* Throttled persistence */
 #if ENABLE_CAL_FILE_SAVE
     if ((now_s - g_last_calib_save_s) >= RT_CAL_MIN_SAVE_INTERVAL_S) {
-        if (imu_calib_save_atomic(IMU_CALIB_PATH, &g_imu_cal) == 0) {
+        if (imu_calib_save_atomic(CAL_FILE_PATH, &g_imu_cal) == 0) {
             g_last_calib_save_s = now_s;
         }
     }
@@ -1907,6 +2014,10 @@ static int ahrs_gnss_yaw_is_trusted(int gnss_heading_valid,
                                     float current_yaw_rad)
 {
     if (!gnss_heading_valid) return 0;
+    /* If the most recent fix was rejected by gnss_validate_for_fusion, the
+     * underlying lat/lon/speed/course is not trustworthy — the AHRS must
+     * not pull yaw toward a course derived from invalid GNSS data. */
+    if (!g_gnss_last_fix_validated) return 0;
     if (gnss_speed_mps < AHRS_GNSS_YAW_SPEED_MIN) return 0;
     if (gnss_hdop > AHRS_GNSS_YAW_HDOP_MAX) return 0;
     float innov = wrap_pi(gnss_heading_rad - current_yaw_rad);
@@ -2284,12 +2395,12 @@ static int apply_poweron_calibration(still_accum_t *A,
 
     /* 6) Persist atomically */
 #if ENABLE_CAL_FILE_SAVE
-    int save_rc = imu_calib_save_atomic(IMU_CALIB_PATH, &g_imu_cal);
+    int save_rc = imu_calib_save_atomic(CAL_FILE_PATH, &g_imu_cal);
     if (save_rc == 0) {
         g_last_calib_save_s = now_s;
         cal_log("[CAL_BOOT success] samples=%u path=%s gyro_bias=(%.3f,%.3f,%.3f)deg/s "
                 "accel_bias=(%.3f,%.3f,%.3f) acc_norm=%.3f+/-%.3f",
-                cand.boot_sample_count, IMU_CALIB_PATH,
+                cand.boot_sample_count, CAL_FILE_PATH,
                 cand.gyro_bias[0]/DEG2RAD, cand.gyro_bias[1]/DEG2RAD, cand.gyro_bias[2]/DEG2RAD,
                 cand.accel_bias[0], cand.accel_bias[1], cand.accel_bias[2],
                 cand.boot_accel_norm_mean, cand.boot_accel_norm_std);
@@ -3007,6 +3118,24 @@ static int get_gnss_fix_ioctl(int fd, struct neo6m_gnss_fix *f) {
 
 // ------------------------- Threading / Context -------------------------
 
+/* Compact, fully-derived snapshot of a candidate GNSS fix. Built each time
+ * the fusion thread sees a fresh fix; passed (cur, prev) to the validator
+ * gnss_validate_for_fusion(). Must be defined here so ctx_t can embed it
+ * by value (gnss_prev_valid). */
+typedef struct {
+    double t_mono_s;        /* monotonic timestamp when the fix was received */
+    double lat_deg;
+    double lon_deg;
+    double alt_m;
+    float  speed_mps;
+    float  course_rad;      /* ENU course; valid iff course_valid != 0 */
+    float  hdop;            /* < 0 if not available */
+    int    fix_valid;       /* 1 if the driver reports a 2D/3D fix */
+    int    fresh;           /* 1 if gnss_fix_is_fresh returned true */
+    int    course_valid;    /* 1 if heading/COG fields are populated */
+    double e, n, u;         /* ENU coordinates relative to enu_ref */
+} gnss_validated_fix_t;
+
 typedef struct {
     // latest raw IMU
     struct mpu6050_sample imu_raw;
@@ -3129,6 +3258,38 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
     int  gnss_accepted_count;   // counts GNSS position updates accepted by EKF (for adaptive HDOP)
     double last_moving_s;       // last time EKF velocity exceeded motion threshold (for ZUPT inhibit)
 
+    /* GNSS staleness counters (mirrored from g_gnss_fresh by gnss_thread) */
+    uint32_t gnss_fresh_count;
+    uint32_t gnss_stale_reject_count;
+    uint32_t gnss_repeated_count;
+    int      gnss_last_fresh;        /* 1 if most recent ioctl was a fresh fix, 0 otherwise */
+    double   last_fresh_gnss_s;      /* monotonic time of last accepted fresh fix (for CSV age) */
+
+    /* GNSS validation layer (decides what reaches AB tracker + EKF + AHRS yaw). */
+    gnss_validated_fix_t gnss_prev_valid;      /* last fix that passed validation */
+    int       gnss_prev_valid_valid;           /* 1 if gnss_prev_valid is populated */
+    double    last_gnss_validated_s;           /* now_sec() at last accepted fix */
+    uint32_t  gnss_validate_reject_count;      /* cumulative validation rejections */
+    int       gnss_last_validated;             /* 1 if the most recent fresh fix passed validation */
+
+    /* EKF↔GNSS convergence diagnostics (computed at 1 Hz CSV time) */
+    float     prev_err_h_m;                    /* previous horizontal error for delta */
+    int       prev_err_valid;
+    int       ekf_converging;                  /* per-row flag: 1 if Δerr < -1 m */
+    int       ekf_diverging;                   /* per-row flag: 1 if Δerr > +1 m */
+    uint32_t  ekf_converging_count;            /* cumulative converging rows */
+    uint32_t  ekf_diverging_count;             /* cumulative diverging rows */
+
+    /* Cumulative EKF update counters (post-NIS-gate, actually applied) */
+    uint32_t  gnss_pos_update_count;
+    uint32_t  gnss_vel_update_count;
+    uint32_t  yaw_update_count;
+    uint32_t  snap_count;
+    uint32_t  snap_blocked_count;
+
+    /* Sustained-innovation tracker for snap gating */
+    uint32_t  sustained_high_innov_count;
+
 } ctx_t;
 
 static void make_log_file(ctx_t *C) {
@@ -3165,7 +3326,12 @@ static void make_log_file(ctx_t *C) {
         "gnss_E,gnss_N,gnss_U,err_E,err_N,err_H,"
         "gnss_present,gnss_valid,gnss_used_pos,gnss_used_vel,reacq_active,snap_applied,"
         "outage_s,qscale,nis_pos,nis_vel,gnss_meas_age_s,"
-        "pred_E,pred_N,pred_U,zupt_active,anchor_active\n"
+        "pred_E,pred_N,pred_U,zupt_active,anchor_active,"
+        "gnss_fresh,gnss_stale,gnss_fix_age_s,gnss_repeated_count,"
+        "gnss_validated,gnss_reject_count,"
+        "ekf_gnss_err_m,ekf_gnss_err_delta_m,ekf_converging,ekf_diverging,"
+        "gnss_pos_update_applied,gnss_vel_update_applied,yaw_update_applied,"
+        "snap_count,snap_blocked_count\n"
     );
     fflush(C->logf);
 
@@ -3277,6 +3443,304 @@ static void cal_log(const char *fmt, ...)
     pthread_mutex_unlock(&dbglog_mtx);
 }
 
+/* Atomic state transition with a logged trail. The state name is included so
+ * the debug log shows a clear timeline of what the calibration framework did
+ * during this run.                                                         */
+static void cal_state_set(cal_state_t new_state)
+{
+    if (new_state == g_cal_state) return;
+    cal_state_t old = g_cal_state;
+    g_cal_state = new_state;
+    cal_log("[CAL_STATE] %s -> %s (saved=%d boot=%d valid=%d)",
+            cal_state_name(old), cal_state_name(new_state),
+            g_saved_calibration_loaded, g_boot_calibration_success,
+            g_calibration_valid);
+
+    /* Drive the LED from the state. This is the single place where state
+     * dictates LED mode — call sites only update the state and the LED
+     * follows automatically. */
+    switch (new_state) {
+        case CAL_STATE_LOADED_VALID:
+        case CAL_STATE_BOOT_SUCCESS:
+            cal_led_set_success();
+            break;
+        case CAL_STATE_FAILED_NO_VALID_CAL:
+            cal_led_set_error();   /* fast blink — operator attention needed */
+            break;
+        case CAL_STATE_LOADING:
+        case CAL_STATE_BOOT_RUNNING:
+        case CAL_STATE_BOOT_RESTARTING:
+        case CAL_STATE_FAILED_RETRYING:
+        default:
+            cal_led_set_calibrating();
+            break;
+    }
+}
+
+/* =====================================================================
+ *   GNSS fresh-fix detector
+ *
+ * The TAU1204 driver returns the same parsed-NMEA struct on every ioctl
+ * regardless of whether a new fix arrived since the last call. Polling at
+ * 10 Hz against a 1 Hz GNSS therefore yields ~9 repeated fixes per real
+ * fix. If those repeated fixes are treated as fresh measurements, every
+ * one of them resets last_gnss_meas_s, keeps gnss_present=true forever,
+ * and may even feed the EKF the same position 10 times in 1 s — burying
+ * the AB tracker's velocity estimate in noise and biasing the fusion.
+ *
+ * A fix is FRESH if any of the following changed since the last accepted
+ * fix:
+ *   • lat_e7 OR lon_e7 (with a small absolute threshold)
+ *   • the driver's UTC stamp (HMS+millis is granular enough to detect
+ *     second-to-second changes from the GNSS chip itself)
+ *
+ * Stale fixes are counted but otherwise discarded — they do not update
+ * last_gnss_meas_s, do not set gnss_present, do not feed the AB tracker,
+ * and do not advance any timer.
+ * ===================================================================== */
+
+typedef struct {
+    double   last_lat_deg;
+    double   last_lon_deg;
+    double   last_alt_m;
+    double   last_gnss_time_s;        /* HMS+ms (mod 1 day) of last accepted UTC */
+    double   last_fresh_monotonic_s;  /* now_sec() at last accepted fix          */
+    uint32_t repeated_count;          /* number of stale fixes since last fresh  */
+    uint32_t fresh_count;             /* cumulative fresh fixes since startup    */
+    uint32_t stale_reject_count;      /* cumulative stale fixes rejected         */
+    int      initialized;
+} gnss_freshness_t;
+
+/* Single instance owned by gnss_thread (no concurrent access). */
+static gnss_freshness_t g_gnss_fresh = {0};
+
+/* Convert the driver UTC fields to a scalar suitable for change detection.
+ * We don't need a real epoch; HMS+ms wrapped within a day is unique enough
+ * to spot a 1-Hz NMEA time advance. Returns -1.0 if UTC is unavailable. */
+static double gnss_utc_to_seconds(const struct neo6m_gnss_fix *f)
+{
+    if (f->utc_year == 0 && f->utc_mon == 0) return -1.0;
+    return (double)f->utc_hour    * 3600.0
+         + (double)f->utc_min     *   60.0
+         + (double)f->utc_sec
+         + (double)f->utc_millis  *  0.001;
+}
+
+/* GNSS lat/lon change threshold (degrees).
+ * 1e-8 deg ≈ 1.1 mm at the equator — well below any genuine motion at
+ * typical vehicle speeds (a 1-m/s vehicle moves ~9e-6 deg per second).
+ * The intent is to detect exact-repeat fixes, NOT to reject slow motion. */
+#define GNSS_FRESH_LATLON_THRESH_DEG   1.0e-8
+
+/* Returns 1 if the fix is fresh and should be processed; 0 if stale and
+ * should be rejected. Updates the tracker on each accepted fresh fix. */
+static int gnss_fix_is_fresh(gnss_freshness_t *G,
+                             const struct neo6m_gnss_fix *fix,
+                             double now_s)
+{
+    if (!fix->have_fix) {
+        /* No fix at all — treat as stale; outage logic upstream takes over. */
+        return 0;
+    }
+
+    double lat_deg = (double)fix->lat_e7 / 1e7;
+    double lon_deg = (double)fix->lon_e7 / 1e7;
+    double alt_m   = (double)fix->alt_mm / 1000.0;
+    double utc_s   = gnss_utc_to_seconds(fix);
+
+    if (!G->initialized) {
+        G->initialized            = 1;
+        G->last_lat_deg           = lat_deg;
+        G->last_lon_deg           = lon_deg;
+        G->last_alt_m             = alt_m;
+        G->last_gnss_time_s       = utc_s;
+        G->last_fresh_monotonic_s = now_s;
+        G->fresh_count            = 1;
+        G->repeated_count         = 0;
+        return 1;   /* first valid fix is fresh by definition */
+    }
+
+    int utc_changed    = (utc_s >= 0.0) && (G->last_gnss_time_s >= 0.0) &&
+                         (fabs(utc_s - G->last_gnss_time_s) > 1.0e-4);
+    int latlon_changed = (fabs(lat_deg - G->last_lat_deg) > GNSS_FRESH_LATLON_THRESH_DEG) ||
+                         (fabs(lon_deg - G->last_lon_deg) > GNSS_FRESH_LATLON_THRESH_DEG);
+
+    if (utc_changed || latlon_changed) {
+        G->last_lat_deg           = lat_deg;
+        G->last_lon_deg           = lon_deg;
+        G->last_alt_m             = alt_m;
+        G->last_gnss_time_s       = utc_s;
+        G->last_fresh_monotonic_s = now_s;
+        G->fresh_count++;
+        G->repeated_count = 0;
+        return 1;
+    }
+
+    /* Stale */
+    G->repeated_count++;
+    G->stale_reject_count++;
+    return 0;
+}
+
+/* =====================================================================
+ *   GNSS sanity-validation layer
+ *
+ * Runs immediately before AB_TRACK / EKF fusion / AHRS yaw correction.
+ * Anything that fails validation is discarded:
+ *   • not fed to the alpha-beta tracker
+ *   • not used as an EKF measurement update (position / velocity / heading)
+ *   • not used as an AHRS yaw correction
+ *   • does not reset last_gnss_validated_s, so gnss_present can correctly
+ *     fall to false and outage_s starts counting up
+ *
+ * The validation function returns 0 on accept, > 0 on reject (with a
+ * reason code in the caller-supplied buffer). It also adapts R_pos based
+ * on HDOP so moderate-quality fixes are accepted with widened noise
+ * rather than discarded outright.
+ * ===================================================================== */
+
+/* Vehicle dynamics + GNSS-quality limits used by validation */
+#ifndef GNSS_HDOP_MAX_GOOD
+#define GNSS_HDOP_MAX_GOOD       2.0f       /* R_pos scale = 1 below this */
+#endif
+#ifndef GNSS_HDOP_MAX_USABLE
+#define GNSS_HDOP_MAX_USABLE     5.0f       /* reject above this */
+#endif
+#ifndef MAX_GNSS_POS_JUMP_M
+#define MAX_GNSS_POS_JUMP_M     50.0f       /* max ENU jump between fresh fixes */
+#endif
+#ifndef GNSS_COURSE_SPEED_MIN
+#define GNSS_COURSE_SPEED_MIN    2.0f       /* m/s — below this COG is junk */
+#endif
+#ifndef GNSS_MAX_DT_S
+#define GNSS_MAX_DT_S            5.0        /* max plausible delta between two valid fixes */
+#endif
+/* Existing macros reused: MAX_GNSS_SPEED_MPS (40 m/s), MAX_GNSS_ACCEL_MPS2 (6 m/s²)
+ * defined alongside the vehicle-dynamics block earlier in the file. */
+
+/* (gnss_validated_fix_t is defined above ctx_t — see the typedef just before
+ * the "Threading / Context" section so ctx_t can embed it by value.) */
+
+/* Reason codes returned by gnss_validate_for_fusion (>0 = rejected) */
+enum {
+    GNSS_OK                    = 0,
+    GNSS_REJ_NO_FIX            = 1,
+    GNSS_REJ_STALE             = 2,
+    GNSS_REJ_HDOP_BAD          = 3,
+    GNSS_REJ_LATLON_RANGE      = 4,
+    GNSS_REJ_LATLON_NONFINITE  = 5,
+    GNSS_REJ_ALT_RANGE         = 6,
+    GNSS_REJ_SPEED_RANGE       = 7,
+    GNSS_REJ_SPEED_NONFINITE   = 8,
+    GNSS_REJ_ACCEL_RANGE       = 9,
+    GNSS_REJ_POS_JUMP          = 10,
+    GNSS_REJ_DT_INVALID        = 11
+};
+
+/* Snapshot copy + range/finiteness sanity. Lat is [-90,90]; lon is [-180,180]. */
+static int finite_f(float v)  { return (v == v) && (v >  -1e30f) && (v <  1e30f); }
+static int finite_d(double v) { return (v == v) && (v > -1e300)  && (v < 1e300); }
+
+/* Returns 0 on accept (R_pos_scale set, reason buffer left empty), or a
+ * positive reject code on failure. The reject reason text is also written
+ * into reject_reason (always NUL-terminated when buffer is non-zero).
+ *
+ * prev may be NULL on the very first call (skips the kinematic checks). */
+static int gnss_validate_for_fusion(const gnss_validated_fix_t *prev,
+                                    const gnss_validated_fix_t *cur,
+                                    float *R_pos_scale,
+                                    char  *reject_reason,
+                                    size_t reject_reason_len)
+{
+    if (R_pos_scale)   *R_pos_scale = 1.0f;
+    if (reject_reason && reject_reason_len > 0) reject_reason[0] = '\0';
+
+    if (!cur) return GNSS_REJ_NO_FIX;
+
+    if (!cur->fix_valid) {
+        snprintf(reject_reason, reject_reason_len, "no_fix");
+        return GNSS_REJ_NO_FIX;
+    }
+    if (!cur->fresh) {
+        snprintf(reject_reason, reject_reason_len, "stale");
+        return GNSS_REJ_STALE;
+    }
+    if (!finite_d(cur->lat_deg) || !finite_d(cur->lon_deg)) {
+        snprintf(reject_reason, reject_reason_len, "latlon_nonfinite");
+        return GNSS_REJ_LATLON_NONFINITE;
+    }
+    if (cur->lat_deg < -90.0 || cur->lat_deg > 90.0 ||
+        cur->lon_deg < -180.0 || cur->lon_deg > 180.0) {
+        snprintf(reject_reason, reject_reason_len, "latlon_range lat=%.5f lon=%.5f",
+                 cur->lat_deg, cur->lon_deg);
+        return GNSS_REJ_LATLON_RANGE;
+    }
+    if (!finite_d(cur->alt_m) || cur->alt_m < -500.0 || cur->alt_m > 9000.0) {
+        snprintf(reject_reason, reject_reason_len, "alt_range alt=%.1f", cur->alt_m);
+        return GNSS_REJ_ALT_RANGE;
+    }
+    if (!finite_f(cur->speed_mps)) {
+        snprintf(reject_reason, reject_reason_len, "speed_nonfinite");
+        return GNSS_REJ_SPEED_NONFINITE;
+    }
+    if (cur->speed_mps < 0.0f || cur->speed_mps > MAX_GNSS_SPEED_MPS) {
+        snprintf(reject_reason, reject_reason_len, "speed_range speed=%.2f", cur->speed_mps);
+        return GNSS_REJ_SPEED_RANGE;
+    }
+    if (cur->hdop >= 0.0f && cur->hdop > GNSS_HDOP_MAX_USABLE) {
+        snprintf(reject_reason, reject_reason_len, "bad_hdop hdop=%.2f", cur->hdop);
+        return GNSS_REJ_HDOP_BAD;
+    }
+
+    /* Kinematic checks require a previous validated fix. */
+    if (prev) {
+        double dt = cur->t_mono_s - prev->t_mono_s;
+        if (dt <= 0.0 || dt > GNSS_MAX_DT_S) {
+            snprintf(reject_reason, reject_reason_len, "dt_invalid dt=%.2f", dt);
+            return GNSS_REJ_DT_INVALID;
+        }
+
+        /* Implied speed from ENU position delta */
+        double de = cur->e - prev->e;
+        double dn = cur->n - prev->n;
+        double pos_jump = sqrt(de*de + dn*dn);
+        double implied_speed = pos_jump / dt;
+        if (pos_jump > MAX_GNSS_POS_JUMP_M ||
+            implied_speed > (double)MAX_GNSS_SPEED_MPS) {
+            snprintf(reject_reason, reject_reason_len,
+                     "pos_jump jump=%.2f dt=%.2f implied_speed=%.2f",
+                     pos_jump, dt, implied_speed);
+            return GNSS_REJ_POS_JUMP;
+        }
+
+        /* Implied acceleration from reported-speed delta */
+        float dv = cur->speed_mps - prev->speed_mps;
+        float implied_accel = fabsf(dv) / (float)dt;
+        if (implied_accel > MAX_GNSS_ACCEL_MPS2) {
+            snprintf(reject_reason, reject_reason_len,
+                     "speed_spike speed=%.2f prev=%.2f dv=%.2f dt=%.2f a=%.2f",
+                     cur->speed_mps, prev->speed_mps, dv, dt, implied_accel);
+            return GNSS_REJ_ACCEL_RANGE;
+        }
+    }
+
+    /* Adaptive R_pos scaling based on HDOP — keep marginal fixes but widen R */
+    if (R_pos_scale) {
+        if (cur->hdop < 0.0f || cur->hdop <= GNSS_HDOP_MAX_GOOD) {
+            *R_pos_scale = 1.0f;
+        } else if (cur->hdop <= 4.0f) {
+            *R_pos_scale = cur->hdop * cur->hdop;        /* (HDOP)² inflation */
+        } else {
+            *R_pos_scale = 25.0f;                        /* cap at 5² to allow re-lock */
+        }
+    }
+    return GNSS_OK;
+}
+
+/* g_gnss_last_fix_validated is declared near the math utils so the AHRS
+ * (defined far earlier in the file) can reference it from
+ * ahrs_gnss_yaw_is_trusted(). It is written ONLY by the fusion thread. */
+
 static void* gnss_thread(void *arg) {
     ctx_t *C = (ctx_t*)arg;
     int fd = open_gnss();
@@ -3293,19 +3757,79 @@ static void* gnss_thread(void *arg) {
             continue;
         }
 
+        double tmeas = now_sec();
+
+        /* ---- Stale-fix detector (run BEFORE acquiring the mutex / before
+         *      touching any shared state). If the underlying fix has not
+         *      advanced since the last accepted one, we drop it entirely:
+         *        - last_gnss_meas_s is NOT updated  (so gnss_present can
+         *          correctly time out and outage_s begins counting)
+         *        - have_gnss stays false (no fusion)
+         *        - AB tracker / position+velocity updates are NOT called
+         *        - rate-limited GNSS_STALE log line in the debug file
+         *      Counters are mirrored into ctx_t for CSV/debug visibility.  */
+        int is_fresh = gnss_fix_is_fresh(&g_gnss_fresh, &f, tmeas);
+
+        if (!is_fresh) {
+            /* Update visible counters and log at low rate, then sleep. */
+            pthread_mutex_lock(&C->mtx);
+            C->gnss_stale_reject_count = g_gnss_fresh.stale_reject_count;
+            C->gnss_repeated_count     = g_gnss_fresh.repeated_count;
+            C->gnss_last_fresh         = 0;
+            pthread_mutex_unlock(&C->mtx);
+
+            static double t_stale_last = 0.0;
+            if (tmeas - t_stale_last > 2.0) {
+                dbg_printf(C, "GNSS_STALE repeated_count=%u lat=%.7f lon=%.7f utc=%02u:%02u:%02u.%03u",
+                           g_gnss_fresh.repeated_count,
+                           g_gnss_fresh.last_lat_deg, g_gnss_fresh.last_lon_deg,
+                           f.utc_hour, f.utc_min, f.utc_sec, f.utc_millis);
+                t_stale_last = tmeas;
+            }
+            /* Periodic freshness summary (10 s) — written even when stale */
+            static double t_freshlog = 0.0;
+            if (tmeas - t_freshlog > 10.0) {
+                double age = tmeas - g_gnss_fresh.last_fresh_monotonic_s;
+                dbg_printf(C, "GNSS_FRESHNESS fresh=%u stale=%u repeated=%u last_age=%.2fs",
+                           g_gnss_fresh.fresh_count,
+                           g_gnss_fresh.stale_reject_count,
+                           g_gnss_fresh.repeated_count, age);
+                t_freshlog = tmeas;
+            }
+
+            usleep(100000);     /* ~10 Hz poll, same as the fresh path */
+            continue;
+        }
+
+        /* ---- Fresh fix: proceed with the normal flow ---- */
         pthread_mutex_lock(&C->mtx);
 
         C->have_gnss = false;
         C->gnss_have_fix = f.have_fix ? 1 : 0;
-        double tmeas = now_sec();
-        C->last_gnss_meas_s = tmeas;
+        C->last_gnss_meas_s = tmeas;             /* only on fresh accepted fix */
+        C->gnss_fresh_count        = g_gnss_fresh.fresh_count;
+        C->gnss_stale_reject_count = g_gnss_fresh.stale_reject_count;
+        C->gnss_repeated_count     = g_gnss_fresh.repeated_count;
+        C->gnss_last_fresh         = 1;
+        C->last_fresh_gnss_s       = tmeas;
         bool new_fix = true;
-        if( C->gnss_have_fix ){
-            if( C->last_gnss_fix_mono_ns == f.monotonic_ns ){
+        if (C->gnss_have_fix) {
+            if (C->last_gnss_fix_mono_ns == f.monotonic_ns) {
                 new_fix = false;
-
             } else {
                 C->last_gnss_fix_mono_ns = f.monotonic_ns;
+            }
+        }
+
+        /* Periodic freshness summary log (every 10 s on the fresh path too) */
+        {
+            static double t_freshlog = 0.0;
+            if (tmeas - t_freshlog > 10.0) {
+                dbg_printf(C, "GNSS_FRESHNESS fresh=%u stale=%u repeated=%u last_age=%.2fs",
+                           g_gnss_fresh.fresh_count,
+                           g_gnss_fresh.stale_reject_count,
+                           g_gnss_fresh.repeated_count, 0.0);
+                t_freshlog = tmeas;
             }
         }
 
@@ -3455,6 +3979,11 @@ static void* fusion_thread(void *arg) {
             pthread_mutex_unlock(&C->mtx);
             continue;
         }
+
+        /* Drive the calibration LED from the current g_cal_state every step.
+         * cal_led_blink_update is non-blocking and respects whatever mode the
+         * state machine has set (steady ON, slow blink, fast blink, off). */
+        cal_led_blink_update(now_sec());
 
         // Calibrate IMU through the centralized preprocessor (g_cal + g_imu_cal).
         // Output is in vehicle frame (mount_R_bv applied) and SI units, with
@@ -3652,59 +4181,91 @@ static void* fusion_thread(void *arg) {
                 C->imu_cal_in_progress = true;
                 C->imu_cal_start_s = tcal_now;
                 still_reset(&cal_accum_boot);
-                cal_log("[CAL] Power on IMU Calibration started: Keep vehicle still ...");
+                cal_log("[CAL_BOOT] started keep vehicle still");
+                cal_state_set(CAL_STATE_BOOT_RUNNING);  /* LED starts blinking */
             }
-
-            // Blink LED while calibration
-            cal_led_update(true, false, tcal_now);
 
             int boot_rc = apply_poweron_calibration(&cal_accum_boot, &C->imu_raw, acc_b,
                                                     BOOT_CAL_DURATION_S, tcal_now);
             if (boot_rc == 1) {
+                /* ------- Boot calibration succeeded sanity check ------- */
                 C->imu_cal_done = true;
                 C->imu_cal_in_progress = false;
-                cal_led_update(false, true, tcal_now); // steady ON
+                g_boot_calibration_success = 1;
+                g_calibration_valid        = 1;
+                g_imu_quality_degraded     = 0;
+                cal_state_set(CAL_STATE_BOOT_SUCCESS);  /* LED steady ON */
 
-                // Re-calibrate to get corrected gravity vector for initial tilt estimation
+                /* Re-calibrate to get corrected gravity vector for initial tilt estimation */
                 vec3f acc_corrected;
                 calib_accel(&C->imu_raw, &acc_corrected);
                 C->boot_acc_mean = acc_corrected;
 
-                cal_log("[CAL] Power-On IMU calibration complete.");
-                cal_log("       gyro_bias_counts = [%.3f, %.3f, %.3f]",
-                        g_cal.gyro_bias_counts[0], g_cal.gyro_bias_counts[1], g_cal.gyro_bias_counts[2]);
-                cal_log("       accel_O = [%.6f, %.6f, %.6f]",
-                        g_cal.accel_O[0], g_cal.accel_O[1], g_cal.accel_O[2]);
-                cal_log("       boot_acc_mean = [%.4f, %.4f, %.4f]",
+                cal_log("[CAL_BOOT] success samples=%u gyro_bias=(%.3f,%.3f,%.3f)deg/s "
+                        "accel_O=(%.6f,%.6f,%.6f) boot_acc_mean=(%.4f,%.4f,%.4f)",
+                        g_imu_cal.boot_sample_count,
+                        g_cal.gyro_bias_counts[0]*(DEG2RAD/GYRO_LSB_PER_DPS)/DEG2RAD,
+                        g_cal.gyro_bias_counts[1]*(DEG2RAD/GYRO_LSB_PER_DPS)/DEG2RAD,
+                        g_cal.gyro_bias_counts[2]*(DEG2RAD/GYRO_LSB_PER_DPS)/DEG2RAD,
+                        g_cal.accel_O[0], g_cal.accel_O[1], g_cal.accel_O[2],
                         C->boot_acc_mean.x, C->boot_acc_mean.y, C->boot_acc_mean.z);
+                cal_log("[CAL_BOOT] saved path=%s", CAL_FILE_PATH);
+                cal_log("[NAV_ALLOWED] calibration valid, starting AHRS/EKF");
             } else if (boot_rc == -2) {
-                /* Cal completed but failed sanity. If a previously-saved cal
-                 * is on disk it's already loaded (see main); otherwise we
-                 * continue with safe defaults and mark IMU quality degraded. */
-                C->imu_cal_done = true;       // stop blocking nav
-                C->imu_cal_in_progress = false;
+                /* ------- Boot calibration completed but failed sanity ------- *
+                 * PRODUCTION SAFETY: we do NOT mark imu_cal_done here. The
+                 * accumulator was reset inside apply_poweron_calibration, so
+                 * another stationary window will start automatically. The
+                 * LED remains blinking. Navigation stays blocked unless a
+                 * valid saved cal was already loaded at startup.            */
+                C->imu_cal_in_progress = true;
                 g_imu_quality_degraded = 1;
                 g_imu_cal.valid_flags |= CAL_FLAG_DEGRADED;
-                cal_led_update(false, true, tcal_now);
-                cal_log("[CAL_BOOT rejected] proceeding with prior/default calibration -- "
-                        "IMU quality marked degraded.");
+                cal_state_set(CAL_STATE_FAILED_RETRYING);
+                cal_log("[CAL_BOOT] rejected by sanity check -- retrying. "
+                        "Calibration_valid=%d (saved=%d). NAV blocked until cal valid.",
+                        g_calibration_valid, g_saved_calibration_loaded);
+            } else if (boot_rc == -1) {
+                /* Motion detected, accumulator reset internally — keep blinking */
+                cal_state_set(CAL_STATE_BOOT_RESTARTING);
+            } else {
+                /* boot_rc == 0 (in progress) — keep blinking */
+                cal_state_set(CAL_STATE_BOOT_RUNNING);
             }
-            /* boot_rc == 0 (in progress) or -1 (motion) — keep blinking */
-        } else {
-            cal_led_update(false, true, tcal_now);
         }
+        /* LED is driven every iteration below (cal_led_blink_update). */
 
 
 
 
         // Initialize nav after MIN_FIXES good GNSS fixes (skip cold-start, check HDOP)
         if (!C->nav_ready) {
+
+            /* ====== PRODUCTION GATE ======
+             * NAV_INIT is allowed ONLY when calibration is valid (saved file
+             * loaded successfully, OR boot calibration completed sanity-good).
+             * This prevents the previously-observed failure where NAV_READY
+             * fired while boot cal was still restarting due to motion. */
+            if (!g_calibration_valid) {
+                static double t_blocked = 0;
+                double tb = now_sec();
+                if (tb - t_blocked > 2.0) {
+                    dbg_printf(C, "NAV_BLOCKED waiting for valid IMU calibration "
+                                  "(cal_state=%s saved=%d boot=%d)",
+                               cal_state_name(g_cal_state),
+                               g_saved_calibration_loaded, g_boot_calibration_success);
+                    t_blocked = tb;
+                }
+                pthread_mutex_unlock(&C->mtx);
+                continue;     /* NAV stays blocked; LED keeps blinking */
+            }
+
             // Diagnostic: print nav-init gate status every 2 seconds
             {
                 static double t_navwait = 0;
                 double tnw = now_sec();
                 if (tnw - t_navwait > 2.0) {
-                    printf("[NAV_WAIT] have_gnss=%d have_fix=%d fix_count=%d hdop_valid=%d hdop=%.2f (need: fixes>=%d hdop<=%.1f)\n",
+                    dbg_printf(C, "[NAV_WAIT] have_gnss=%d have_fix=%d fix_count=%d hdop_valid=%d hdop=%.2f (need: fixes>=%d hdop<=%.1f)",
                         C->have_gnss, C->gnss_have_fix, C->gnss_fix_count,
                         C->gnss_hdop_valid, C->gnss_hdop_valid ? C->gnss_hdop : -1.0f,
                         NAV_INIT_MIN_FIXES, (float)NAV_INIT_HDOP_MAX);
@@ -3839,15 +4400,22 @@ static void* fusion_thread(void *arg) {
             continue;
         }
 
-        // GNSS presence/outage tracking (decoupled from gating)
+        // GNSS presence/outage tracking (decoupled from gating).
+        // IMPORTANT: gnss_present is derived from the last VALIDATED fix
+        // (fell_gnss_validated_s) — NOT last_gnss_meas_s — so a stream of
+        // bad fixes that fail gnss_validate_for_fusion() will correctly
+        // make gnss_present go false and outage_s start counting.
 double tnow = now_sec();
+double present_ref_s = (C->last_gnss_validated_s > 0.0)
+                      ? C->last_gnss_validated_s
+                      : C->last_gnss_meas_s;
 
-if (C->last_gnss_meas_s <= 0.0) {
-    // no GNSS measurement ever received yet (shouldn't happen after nav_ready, but keep safe)
+if (present_ref_s <= 0.0) {
+    // no validated fix ever received yet
     C->gnss_present = false;
     C->outage_s += dt;
 } else {
-    double age = tnow - C->last_gnss_meas_s;
+    double age = tnow - present_ref_s;
     if (age <= GNSS_TIMEOUT_S) {
         C->gnss_present = true;
         C->outage_s = 0.0;
@@ -3941,6 +4509,7 @@ if (g_imu_quality_degraded) {
             C->ins2d.psi = C->ahrs.yaw;
         } else {
             ins2d_update_yaw_from_ahrs(&C->ins2d, C->ahrs.yaw, R_yaw);
+            C->yaw_update_count++;
         }
     }
 
@@ -4097,6 +4666,59 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
             ecef2enu(E, C->enu_ref_lla, C->enu_ref_ecef, enu_d);
             vec3f zpos_raw = v3((float)enu_d[0], (float)enu_d[1], (float)enu_d[2]);
 
+            /* ---- GNSS sanity validation (BEFORE AB_TRACK / EKF fusion / AHRS) ----
+             * Build a candidate validated fix from the current C state plus the
+             * just-computed ENU, then run gnss_validate_for_fusion against the
+             * previously-accepted fix. On rejection we skip everything: no AB
+             * update, no EKF position/velocity/heading injection, no advance of
+             * last_gnss_validated_s — and g_gnss_last_fix_validated is cleared
+             * so the AHRS yaw gate ignores this fix's course. */
+            gnss_validated_fix_t cur_vfix;
+            cur_vfix.t_mono_s     = now_sec();
+            cur_vfix.lat_deg      = C->gnss_lat_rad * (180.0 / M_PI);
+            cur_vfix.lon_deg      = C->gnss_lon_rad * (180.0 / M_PI);
+            cur_vfix.alt_m        = C->gnss_alt_m;
+            cur_vfix.speed_mps    = C->gnss_speed_mps;
+            cur_vfix.hdop         = C->gnss_hdop_valid ? C->gnss_hdop : -1.0f;
+            cur_vfix.fix_valid    = C->gnss_have_fix ? 1 : 0;
+            cur_vfix.fresh        = C->gnss_last_fresh;
+            cur_vfix.course_valid = (C->gnss_heading_valid && C->gnss_speed_mps >= GNSS_COURSE_SPEED_MIN) ? 1 : 0;
+            cur_vfix.course_rad   = C->gnss_heading_rad;
+            cur_vfix.e            = enu_d[0];
+            cur_vfix.n            = enu_d[1];
+            cur_vfix.u            = enu_d[2];
+
+            float gnss_R_scale = 1.0f;
+            char  reject_reason[96] = {0};
+            int   reject_rc = gnss_validate_for_fusion(
+                                  C->gnss_prev_valid_valid ? &C->gnss_prev_valid : NULL,
+                                  &cur_vfix,
+                                  &gnss_R_scale,
+                                  reject_reason, sizeof(reject_reason));
+            if (reject_rc != GNSS_OK) {
+                C->gnss_validate_reject_count++;
+                C->gnss_last_validated = 0;
+                g_gnss_last_fix_validated = 0;
+                static double t_rej_last = 0.0;
+                double t_rej_now = now_sec();
+                if (t_rej_now - t_rej_last > 1.0) {
+                    dbg_printf(C, "GNSS_REJECT reason=%s (total_rejects=%u)",
+                               reject_reason, C->gnss_validate_reject_count);
+                    t_rej_last = t_rej_now;
+                }
+                /* Consume the fix without advancing AB / EKF / yaw / outage. */
+                C->have_gnss = false;
+                goto gnss_done;
+            }
+
+            /* Accepted: stamp validated time, save as previous, and proceed.
+             * gnss_R_scale is folded into Rpos further below. */
+            C->gnss_prev_valid       = cur_vfix;
+            C->gnss_prev_valid_valid = 1;
+            C->last_gnss_validated_s = cur_vfix.t_mono_s;
+            C->gnss_last_validated   = 1;
+            g_gnss_last_fix_validated = 1;
+
             // --- Alpha-beta sawtooth correction ---
             // 2nd-order tracker: maintains smoothed position AND velocity.
             // Eliminates N-sample oscillation that a simple 1st-order blend creates.
@@ -4186,7 +4808,10 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                 // next 10 s of fixes are skipped regardless of accept/reject.
                 C->last_gnss_fused_s = tnow2;
 
-                float Rpos = INS2D_R_POS * hdop * hdop;
+                /* Base Rpos uses INS2D_R_POS scaled by HDOP². When the
+                 * validator widened R for a marginal fix (gnss_R_scale > 1),
+                 * apply that on top so we trust borderline fixes less. */
+                float Rpos = INS2D_R_POS * hdop * hdop * gnss_R_scale;
 
                 // -------- Reacquisition mode --------
                 // If we haven't ACCEPTED a GNSS fix for >5s, relax R and gate
@@ -4201,29 +4826,54 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                     C->reacq_active = true;   // latched for 1 Hz log
                 }
 
-                // -------- Snap-to-GNSS safety net --------
-                // After SNAP_MIN_OUTAGE_S without an accepted fix and a large
-                // innovation, teleport position (and velocity) to GNSS so the
-                // filter can resume — otherwise the NIS gate stays closed
-                // forever once the EKF has drifted by >100m.
+                // -------- Snap-to-GNSS safety net (production-gated) --------
+                // Snap is a CONTROLLED REINITIALIZATION — not a workaround for
+                // estimator instability. It is allowed ONLY if every condition
+                // below is true; otherwise the code falls through to the NIS-
+                // gated incremental update. The intent is to make snap rare:
+                // the only legitimate trigger is "GNSS just returned after a
+                // long outage and the EKF has genuinely drifted".
+                //
+                //   Required (all must hold):
+                //     (a) Outage > SNAP_MIN_OUTAGE_S since last accepted fix
+                //     (b) GNSS is fresh + validated (already gated above)
+                //     (c) HDOP ≤ SNAP_HDOP_MAX
+                //     (d) Innovation > SNAP_INNOV_M for ≥ SNAP_SUSTAINED_COUNT
+                //         consecutive fixes — single-shot innovation is more
+                //         likely multipath than a genuine drift
+                //     (e) EKF position covariance ≥ SNAP_COV_MIN_M2 — if the
+                //         filter is confident, snap fights its confidence; in
+                //         that case we trust the EKF and reject the fix.
                 float innov_e = zpos.x - C->ins2d.p_E;
                 float innov_n = zpos.y - C->ins2d.p_N;
                 float innov_h = sqrtf(innov_e*innov_e + innov_n*innov_n);
-                bool allow_snap = ((tnow2 - C->last_gnss_used_s) > SNAP_MIN_OUTAGE_S);
                 dbg_printf(C, "GNSS_INNOV(2D) innov=(%.2f,%.2f) |innov|=%.2f hdop=%.2f qS=%.2f reacq=%d",
                            innov_e, innov_n, innov_h, hdop, C->qscale, C->reacq_left);
 
-                if (allow_snap && (!C->gnss_hdop_valid || hdop <= SNAP_HDOP_MAX) && innov_h > SNAP_INNOV_M) {
+                /* Track sustained high innovation */
+                if (innov_h > SNAP_INNOV_M) {
+                    C->sustained_high_innov_count++;
+                } else {
+                    C->sustained_high_innov_count = 0;
+                }
+
+                bool cond_outage   = ((tnow2 - C->last_gnss_used_s) > SNAP_MIN_OUTAGE_S);
+                bool cond_hdop     = (!C->gnss_hdop_valid || hdop <= SNAP_HDOP_MAX);
+                bool cond_sustain  = (C->sustained_high_innov_count >= SNAP_SUSTAINED_COUNT);
+                bool cond_innov    = (innov_h > SNAP_INNOV_M);
+                float ekf_cov_pos_m2 = 0.5f * (C->ins2d.P[0*7+0] + C->ins2d.P[1*7+1]);
+                bool cond_cov      = (ekf_cov_pos_m2 >= SNAP_COV_MIN_M2);
+
+                if (cond_outage && cond_hdop && cond_sustain && cond_innov && cond_cov) {
+                    /* ---- SNAP_2D applied ---- */
                     C->ins2d.p_E = zpos.x;
                     C->ins2d.p_N = zpos.y;
                     if (C->gnss_vel_valid && !C->gnss_speed_rejected) {
                         C->ins2d.v_E = C->gnss_vel_enu.x;
                         C->ins2d.v_N = C->gnss_vel_enu.y;
                     }
-                    // Inflate position covariance so subsequent updates aren't over-confident
                     if (C->ins2d.P[0*7+0] < 25.0f) C->ins2d.P[0*7+0] = 25.0f;
                     if (C->ins2d.P[1*7+1] < 25.0f) C->ins2d.P[1*7+1] = 25.0f;
-                    // Also pull heading toward GNSS course if available — keep AHRS in sync.
                     if (C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN) {
                         C->ins2d.psi = C->gnss_heading_rad;
                         C->ahrs.yaw  = C->gnss_heading_rad;
@@ -4235,22 +4885,44 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                     C->gnss_valid = true;
                     C->last_gnss_used_pos = 1;
                     C->snap_applied = true;
+                    C->snap_count++;
                     C->last_nis_pos = 0.0f;
                     C->gnss_accepted_count++;
                     C->reacq_left = 0;
-                    // Reset alpha-beta tracker so it re-seeds from snapped position
+                    C->sustained_high_innov_count = 0;   /* reset after acting */
                     C->ab_pos  = zpos;
                     C->ab_time = tnow_gnss;
                     C->ab_vel  = C->gnss_vel_valid ? C->gnss_vel_enu : v3(0,0,0);
-                    dbg_printf(C, "SNAP_2D innov=%.1fm outage=%.1fs -> teleport to GNSS",
-                               innov_h, (float)(tnow2 - C->last_gnss_used_s));
-                } else {
-                    // -------- Position update with NIS gate BEFORE applying --------
-                    // ins2d_update_gnss_pos applies the update unconditionally and
-                    // returns NIS as a diagnostic. Compute NIS first so an outlier
-                    // never reaches the state.
+                    dbg_printf(C, "[SNAP_2D] applied reason=long_outage_good_gnss innov=%.1fm "
+                                  "outage=%.1fs hdop=%.2f cov=%.1f m^2 sustain=%u",
+                               innov_h, (float)(tnow2 - C->last_gnss_used_s), hdop,
+                               ekf_cov_pos_m2, C->sustained_high_innov_count);
+                } else if (cond_innov) {
+                    /* Innovation IS large but at least one gate blocked snap.
+                     * Log the reason once per condition violation so the
+                     * operator can see exactly why snap was prevented. */
+                    const char *reason = "ok";
+                    if      (!cond_outage)  reason = "short_outage";
+                    else if (!cond_hdop)    reason = "bad_hdop";
+                    else if (!cond_sustain) reason = "innov_not_sustained";
+                    else if (!cond_cov)     reason = "ekf_confident_cov_low";
+                    C->snap_blocked_count++;
+                    static double t_snap_block_last = 0.0;
+                    if (tnow2 - t_snap_block_last > 1.0) {
+                        dbg_printf(C, "[SNAP_2D_BLOCKED] reason=%s innov=%.1fm hdop=%.2f "
+                                      "cov=%.1f m^2 sustain=%u outage=%.1fs",
+                                   reason, innov_h, hdop, ekf_cov_pos_m2,
+                                   C->sustained_high_innov_count,
+                                   (float)(tnow2 - C->last_gnss_used_s));
+                        t_snap_block_last = tnow2;
+                    }
+                    /* Fall through to gentle NIS-gated update below. */
+                }
+
+                if (!(cond_outage && cond_hdop && cond_sustain && cond_innov && cond_cov)) {
+                    /* -------- Position update with NIS gate BEFORE applying ---- */
                     float nis_pos = 0.0f;
-                    bool ok_nis = ins2d_nis_gnss_pos(&C->ins2d, zpos.x, zpos.y, Rpos, &nis_pos);
+                    bool ok_nis   = ins2d_nis_gnss_pos(&C->ins2d, zpos.x, zpos.y, Rpos, &nis_pos);
                     bool gate_pos = ok_nis && (nis_pos < gate_thr);
                     C->last_nis_pos = nis_pos;
 
@@ -4260,23 +4932,80 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                         C->gnss_valid = true;
                         C->last_gnss_used_pos = 1;
                         C->gnss_accepted_count++;
+                        C->gnss_pos_update_count++;
+                    } else {
+                        /* NIS rejection — log innovation magnitude so the operator
+                         * can see how badly the fix disagreed. Do NOT mark GNSS
+                         * healthy and do NOT reset outage timer. */
+                        static double t_nis_rej_last = 0.0;
+                        if (tnow2 - t_nis_rej_last > 1.0) {
+                            dbg_printf(C, "[GNSS_NIS_REJECT] pos nis=%.1f gate=%.1f "
+                                          "innov=%.1fm Rpos=%.2f",
+                                       nis_pos, gate_thr, innov_h, Rpos);
+                            t_nis_rej_last = tnow2;
+                        }
                     }
                     if (C->reacq_left > 0) C->reacq_left--;
                 }
 
                 // -------- Velocity update with NIS gate --------
+                // Two velocity sources, in priority order:
+                //   1. GNSS-reported velocity (COG + speed) when valid
+                //   2. Fallback: derived velocity from two consecutive validated
+                //      ENU positions — only allowed when BOTH fixes were fresh,
+                //      validated, and dt is sane (already guaranteed by the
+                //      validator's kinematic check).
+                float vel_E = 0.0f, vel_N = 0.0f;
+                float R_vel = INS2D_R_VEL;
+                int   have_vel_source = 0;
+                int   vel_is_derived  = 0;
+
                 if (C->gnss_vel_valid && !C->gnss_speed_rejected) {
-                    float R_vel = INS2D_R_VEL;
-                    if (C->gnss_speed_mps < 1.0f) R_vel *= 10.0f;  // course-derived vel is noisy at low speed
+                    vel_E = C->gnss_vel_enu.x;
+                    vel_N = C->gnss_vel_enu.y;
+                    if (C->gnss_speed_mps < 1.0f) R_vel *= 10.0f;   // COG noisy at low speed
+                    have_vel_source = 1;
+                } else if (C->gnss_prev_valid_valid) {
+                    /* Derive velocity from validated position delta. The
+                     * validator already enforced dt in (0, 5 s] and a
+                     * sane position-jump, so neither stale nor jumped
+                     * positions can reach this branch. */
+                    double dt_v = cur_vfix.t_mono_s - C->gnss_prev_valid.t_mono_s;
+                    if (dt_v > 0.05 && dt_v < (double)GNSS_MAX_DT_S) {
+                        vel_E = (float)((cur_vfix.e - C->gnss_prev_valid.e) / dt_v);
+                        vel_N = (float)((cur_vfix.n - C->gnss_prev_valid.n) / dt_v);
+                        /* Derived velocity is noisier than COG-derived — 4× R */
+                        R_vel = INS2D_R_VEL * 4.0f;
+                        have_vel_source = 1;
+                        vel_is_derived  = 1;
+                    }
+                }
+
+                if (have_vel_source) {
                     float nis_vel = 0.0f;
-                    bool ok_nis_v = ins2d_nis_gnss_vel(&C->ins2d, C->gnss_vel_enu.x, C->gnss_vel_enu.y, R_vel, &nis_vel);
+                    bool ok_nis_v = ins2d_nis_gnss_vel(&C->ins2d, vel_E, vel_N, R_vel, &nis_vel);
                     bool gate_vel = ok_nis_v && (nis_vel < INS2D_CHI2_2DOF_GATE);
                     C->last_nis_vel = nis_vel;
                     if (gate_vel) {
-                        ins2d_update_gnss_vel(&C->ins2d, C->gnss_vel_enu.x, C->gnss_vel_enu.y, R_vel, NULL);
+                        ins2d_update_gnss_vel(&C->ins2d, vel_E, vel_N, R_vel, NULL);
                         C->last_gnss_used_vel = 1;
                         C->last_gnss_used_s = tnow2;
                         C->gnss_valid = true;
+                        C->gnss_vel_update_count++;
+                        if (vel_is_derived) {
+                            dbg_printf(C, "GNSS_VEL_DERIVED v=(%.2f,%.2f) m/s",
+                                       vel_E, vel_N);
+                        }
+                    } else {
+                        static double t_nis_v_rej_last = 0.0;
+                        if (tnow2 - t_nis_v_rej_last > 1.0) {
+                            dbg_printf(C, "[GNSS_NIS_REJECT] vel nis=%.1f gate=%.1f "
+                                          "v=(%.2f,%.2f) %s",
+                                       nis_vel, (float)INS2D_CHI2_2DOF_GATE,
+                                       vel_E, vel_N,
+                                       vel_is_derived ? "(derived)" : "(reported)");
+                            t_nis_v_rej_last = tnow2;
+                        }
                     }
                 } else {
                     C->last_nis_vel = 0.0f;
@@ -4314,7 +5043,8 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                 goto gnss_done;
             }
 
-            float Rpos = R_GNSS_POS_VAR * hdop * hdop;
+            /* Same adaptive scaling for the 3D path: trust borderline fixes less */
+            float Rpos = R_GNSS_POS_VAR * hdop * hdop * gnss_R_scale;
 
             // Reacquisition: if we haven't ACCEPTED GNSS for a while, relax gating and inflate R
             double tnow2 = now_sec();
@@ -4475,6 +5205,37 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                     ekf_lon_deg = ekf_lla.lon * (180.0 / M_PI);
                 }
 
+                /* gnss_fix_age_s: monotonic seconds since the most recent FRESH
+                 * (not stale, not no-fix) accepted fix. -1.0 if we have never
+                 * received a fresh fix in this run. */
+                float gnss_fix_age_s_csv = (C->last_fresh_gnss_s > 0.0)
+                                          ? (float)(tlog - C->last_fresh_gnss_s)
+                                          : -1.0f;
+
+                /* ---- EKF↔GNSS convergence classifier ---- */
+                float err_h_now = 0.0f;
+                if (C->gnss_enu_last_valid) {
+                    float dE = C->ins2d.p_E - C->gnss_enu_last.x;
+                    float dN = C->ins2d.p_N - C->gnss_enu_last.y;
+                    err_h_now = sqrtf(dE*dE + dN*dN);
+                }
+                float err_h_delta = 0.0f;
+                C->ekf_converging = 0;
+                C->ekf_diverging  = 0;
+                if (C->prev_err_valid && C->gnss_enu_last_valid) {
+                    err_h_delta = err_h_now - C->prev_err_h_m;
+                    if (err_h_delta < -EKF_CONV_DELTA_M) {
+                        C->ekf_converging = 1;
+                        C->ekf_converging_count++;
+                    } else if (err_h_delta > EKF_CONV_DELTA_M) {
+                        C->ekf_diverging = 1;
+                        C->ekf_diverging_count++;
+                    }
+                }
+                if (C->gnss_enu_last_valid) {
+                    C->prev_err_h_m   = err_h_now;
+                    C->prev_err_valid = 1;
+                }
                 fprintf(C->logf, "%.3f, %.9f,%.9f, %.3f,%.3f,0.0, %.3f,%.3f,0.0,%.2f,"
                     "%.6f,0.0,0.0,0.0,0.0,%.6f,"
                     "%d,%d,%d,%d,%d,%d,"
@@ -4482,7 +5243,12 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                     "%.3f,%.3f,0.0,%.3f,%.3f,%.3f,"
                     "%d,%d,%d,%d,%d,%d,"
                     "%.3f,%.2f,%.2f,%.2f,%.3f,"
-                    "%.3f,%.3f,0.0,%d,%d\n",
+                    "%.3f,%.3f,0.0,%d,%d,"
+                    "%d,%u,%.3f,%u,"
+                    "%d,%u,"
+                    "%.3f,%.3f,%d,%d,"
+                    "%u,%u,%u,"
+                    "%u,%u\n",
                     tlog,
                     ekf_lat_deg, ekf_lon_deg,
                     C->ins2d.v_E, C->ins2d.v_N,
@@ -4510,7 +5276,20 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                     C->gnss_present ? (float)(tlog - C->last_gnss_meas_s) : -1.0f,
                     C->predict_p.x, C->predict_p.y,
                     (C->zupt_count >= ZUPT_COUNT_REQUIRED) ? 1 : 0,
-                    C->anchor_set ? 1 : 0
+                    C->anchor_set ? 1 : 0,
+                    /* new staleness columns */
+                    C->gnss_last_fresh,
+                    C->gnss_stale_reject_count,
+                    gnss_fix_age_s_csv,
+                    C->gnss_repeated_count,
+                    /* validation columns */
+                    C->gnss_last_validated,
+                    C->gnss_validate_reject_count,
+                    /* convergence diagnostics */
+                    err_h_now, err_h_delta, C->ekf_converging, C->ekf_diverging,
+                    /* cumulative update counters */
+                    C->gnss_pos_update_count, C->gnss_vel_update_count, C->yaw_update_count,
+                    C->snap_count, C->snap_blocked_count
                 );
             #else
 
@@ -4551,7 +5330,12 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                     "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,"
                     "%d,%d,%d,%d,%d,%d,"
                     "%.3f,%.2f,%.2f,%.2f,%.3f,"
-                    "%.3f,%.3f,%.3f,%d,%d\n",
+                    "%.3f,%.3f,%.3f,%d,%d,"
+                    "%d,%u,%.3f,%u,"
+                    "%d,%u,"
+                    "%.3f,%.3f,%d,%d,"
+                    "%u,%u,%u,"
+                    "%u,%u\n",
                     tlog,
                     ekf_lat_deg, ekf_lon_deg,
                     C->ins.v.x, C->ins.v.y, C->ins.v.z,
@@ -4579,7 +5363,23 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
                     gnss_meas_age_s,
                     C->predict_p.x, C->predict_p.y, C->predict_p.z,
                     (C->zupt_count >= ZUPT_COUNT_REQUIRED) ? 1 : 0,
-                    C->anchor_set ? 1 : 0
+                    C->anchor_set ? 1 : 0,
+                    /* new staleness columns */
+                    C->gnss_last_fresh,
+                    C->gnss_stale_reject_count,
+                    (C->last_fresh_gnss_s > 0.0) ? (float)(tlog - C->last_fresh_gnss_s) : -1.0f,
+                    C->gnss_repeated_count,
+                    /* validation columns */
+                    C->gnss_last_validated,
+                    C->gnss_validate_reject_count,
+                    /* convergence diagnostics (3D path: err_H already computed above) */
+                    errH,
+                    C->prev_err_valid ? (errH - C->prev_err_h_m) : 0.0f,
+                    (C->prev_err_valid && (errH - C->prev_err_h_m) < -EKF_CONV_DELTA_M) ? 1 : 0,
+                    (C->prev_err_valid && (errH - C->prev_err_h_m) >  EKF_CONV_DELTA_M) ? 1 : 0,
+                    /* cumulative update counters (shared between 2D and 3D paths) */
+                    C->gnss_pos_update_count, C->gnss_vel_update_count, C->yaw_update_count,
+                    C->snap_count, C->snap_blocked_count
                 );
 
             #endif 
@@ -4651,19 +5451,52 @@ C.gnss_prev_speed_valid = false;
 C.gnss_prev_speed_mps = 0.0f;
 C.gnss_prev_speed_time = 0.0;
 C.gnss_speed_rejected = false;
+C.gnss_fresh_count = 0;
+C.gnss_stale_reject_count = 0;
+C.gnss_repeated_count = 0;
+C.gnss_last_fresh = 0;
+C.last_fresh_gnss_s = 0.0;
+memset(&C.gnss_prev_valid, 0, sizeof(C.gnss_prev_valid));
+C.gnss_prev_valid_valid = 0;
+C.last_gnss_validated_s = 0.0;
+C.gnss_validate_reject_count = 0;
+C.gnss_last_validated = 0;
+C.prev_err_h_m = 0.0f;
+C.prev_err_valid = 0;
+C.ekf_converging = 0;
+C.ekf_diverging = 0;
+C.ekf_converging_count = 0;
+C.ekf_diverging_count = 0;
+C.gnss_pos_update_count = 0;
+C.gnss_vel_update_count = 0;
+C.yaw_update_count = 0;
+C.snap_count = 0;
+C.snap_blocked_count = 0;
+C.sustained_high_innov_count = 0;
 
     make_log_file(&C);
     make_debug_log_file(&C);
     /* Route all calibration helpers (boot cal, runtime cal, file load/save)
      * to the per-run debug log file instead of stdout. */
     g_cal_log = C.dbglog;
+
+    /* ---- Initialise LED hardware and start the calibration state machine ---- */
+    cal_led_init();
+    cal_state_set(CAL_STATE_LOADING);   /* sets LED to blinking */
+
     cal_set_defaults_from_lsq();
 
-    /* ---- Load production calibration (imu_calib_t) ---- */
+    /* ---- Load production calibration (imu_calib_t) ----
+     * Success ⇒ CAL_STATE_LOADED_VALID, calibration_valid=1, LED steady ON.
+     * Failure ⇒ stay in LOADING; boot calibration in fusion_thread will
+     *           transition into BOOT_RUNNING and only the boot cal can
+     *           promote us to a calibration-valid state. */
     imu_calib_set_defaults(&g_imu_cal);
     {
         imu_calib_t loaded;
-        int rc = imu_calib_load(IMU_CALIB_PATH, &loaded);
+        cal_log("[CAL_PATH] using %s", CAL_FILE_PATH);
+        cal_log("[CAL_STATE] loading calibration");
+        int rc = imu_calib_load(CAL_FILE_PATH, &loaded);
         if (rc == 0) {
             g_imu_cal = loaded;
             /* Mirror the SI bias values into the legacy counts representation so
@@ -4677,32 +5510,40 @@ C.gnss_speed_rejected = false;
             g_cal.accel_O[2] -= g_imu_cal.accel_bias[2];
             time_t cal_t = (time_t)g_imu_cal.created_unix_s;
             double age_s = (cal_t > 0) ? difftime(time(NULL), cal_t) : -1.0;
-            cal_log("[CAL_LOAD ok] path=%s age_s=%.0f gyro_bias=(%.3f,%.3f,%.3f)deg/s "
+            cal_log("[CAL_LOAD] ok path=%s age_s=%.0f gyro_bias=(%.3f,%.3f,%.3f)deg/s "
                     "accel_bias=(%.3f,%.3f,%.3f) flags=0x%x",
-                    IMU_CALIB_PATH, age_s,
+                    CAL_FILE_PATH, age_s,
                     g_imu_cal.gyro_bias[0]/DEG2RAD, g_imu_cal.gyro_bias[1]/DEG2RAD, g_imu_cal.gyro_bias[2]/DEG2RAD,
                     g_imu_cal.accel_bias[0], g_imu_cal.accel_bias[1], g_imu_cal.accel_bias[2],
                     g_imu_cal.valid_flags);
+            g_saved_calibration_loaded = 1;
+            g_calibration_valid        = 1;
+            cal_state_set(CAL_STATE_LOADED_VALID);     /* LED steady ON */
         } else if (rc == -1 && errno == ENOENT) {
-            cal_log("[CAL_DEFAULT] no saved calibration at %s -- using identity calibration",
-                    IMU_CALIB_PATH);
-        } else {
-            cal_log("[CAL_LOAD rejected] reason=%d path=%s -- using identity calibration; "
-                    "EKF process noise will be inflated until boot cal completes.",
-                    rc, IMU_CALIB_PATH);
+            cal_log("[CAL_DEFAULT] no valid saved calibration; boot calibration required");
             imu_calib_set_defaults(&g_imu_cal);
-            g_imu_quality_degraded = 1;     /* be cautious until boot cal validates */
+            g_imu_quality_degraded = 1;
+            /* g_cal_state remains LOADING — fusion_thread will transition us
+             * to BOOT_RUNNING and (eventually) BOOT_SUCCESS. */
+        } else {
+            cal_log("[CAL_LOAD] rejected reason=%d path=%s -- boot calibration required",
+                    rc, CAL_FILE_PATH);
+            imu_calib_set_defaults(&g_imu_cal);
+            g_imu_quality_degraded = 1;
         }
         imu_calib_sync_from_g_cal(&g_imu_cal);
     }
 
-    cal_log("[CAL] Power-on IMU calibration will run on every boot (will refine and persist).");
+    if (!g_calibration_valid) {
+        cal_log("[CAL] Power-on IMU calibration will run; navigation is BLOCKED until success.");
+    } else {
+        cal_log("[CAL] Saved calibration loaded; navigation is permitted.");
+        cal_log("[NAV_ALLOWED] calibration valid, starting AHRS/EKF");
+    }
 
-    C.imu_cal_done =false;
+    C.imu_cal_done = (g_calibration_valid ? true : false);
     C.imu_cal_in_progress = false;
     C.imu_cal_start_s = 0.0;
-
-    cal_led_init();
 
     pthread_t th_imu, th_gnss, th_fuse;
     if (pthread_create(&th_imu, NULL, imu_thread, &C) != 0) { perror("imu_thread"); return 1; }
@@ -4726,9 +5567,9 @@ C.gnss_speed_rejected = false;
     /* Final persistence: flush any runtime-cal refinements to disk on clean exit. */
 #if ENABLE_CAL_FILE_SAVE
     if ((g_imu_cal.valid_flags & (CAL_FLAG_BOOT_OK | CAL_FLAG_RUNTIME_OK)) != 0) {
-        if (imu_calib_save_atomic(IMU_CALIB_PATH, &g_imu_cal) == 0) {
+        if (imu_calib_save_atomic(CAL_FILE_PATH, &g_imu_cal) == 0) {
             cal_log("[CAL_EXIT] saved calibration to %s (flags=0x%x)",
-                    IMU_CALIB_PATH, g_imu_cal.valid_flags);
+                    CAL_FILE_PATH, g_imu_cal.valid_flags);
         }
     }
 #endif
