@@ -294,25 +294,43 @@ static bool nmea_latlon_to_e7(const char *val, const char *hem, s32 *out_e7)
 }
 
 /**
- * @brief Convert speed in knots to mm/s.
+ * @brief Convert NMEA ground-speed-in-knots ASCII to millimetres per second.
  *
- * 1 knot = 0.514444 m/s.
+ * Unit chain (kept explicit to prevent factor-of-1000 errors):
+ *   1 knot = 0.514444 m/s = 514.444 mm/s
+ *   strtod_milli() returns the input in milli-knots (knots x 1000), so:
  *
- * @param knots Speed over ground in knots (ASCII).
+ *       speed_mm_s = milli_knots * 514444 / 1_000_000
  *
- * @return Speed in mm/s.
+ * Verified against the GNSS spec examples:
+ *   "0.50"  knots ->  ~257 mm/s
+ *   "2.744" knots -> ~1412 mm/s
+ *   "10.0"  knots -> ~5144 mm/s
+ *   "29.05" knots -> ~14945 mm/s
+ *
+ * @param knots Speed over ground in knots (NMEA ASCII field).
+ *
+ * @return Speed in millimetres per second. Returns 0 for empty, invalid,
+ *         negative, or non-finite input. Clamped at U32_MAX (an impossibly
+ *         high speed) to avoid wraparound.
  */
-
 static u32 knots_to_mmps_maybe(const char *knots)
 {
-    /* Speed over ground in knots => m/s * 1000*/
-    /* 1 knot = 0.514444 m/s */
-    long mps_milli = (strtod_milli(knots, 0) * 514444 + 500000) / 1000;
-    if ( mps_milli < 0)
-    {
-        mps_milli = 0;
-    }
-    return (u32)mps_milli;
+    /* Use s64 throughout: on a 32-bit kernel a plain `long` is 32 bits and
+     * milli_knots * 514444 overflows for any speed above ~4 knots. */
+    s64 milli_knots = (s64)strtod_milli(knots, 0);
+
+    if (milli_knots <= 0)
+        return 0;   /* empty, negative or non-numeric input */
+
+    /* Round-to-nearest with the +500000 offset (half the divisor). */
+    s64 mm_per_s = (milli_knots * 514444LL + 500000LL) / 1000000LL;
+
+    if (mm_per_s < 0)
+        return 0;
+    if (mm_per_s > (s64)U32_MAX)
+        return U32_MAX;
+    return (u32)mm_per_s;
 }
 
 /******************* Driver Core ***************************/
@@ -471,43 +489,50 @@ MODULE_DEVICE_TABLE(of, neo6m_of_match);
              * RMC fields:
              * 1 = time, 2 = status A/V, 3=lat, 4=N/S, 5=lon, 6=E/W,
              * 7 = sog(knots), 8 = cog, 9 = date, ...
+             *
+             * Strict gating: status 'A' means the receiver has a valid
+             * navigation solution. Anything else ('V' = void) means the
+             * downstream fields (lat/lon/speed/course/UTC) cannot be
+             * trusted, so we MUST NOT refresh them — otherwise stale
+             * values get repeatedly republished as "current".
              */
             const char *status = (ntok > 2) ? tok[2] : "";
             bool active = (status && *status == 'A');
-            if( active )
-            {
+
+            if (active) {
                 newfix.have_fix = 1;
-            } else {
-                newfix.have_fix = 0;
-            }
-            neo6m_parse_utc(&newfix, tok, ntok);
+                neo6m_parse_utc(&newfix, tok, ntok);
 
-            /*Lat/Lon*/
-            if( ntok > 5 )
-            {
-                s32 lat_e7, lon_e7;
-                if ( nmea_latlon_to_e7(tok[3], tok[4], &lat_e7))
-                {
-                    newfix.lat_e7 = lat_e7;
+                /* Lat / Lon */
+                if (ntok > 5) {
+                    s32 lat_e7, lon_e7;
+                    if (nmea_latlon_to_e7(tok[3], tok[4], &lat_e7))
+                        newfix.lat_e7 = lat_e7;
+                    if (nmea_latlon_to_e7(tok[5], tok[6], &lon_e7))
+                        newfix.lon_e7 = lon_e7;
                 }
-                if ( nmea_latlon_to_e7(tok[5], tok[6], &lon_e7))
-                {
-                    newfix.lon_e7 = lon_e7;
+
+                /* Speed (knots) */
+                if (ntok > 7 && tok[7] && *tok[7])
+                    newfix.speed_mmps = knots_to_mmps_maybe(tok[7]);
+
+                /* Course over ground (deg) — only valid when present */
+                if (ntok > 8 && tok[8] && *tok[8]) {
+                    long hdg_milli = strtod_milli(tok[8], 0); /* deg x1000 */
+                    newfix.course_deg_e5 = (s32)(hdg_milli * 100);
+                    newfix.heading_valid = true;
+                } else {
+                    newfix.heading_valid = false;
                 }
-            }
-
-            /*Speed (Knots)*/
-            if( ntok > 7 )
-            {
-                newfix.speed_mmps = knots_to_mmps_maybe(tok[7]);
-            }
-
-            if( ntok > 8 && tok[8] && *tok[8] ){
-                long hdg_milli = strtod_milli(tok[8], 0); /* deg x1000 */
-                newfix.course_deg_e5 = (s32)(hdg_milli * 100);
-                newfix.heading_valid = true;
             } else {
+                /* Status 'V' (void) — invalidate fix and drop all
+                 * fix-dependent dynamic state. Do NOT update lat/lon,
+                 * altitude, speed (other than zeroing it), course, or
+                 * UTC from this sentence. */
+                newfix.have_fix      = 0;
                 newfix.heading_valid = false;
+                newfix.speed_mmps    = 0;
+                dev_dbg(priv->dev, "RMC invalid status (V) — fix cleared\n");
             }
         }
         else if( (!strncmp(tok[0] + 1, "GPGGA", 5)) || (!strncmp(tok[0] + 1, "GNGGA", 5)))
@@ -515,73 +540,121 @@ MODULE_DEVICE_TABLE(of, neo6m_of_match);
             /**
              * GGA fields:
              * 1= time, 2= lat, 3 = N/S, 4 = lon, 5 = E/W, 6=fix(0 = no),
-             * 7 = numstats, 8 = hdop, 9 = alt(MSL), 10 = M, 11= geoid sep...
+             * 7 = numsats, 8 = hdop, 9 = alt(MSL), 10 = M, 11= geoid sep...
+             *
+             * Strict gating: fixq 0 = "no fix". Lat/lon/altitude from a
+             * no-fix GGA are stale (often the last good values held by
+             * the receiver) and must not be republished as fresh.
              */
             long fixq = ((ntok > 6) && (*tok[6])) ? strtol_safe(tok[6], 0) : 0;
-            if ( fixq > 0 ) newfix.have_fix = 1;
-            /* lat/lon */
-            if( ntok > 5 ){
-                s32 lat_e7, lon_e7;
-                if( nmea_latlon_to_e7(tok[2], tok[3], &lat_e7))
-                { newfix.lat_e7 = lat_e7;}
-                if( nmea_latlon_to_e7(tok[4], tok[5], &lon_e7))
-                { newfix.lon_e7 = lon_e7;}
-            }
-            /* altitude in meters -> mm*/
-            if( (ntok > 9) && (tok[9]) && (*tok[9]))
-            {
-                long alt_milli = strtod_milli(tok[9], 0);
-                newfix.alt_mm = (s32)(alt_milli * 1); /* milli-meters already */
-            }
 
-            /* HDOP (field 8) as x100 */
-            if( ntok > 8 && tok[8] && *tok[8]) {
-                long hdop_milli = strtod_milli(tok[8], 0); /* x1000 */
-                newfix.hdop_x100 = (u16)((hdop_milli + 5) / 10); /* x100 */
-                newfix.hdop_valid = true;
-            }
+            if (fixq > 0) {
+                newfix.have_fix = 1;
 
-            /* UTC from field[1] if not set by RMC*/
-            if ((ntok > 1) && (tok[1]) && (*tok[1])) {
-                const char *t = tok[1];
-                long hh = strtol_safe(t, 0) / 10000;
-                long mm = (strtol_safe(t, 0) / 100) % 100;
-                long ss = strtol_safe(t, 0) % 100;
-                const char *dot = strchr(t, '.');
-                long ms = 0;
-
-                if(dot) {
-                    ms = strtol_safe(dot + 1, 0);
-                    while (ms > 999) ms /= 10;
+                /* lat/lon */
+                if (ntok > 5) {
+                    s32 lat_e7, lon_e7;
+                    if (nmea_latlon_to_e7(tok[2], tok[3], &lat_e7))
+                        newfix.lat_e7 = lat_e7;
+                    if (nmea_latlon_to_e7(tok[4], tok[5], &lon_e7))
+                        newfix.lon_e7 = lon_e7;
                 }
-                newfix.utc_hour = clamp_t(int, hh, 0, 23);
-                newfix.utc_min = clamp_t(int, mm, 0, 59);
-                newfix.utc_sec = clamp_t(int, ss, 0, 60);
-                newfix.utc_millis = clamp_t(int, ms, 0, 999);
+                /* altitude in metres -> mm */
+                if ((ntok > 9) && tok[9] && *tok[9]) {
+                    long alt_milli = strtod_milli(tok[9], 0);
+                    newfix.alt_mm = (s32)alt_milli;   /* milli-metres already */
+                }
+                /* HDOP (field 8) as x100 */
+                if (ntok > 8 && tok[8] && *tok[8]) {
+                    long hdop_milli = strtod_milli(tok[8], 0); /* x1000 */
+                    newfix.hdop_x100 = (u16)((hdop_milli + 5) / 10); /* x100 */
+                    newfix.hdop_valid = true;
+                }
+                /* UTC from field[1] if not set by RMC */
+                if ((ntok > 1) && tok[1] && *tok[1]) {
+                    const char *t = tok[1];
+                    long hh = strtol_safe(t, 0) / 10000;
+                    long mm = (strtol_safe(t, 0) / 100) % 100;
+                    long ss = strtol_safe(t, 0) % 100;
+                    const char *dot = strchr(t, '.');
+                    long ms = 0;
+                    if (dot) {
+                        ms = strtol_safe(dot + 1, 0);
+                        while (ms > 999) ms /= 10;
+                    }
+                    newfix.utc_hour   = clamp_t(int, hh, 0, 23);
+                    newfix.utc_min    = clamp_t(int, mm, 0, 59);
+                    newfix.utc_sec    = clamp_t(int, ss, 0, 60);
+                    newfix.utc_millis = clamp_t(int, ms, 0, 999);
+                }
+            } else {
+                /* fixq == 0: no position fix. Clear fix flag and drop
+                 * speed / heading. Lat/lon/altitude are intentionally
+                 * NOT overwritten — the last good values are preserved
+                 * as the "best previous known" snapshot but flagged
+                 * invalid via have_fix = 0. */
+                newfix.have_fix      = 0;
+                newfix.heading_valid = false;
+                newfix.speed_mmps    = 0;
+                /* HDOP from a no-fix sentence is still informative (DOP
+                 * is purely geometric) — update it if the field is non-
+                 * empty, but the position quality remains "invalid". */
+                if (ntok > 8 && tok[8] && *tok[8]) {
+                    long hdop_milli = strtod_milli(tok[8], 0);
+                    newfix.hdop_x100 = (u16)((hdop_milli + 5) / 10);
+                    newfix.hdop_valid = true;
+                }
+                dev_dbg(priv->dev, "GGA no fix (fixq=0) — position invalidated\n");
             }
-        } 
-        else if ( (!strncmp(tok[0] + 1, "GPVTG", 5)) || (!strncmp(tok[0] + 1, "GNVTG", 5))) {
+        }
+        else if ((!strncmp(tok[0] + 1, "GPVTG", 5)) || (!strncmp(tok[0] + 1, "GNVTG", 5)))
+        {
             /**
              * VTG fields:
-             * 5 = speed(knots), 7= speed(km/h)- we prefer knots (field 5)
+             *   1 = course true (deg), 2 = 'T'
+             *   3 = course magnetic, 4 = 'M'
+             *   5 = speed (knots),    6 = 'N'
+             *   7 = speed (km/h),     8 = 'K'
+             *   9 = mode indicator (NMEA 2.3+): A=autonomous D=differential
+             *                                   E=estimated  N=no fix
+             *
+             * VTG carries no fix-quality field of its own, so we rely on
+             * have_fix that was set by the most recent RMC/GGA. If the
+             * fix is currently invalid, VTG must not refresh speed or
+             * course — otherwise stale course/speed from before the
+             * outage gets republished as if it were live.
              */
-            if(!newfix.heading_valid) {
-                if( ntok >1 && tok[1] && *tok[1]) {
-                long hdg_milli = strtod_milli(tok[1], 0);
-                newfix.course_deg_e5 = (s32)(hdg_milli * 100);
-                newfix.heading_valid = true;
-               } else {
+            const char *vtg_mode = (ntok > 9 && tok[9]) ? tok[9] : NULL;
+            bool vtg_no_fix = (vtg_mode && *vtg_mode == 'N');
+
+            if (!newfix.have_fix || vtg_no_fix) {
+                /* Drop fix-dependent dynamics from this VTG */
                 newfix.heading_valid = false;
-               }
+                newfix.speed_mmps    = 0;
+                dev_dbg(priv->dev, "VTG ignored: %s\n",
+                        vtg_no_fix ? "mode=N" : "no valid fix");
+            } else {
+                /* Course (field 1, degrees true). VTG is the authoritative
+                 * COG source — always overwrite when the field is valid. */
+                if (ntok > 1 && tok[1] && *tok[1]) {
+                    long hdg_milli = strtod_milli(tok[1], 0);
+                    newfix.course_deg_e5 = (s32)(hdg_milli * 100);
+                    newfix.heading_valid = true;
+                } else {
+                    /* No course in this VTG — mark heading invalid even
+                     * if RMC populated it earlier; otherwise stale RMC
+                     * COG masquerades as a fresh VTG observation. */
+                    newfix.heading_valid = false;
+                }
 
+                /* Speed (field 5, knots). When fix is valid but the speed
+                 * field is empty, preserve the previous speed value — do
+                 * NOT zero it (the receiver may simply omit it momentarily
+                 * during steady motion). */
+                if (ntok > 5 && tok[5] && *tok[5])
+                    newfix.speed_mmps = knots_to_mmps_maybe(tok[5]);
             }
-            
-
-            if( (ntok > 5) &&( tok[5]) && (*tok[5])){
-                newfix.speed_mmps = knots_to_mmps_maybe(tok[5]);
-            }
-        }        
-        
+        }
     }
     newfix.monotonic_ns = ktime_get_boottime_ns();
 

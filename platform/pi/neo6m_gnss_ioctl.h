@@ -26,7 +26,8 @@ struct neo6m_gnss_fix {
     __s32 alt_mm;        /**< Altitude above mean sea level in mm */
 
     /** Velocity */
-    __s32 speed_mmps;        /**< Ground Speed in mm/s * 10^7 (from RMC/VTG)*/
+    __s32 speed_mmps;        /**< Ground speed in millimetres per second from RMC/VTG.
+                              *   Userspace: speed_mps = speed_mmps / 1000.0 */
 
     /** Heading / Course Over Ground  */
     __s32 course_deg_e5;     /**< Course/heading over ground in degrees x 10^5  */
