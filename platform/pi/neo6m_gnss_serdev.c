@@ -316,24 +316,32 @@ static bool nmea_latlon_to_e7(const char *val, const char *hem, s32 *out_e7)
  */
 static u32 knots_to_mmps_maybe(const char *knots)
 {
-    /* Use s64/u64 throughout: on a 32-bit kernel `long` is 32 bits and
-     * milli_knots * 514444 overflows for any speed above ~4 knots. */
-    s64 milli_knots = (s64)strtod_milli(knots, 0);
-
-    if (milli_knots <= 0)
-        return 0;   /* empty, negative or non-numeric input */
-
-    /* Round-to-nearest with the +500000 offset (half the divisor).
+    /* Pure 32-bit implementation — avoids 64-bit divides that would
+     * require libgcc helpers (__aeabi_ldivmod / __udivdi3) which the
+     * kernel does not link on 32-bit ARM.
      *
-     * Kernel-safety note: a literal "/ 1000000LL" on an s64 emits a call
-     * to __aeabi_ldivmod (libgcc) on 32-bit ARM, which the kernel does
-     * NOT link — the build fails with "__aeabi_ldivmod undefined".
-     * Use div_u64() from <linux/math64.h> instead. Numerator is always
-     * positive at this point (milli_knots > 0 enforced above). */
-    u64 num     = (u64)milli_knots * 514444ULL + 500000ULL;
-    u64 mm_per_s = div_u64(num, 1000000ULL);
+     * Unit chain:
+     *   strtod_milli() returns the input in milli-knots (knots × 1000).
+     *   1 knot = 0.514444 m/s = 514.444 mm/s.
+     *   mm/s = mk × 514444 / 1_000_000.
+     *
+     * Overflow avoidance:
+     *   mk × 514444 overflows a u32 for mk > ~8348 (≈ 8.3 knots).
+     *   Split mk = 1000·q + r with q = mk/1000, r = mk%1000, then:
+     *       mm/s = q × 514444 / 1000   +   r × 514444 / 1_000_000
+     *   The two intermediate products fit in u32 for any plausible q
+     *   (we clamp to 1000 knots beforehand). Both divisions are u32 /
+     *   u32 and compile to a single native ARM instruction — no helper.
+     */
+    long parsed;
+    u32  mk, q, r, a, b;
 
-    if (mm_per_s > (u64)U32_MAX)
+    parsed = strtod_milli(knots, 0);
+    if (parsed <= 0)
+        return 0;                                     /* empty / negative / NaN */
+
+    /* Saturation safety: 1000 knots = ~514 m/s, well beyond any vehicle. */
+    if (parsed > 1000000L)
         return U32_MAX;
 
     mk = (u32)parsed;
@@ -345,7 +353,6 @@ static u32 knots_to_mmps_maybe(const char *knots)
 
     return a + b;
 }
-
 /******************* Driver Core ***************************/
 struct neo6m_priv {
     struct device *dev;
