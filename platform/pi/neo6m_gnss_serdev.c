@@ -190,17 +190,18 @@ static inline long strtod_milli(const char *p, long def )
 static bool nmea_latlon_to_e7(const char *val, const char *hem, s32 *out_e7)
 {
     long sign = 1;
-    long milli = 0;
     long deg;
     size_t len;
     const char *dot;
     size_t mm_start;
     char deg_str[4] = {0};
     char mm_str[16] = {0};
-    long deg_e7;
-    long minutes_deg_milli;
-    long minutes_e7;
     long total;
+    /* Note: minutes parsing uses locals (mm_whole, mm_frac, minutes_e7_raw,
+     * degrees_e7_from_min) inside the inner block below — no top-level
+     * declarations needed for those. The previous declarations of
+     * `milli`, `deg_e7`, `minutes_deg_milli`, `minutes_e7` were leftovers
+     * from a prior algorithm and have been removed. */
 
     if (!val || !*val || !hem || !*hem) {
         return false; // empty field
