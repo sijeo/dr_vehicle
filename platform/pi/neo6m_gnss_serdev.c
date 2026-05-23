@@ -33,6 +33,7 @@
 #include <linux/ctype.h>
 #include <linux/cdev.h>        // added
 #include <linux/string.h>      // added
+#include <linux/math64.h>      // div_u64 / div_s64 — kernel-safe 64-bit divide
 
 #include "neo6m_gnss_ioctl.h"
 
@@ -316,7 +317,7 @@ static bool nmea_latlon_to_e7(const char *val, const char *hem, s32 *out_e7)
  */
 static u32 knots_to_mmps_maybe(const char *knots)
 {
-    /* Use s64 throughout: on a 32-bit kernel a plain `long` is 32 bits and
+    /* Use s64/u64 throughout: on a 32-bit kernel `long` is 32 bits and
      * milli_knots * 514444 overflows for any speed above ~4 knots. */
     s64 mm_per_s = 0;
     s64 milli_knots = (s64)strtod_milli(knots, 0);
@@ -325,7 +326,7 @@ static u32 knots_to_mmps_maybe(const char *knots)
         return 0;   /* empty, negative or non-numeric input */
 
     /* Round-to-nearest with the +500000 offset (half the divisor). */
-    mm_per_s = (milli_knots * 514444LL + 500000LL) / 1000000LL;
+    s64 mm_per_s = (milli_knots * 514444LL + 500000LL) / 1000000LL;
 
     if (mm_per_s < 0)
         return 0;
