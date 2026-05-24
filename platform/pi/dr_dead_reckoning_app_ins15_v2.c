@@ -347,13 +347,17 @@ static int cal_led_value_fd = -1;
 
 // ------------------------- Small math utils -------------------------
 
-static inline uint64_t monotonic_ns(void) {
+static inline uint32_t monotonic_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    return (uint32_t)ts.tv_sec * 1000u + (uint32_t)(ts.tv_nsec / 1000000u);
 }
 
-static inline double now_sec(void) { return (double)monotonic_ns() * 1e-9; }
+static inline double now_sec(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
 
 static inline float clampf(float x, float lo, float hi) {
     return (x < lo) ? lo : (x > hi) ? hi : x;
@@ -1347,7 +1351,7 @@ typedef struct {
     float    mount_R_bv[3][3];     // IMU → vehicle frame (default I)
 
     float    temperature_c;        // sensor temperature at calibration time
-    uint64_t created_unix_s;       // wall-clock at creation
+    uint32_t created_unix_s;       // wall-clock at creation
 
     // Quality metrics captured during the boot-stationary window
     float    boot_accel_var[3];          // per-axis accel sample variance (m²/s⁴)
@@ -2352,7 +2356,7 @@ static int apply_poweron_calibration(still_accum_t *A,
     cand.boot_gyro_norm_mean  = (float)gyro_norm_mean;
     cand.boot_gyro_norm_std   = (float)sqrt(fmax(0.0, gyro_norm_var));
     cand.boot_sample_count    = (uint32_t)A->N;
-    cand.created_unix_s       = (uint64_t)time(NULL);
+    cand.created_unix_s       = (uint32_t)time(NULL);
     cand.temperature_c        = 25.0f;
     cand.valid_flags          = CAL_FLAG_BOOT_OK;
 
@@ -2515,7 +2519,7 @@ static bool apply_stationary_calibration( still_accum_t *A, bool zupt_cond,
     */
    typedef struct {
     bool have_gnss;
-    int64_t last_gnss_ns;
+    uint32_t last_gnss_ms;
     float last_gnss_yaw;
 
     bool seg_active;
@@ -2537,9 +2541,9 @@ static bool apply_stationary_calibration( still_accum_t *A, bool zupt_cond,
     Y->seg_last_update_s = now_s;
    }
 
-   static void yaw_learn_on_gnss_fix( yaw_learn_t *Y, float yaw_enu_rad, int64_t fix_ns ) {
+   static void yaw_learn_on_gnss_fix( yaw_learn_t *Y, float yaw_enu_rad, uint32_t fix_ms ) {
     Y->have_gnss = true;
-    Y->last_gnss_ns = fix_ns;
+    Y->last_gnss_ms = fix_ms;
     Y->last_gnss_yaw = yaw_enu_rad;
     if( Y->seg_active ){
         Y->seg_yaw_end = yaw_enu_rad;
@@ -3116,6 +3120,11 @@ static int get_gnss_fix_ioctl(int fd, struct neo6m_gnss_fix *f) {
     return 0;
 }
 
+static int get_gnss_fix_v2_ioctl(int fd, struct neo6m_gnss_fix_v2 *f) {
+    if (ioctl(fd, NEO6M_GNSS_IOC_GET_FIX_V2, f) != 0) return -errno;
+    return 0;
+}
+
 // ------------------------- Threading / Context -------------------------
 
 /* Compact, fully-derived snapshot of a candidate GNSS fix. Built each time
@@ -3218,7 +3227,7 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
     char dbglog_filename[256];
     double last_log_s;
 
-    int64_t last_gnss_fix_mono_ns;
+    uint32_t last_gnss_fix_mono_ms;
 
     vec3f gnss_enu_last;
     bool gnss_enu_last_valid;
@@ -3264,6 +3273,11 @@ int   last_gnss_used_vel;   // 1 if a GNSS vel update was accepted since last lo
     uint32_t gnss_repeated_count;
     int      gnss_last_fresh;        /* 1 if most recent ioctl was a fresh fix, 0 otherwise */
     double   last_fresh_gnss_s;      /* monotonic time of last accepted fresh fix (for CSV age) */
+
+    /* v2 ioctl sequence tracking (used when driver supports NEO6M_GNSS_IOC_GET_FIX_V2) */
+    uint32_t last_pos_seq;           /* pos_seq of last processed position update */
+    uint32_t last_vel_seq;           /* vel_seq of last processed velocity update */
+    int      gnss_use_v2;            /* 1 if driver supports v2 ioctl, 0 = v1 fallback */
 
     /* GNSS validation layer (decides what reaches AB tracker + EKF + AHRS yaw). */
     gnss_validated_fix_t gnss_prev_valid;      /* last fix that passed validation */
@@ -3399,7 +3413,7 @@ static void dbg_printf(ctx_t *C, const char *fmt, ... ){
 
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    fprintf(C->dbglog, "[%lld.%03lld]", (long long)ts.tv_sec, (long long)(ts.tv_nsec/1000000));
+    fprintf(C->dbglog, "[%ld.%03ld]", (long)ts.tv_sec, (long)(ts.tv_nsec/1000000));
 
     va_list ap;
     va_start( ap, fmt );
@@ -3429,7 +3443,7 @@ static void cal_log(const char *fmt, ...)
 
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    fprintf(out, "[%lld.%03lld]", (long long)ts.tv_sec, (long long)(ts.tv_nsec/1000000));
+    fprintf(out, "[%ld.%03ld]", (long)ts.tv_sec, (long)(ts.tv_nsec/1000000));
 
     va_list ap;
     va_start(ap, fmt);
@@ -3749,203 +3763,354 @@ static void* gnss_thread(void *arg) {
         return NULL;
     }
 
-    while (__atomic_load_n(&C->running, __ATOMIC_ACQUIRE)) {
-        struct neo6m_gnss_fix f;
-        int rc = get_gnss_fix_ioctl(fd, &f);
-        if (rc != 0) {
-            usleep(10000);
-            continue;
+    /* ---- Probe for v2 ioctl support at startup ---- */
+    int use_v2 = 0;
+    {
+        struct neo6m_gnss_fix_v2 probe = {0};
+        int rc = ioctl(fd, NEO6M_GNSS_IOC_GET_FIX_V2, &probe);
+        /* rc==0: driver supports v2.  rc<0 && errno!=ENOTTY: transient error
+         * but the ioctl exists — use v2.  errno==ENOTTY: driver is old. */
+        if (rc == 0 || (rc < 0 && errno != ENOTTY)) {
+            use_v2 = 1;
+            dbg_printf(C, "GNSS_V2 enabled: using pos_seq/vel_seq for freshness detection");
+        } else {
+            dbg_printf(C, "GNSS_FALLBACK old ioctl: stale detection via UTC+lat/lon (limited)");
         }
+        pthread_mutex_lock(&C->mtx);
+        C->gnss_use_v2 = use_v2;
+        pthread_mutex_unlock(&C->mtx);
+    }
 
-        double tmeas = now_sec();
+    while (__atomic_load_n(&C->running, __ATOMIC_ACQUIRE)) {
 
-        /* ---- Stale-fix detector (run BEFORE acquiring the mutex / before
-         *      touching any shared state). If the underlying fix has not
-         *      advanced since the last accepted one, we drop it entirely:
-         *        - last_gnss_meas_s is NOT updated  (so gnss_present can
-         *          correctly time out and outage_s begins counting)
-         *        - have_gnss stays false (no fusion)
-         *        - AB tracker / position+velocity updates are NOT called
-         *        - rate-limited GNSS_STALE log line in the debug file
-         *      Counters are mirrored into ctx_t for CSV/debug visibility.  */
-        int is_fresh = gnss_fix_is_fresh(&g_gnss_fresh, &f, tmeas);
+        if (use_v2) {
+            /* ================================================================
+             *   v2 path — driver seq counters are the authoritative freshness
+             *   signal.  pos_seq advances only when a new position epoch is
+             *   stored; vel_seq only when fresh speed/course is stored.
+             * ================================================================ */
+            struct neo6m_gnss_fix_v2 fv2 = {0};
+            if (get_gnss_fix_v2_ioctl(fd, &fv2) != 0) {
+                if (errno == ENOTTY) {
+                    /* Driver downgraded at runtime — fall back to v1 */
+                    use_v2 = 0;
+                    pthread_mutex_lock(&C->mtx);
+                    C->gnss_use_v2 = 0;
+                    pthread_mutex_unlock(&C->mtx);
+                    dbg_printf(C, "GNSS_FALLBACK old ioctl (v2 lost at runtime)");
+                }
+                usleep(10000);
+                continue;
+            }
 
-        if (!is_fresh) {
-            /* Update visible counters and log at low rate, then sleep. */
+            double tmeas = now_sec();
+
+            /* Read the seq cursors we last processed (snapshot outside main lock) */
+            uint32_t prev_pos_seq, prev_vel_seq;
             pthread_mutex_lock(&C->mtx);
-            C->gnss_stale_reject_count = g_gnss_fresh.stale_reject_count;
-            C->gnss_repeated_count     = g_gnss_fresh.repeated_count;
-            C->gnss_last_fresh         = 0;
+            prev_pos_seq = C->last_pos_seq;
+            prev_vel_seq = C->last_vel_seq;
             pthread_mutex_unlock(&C->mtx);
 
-            static double t_stale_last = 0.0;
-            if (tmeas - t_stale_last > 2.0) {
-                dbg_printf(C, "GNSS_STALE repeated_count=%u lat=%.7f lon=%.7f utc=%02u:%02u:%02u.%03u",
-                           g_gnss_fresh.repeated_count,
-                           g_gnss_fresh.last_lat_deg, g_gnss_fresh.last_lon_deg,
-                           f.utc_hour, f.utc_min, f.utc_sec, f.utc_millis);
-                t_stale_last = tmeas;
+            int pos_fresh = fv2.pos_valid && (fv2.pos_seq != prev_pos_seq);
+            int vel_fresh = fv2.vel_valid && (fv2.vel_seq != prev_vel_seq);
+
+            if (!pos_fresh && !vel_fresh) {
+                /* Nothing new from driver — do not update last_gnss_meas_s,
+                 * do not set have_gnss, do not fuse. */
+                pthread_mutex_lock(&C->mtx);
+                C->gnss_stale_reject_count++;
+                C->gnss_last_fresh = 0;
+                pthread_mutex_unlock(&C->mtx);
+
+                static double t_stale_v2 = 0.0;
+                if (tmeas - t_stale_v2 > 2.0) {
+                    dbg_printf(C, "GNSS_STALE pos_seq=%u vel_seq=%u have_fix=%d",
+                               fv2.pos_seq, fv2.vel_seq, (int)fv2.have_fix);
+                    t_stale_v2 = tmeas;
+                }
+                usleep(100000);
+                continue;
             }
-            /* Periodic freshness summary (10 s) — written even when stale */
-            static double t_freshlog = 0.0;
-            if (tmeas - t_freshlog > 10.0) {
-                double age = tmeas - g_gnss_fresh.last_fresh_monotonic_s;
-                dbg_printf(C, "GNSS_FRESHNESS fresh=%u stale=%u repeated=%u last_age=%.2fs",
-                           g_gnss_fresh.fresh_count,
-                           g_gnss_fresh.stale_reject_count,
-                           g_gnss_fresh.repeated_count, age);
-                t_freshlog = tmeas;
-            }
 
-            usleep(100000);     /* ~10 Hz poll, same as the fresh path */
-            continue;
-        }
+            /* At least one quantity is fresh — log and process */
+            dbg_printf(C, "GNSS_FRESH pos_seq=%u vel_seq=%u pos_fresh=%d vel_fresh=%d",
+                       fv2.pos_seq, fv2.vel_seq, pos_fresh, vel_fresh);
 
-        /* ---- Fresh fix: proceed with the normal flow ---- */
-        pthread_mutex_lock(&C->mtx);
+            pthread_mutex_lock(&C->mtx);
 
-        C->have_gnss = false;
-        C->gnss_have_fix = f.have_fix ? 1 : 0;
-        C->last_gnss_meas_s = tmeas;             /* only on fresh accepted fix */
-        C->gnss_fresh_count        = g_gnss_fresh.fresh_count;
-        C->gnss_stale_reject_count = g_gnss_fresh.stale_reject_count;
-        C->gnss_repeated_count     = g_gnss_fresh.repeated_count;
-        C->gnss_last_fresh         = 1;
-        C->last_fresh_gnss_s       = tmeas;
-        bool new_fix = true;
-        if (C->gnss_have_fix) {
-            if (C->last_gnss_fix_mono_ns == f.monotonic_ns) {
-                new_fix = false;
-            } else {
-                C->last_gnss_fix_mono_ns = f.monotonic_ns;
-            }
-        }
+            C->have_gnss    = false;  /* reset; set true below only if pos fresh */
+            C->gnss_have_fix = fv2.have_fix ? 1 : 0;
+            C->gnss_last_fresh = 1;
 
-        /* Periodic freshness summary log (every 10 s on the fresh path too) */
-        {
-            static double t_freshlog = 0.0;
-            if (tmeas - t_freshlog > 10.0) {
-                dbg_printf(C, "GNSS_FRESHNESS fresh=%u stale=%u repeated=%u last_age=%.2fs",
-                           g_gnss_fresh.fresh_count,
-                           g_gnss_fresh.stale_reject_count,
-                           g_gnss_fresh.repeated_count, 0.0);
-                t_freshlog = tmeas;
-            }
-        }
+            /* ---- Fresh position ---- */
+            if (pos_fresh) {
+                C->last_pos_seq      = fv2.pos_seq;
+                C->last_gnss_meas_s  = tmeas;   /* outage timer resets on fresh pos */
+                C->last_fresh_gnss_s = tmeas;
+                C->gnss_fresh_count++;
 
-        if (C->gnss_have_fix) {
-            double lat_deg = (double)f.lat_e7 / 1e7;
-            double lon_deg = (double)f.lon_e7 / 1e7;
-            double alt_m   = (double)f.alt_mm / 1000.0;
+                double lat_deg = (double)fv2.lat_e7 / 1e7;
+                double lon_deg = (double)fv2.lon_e7 / 1e7;
+                double alt_m   = (double)fv2.alt_mm / 1000.0;
+                C->gnss_lat_rad = lat_deg * (M_PI / 180.0);
+                C->gnss_lon_rad = lon_deg * (M_PI / 180.0);
+                C->gnss_alt_m   = alt_m;
 
-            C->gnss_lat_rad = lat_deg * (M_PI/180.0);
-            C->gnss_lon_rad = lon_deg * (M_PI/180.0);
-            C->gnss_alt_m   = alt_m;
-            float raw_speed = (float)f.speed_mmps / 1000.0f;
-
-            // --- GNSS speed spike filter ---
-            // Reject if: (a) exceeds absolute vehicle limit, or
-            //            (b) rate-of-change exceeds max physically possible acceleration
-            bool speed_ok = true;
-            C->gnss_speed_rejected = false;
-
-            if (raw_speed > MAX_GNSS_SPEED_MPS) {
-                speed_ok = false;  // absolute cap
-            } else if (C->gnss_prev_speed_valid) {
-                double dt_gnss = tmeas - C->gnss_prev_speed_time;
-                if (dt_gnss > 0.1 && dt_gnss < 10.0) {
-                    float delta_v = fabsf(raw_speed - C->gnss_prev_speed_mps);
-                    float max_delta = MAX_GNSS_ACCEL_MPS2 * (float)dt_gnss;
-                    if (delta_v > max_delta) {
-                        speed_ok = false;  // rate-of-change exceeded
+                /* Speed spike filter (applied on fresh-position cycles) */
+                float raw_speed = (float)fv2.speed_mmps / 1000.0f;
+                bool speed_ok = true;
+                C->gnss_speed_rejected = false;
+                if (raw_speed > MAX_GNSS_SPEED_MPS) {
+                    speed_ok = false;
+                } else if (C->gnss_prev_speed_valid) {
+                    double dt_gnss = tmeas - C->gnss_prev_speed_time;
+                    if (dt_gnss > 0.1 && dt_gnss < 10.0) {
+                        float delta_v   = fabsf(raw_speed - C->gnss_prev_speed_mps);
+                        float max_delta = MAX_GNSS_ACCEL_MPS2 * (float)dt_gnss;
+                        if (delta_v > max_delta)
+                            speed_ok = false;
                     }
+                }
+                if (speed_ok) {
+                    C->gnss_speed_mps        = raw_speed;
+                    C->gnss_prev_speed_mps   = raw_speed;
+                    C->gnss_prev_speed_time  = tmeas;
+                    C->gnss_prev_speed_valid = true;
+                } else {
+                    C->gnss_speed_rejected = true;
+                    dbg_printf(C, "GNSS_SPIKE speed=%.2f prev=%.2f REJECTED", raw_speed,
+                               C->gnss_prev_speed_valid ? C->gnss_prev_speed_mps : -1.0f);
+                }
+
+#if HAVE_GNSS_HDOP
+                if (fv2.hdop_valid) {
+                    C->gnss_hdop       = (float)fv2.hdop_x100 / 100.0f;
+                    C->gnss_hdop_valid = true;
+                } else {
+                    C->gnss_hdop_valid = false;
+                }
+#else
+                C->gnss_hdop_valid = false;
+#endif
+
+                C->gnss_last_lat_deg   = lat_deg;
+                C->gnss_last_lon_deg   = lon_deg;
+                C->gnss_last_alt_m     = alt_m;
+                C->gnss_last_speed_mps = C->gnss_speed_mps;
+                C->gnss_last_fix       = 1;
+                C->gnss_last_hdop      = C->gnss_hdop_valid ? C->gnss_hdop : -1.0f;
+                C->gnss_last_valid     = true;
+                C->gnss_fix_count++;
+                C->have_gnss = true;
+            }
+
+            /* ---- Fresh velocity (independent of position freshness) ---- */
+            if (vel_fresh) {
+                C->last_vel_seq = fv2.vel_seq;
+
+                /* When velocity is fresh but position was not, use the driver's
+                 * reported speed directly (VTG source) with a simple range cap. */
+                if (!pos_fresh) {
+                    float rv = (float)fv2.speed_mmps / 1000.0f;
+                    if (rv >= 0.0f && rv <= MAX_GNSS_SPEED_MPS) {
+                        C->gnss_speed_mps      = rv;
+                        C->gnss_speed_rejected = false;
+                    }
+                }
+
+#if HAVE_GNSS_HEADING
+                if (fv2.heading_valid && C->gnss_speed_mps > 0.5f && !C->gnss_speed_rejected) {
+                    float heading_deg = (float)fv2.course_deg_e5 / 1e5f;
+                    float yaw_enu     = (0.5f * (float)M_PI) - (heading_deg * DEG2RAD);
+                    yaw_enu = wrap_pi(yaw_enu);
+                    C->gnss_heading_rad      = yaw_enu;
+                    C->gnss_heading_valid    = true;
+                    C->gnss_last_course_deg  = heading_deg;
+                    C->gnss_last_yaw_enu_deg = yaw_enu / DEG2RAD;
+                    C->gnss_last_heading_deg = yaw_enu / DEG2RAD;
+                    float spd = C->gnss_speed_mps;
+                    float psi = C->gnss_heading_rad;
+                    C->gnss_vel_enu  = v3(spd * cosf(psi), spd * sinf(psi), 0.0f);
+                    C->gnss_vel_valid = true;
+                } else {
+                    C->gnss_heading_valid = false;
+                    C->gnss_vel_valid     = false;
+                }
+#else
+                C->gnss_heading_valid = false;
+                C->gnss_vel_valid     = false;
+#endif
+            } else {
+                /* Velocity not fresh — do NOT update heading or ENU velocity.
+                 * Clear them so the fusion thread does not fuse stale COG. */
+                C->gnss_vel_valid     = false;
+                C->gnss_heading_valid = false;
+            }
+
+            pthread_cond_signal(&C->cv);
+            pthread_mutex_unlock(&C->mtx);
+            usleep(100000);   /* ~10 Hz poll */
+
+        } else {
+            /* ================================================================
+             *   v1 fallback path — existing UTC+lat/lon change detection.
+             *   Behaviour is identical to the original implementation.
+             * ================================================================ */
+            struct neo6m_gnss_fix f;
+            if (get_gnss_fix_ioctl(fd, &f) != 0) {
+                usleep(10000);
+                continue;
+            }
+
+            double tmeas  = now_sec();
+            int is_fresh = gnss_fix_is_fresh(&g_gnss_fresh, &f, tmeas);
+
+            if (!is_fresh) {
+                pthread_mutex_lock(&C->mtx);
+                C->gnss_stale_reject_count = g_gnss_fresh.stale_reject_count;
+                C->gnss_repeated_count     = g_gnss_fresh.repeated_count;
+                C->gnss_last_fresh         = 0;
+                pthread_mutex_unlock(&C->mtx);
+
+                static double t_stale_v1 = 0.0;
+                if (tmeas - t_stale_v1 > 2.0) {
+                    dbg_printf(C, "GNSS_STALE pos_seq=N/A repeated=%u lat=%.7f lon=%.7f utc=%02u:%02u:%02u.%03u",
+                               g_gnss_fresh.repeated_count,
+                               g_gnss_fresh.last_lat_deg, g_gnss_fresh.last_lon_deg,
+                               f.utc_hour, f.utc_min, f.utc_sec, f.utc_millis);
+                    t_stale_v1 = tmeas;
+                }
+                static double t_freshlog_v1 = 0.0;
+                if (tmeas - t_freshlog_v1 > 10.0) {
+                    double age = tmeas - g_gnss_fresh.last_fresh_monotonic_s;
+                    dbg_printf(C, "GNSS_FRESHNESS fresh=%u stale=%u repeated=%u last_age=%.2fs",
+                               g_gnss_fresh.fresh_count, g_gnss_fresh.stale_reject_count,
+                               g_gnss_fresh.repeated_count, age);
+                    t_freshlog_v1 = tmeas;
+                }
+                usleep(100000);
+                continue;
+            }
+
+            /* Fresh v1 fix */
+            pthread_mutex_lock(&C->mtx);
+
+            C->have_gnss               = false;
+            C->gnss_have_fix           = f.have_fix ? 1 : 0;
+            C->last_gnss_meas_s        = tmeas;
+            C->gnss_fresh_count        = g_gnss_fresh.fresh_count;
+            C->gnss_stale_reject_count = g_gnss_fresh.stale_reject_count;
+            C->gnss_repeated_count     = g_gnss_fresh.repeated_count;
+            C->gnss_last_fresh         = 1;
+            C->last_fresh_gnss_s       = tmeas;
+
+            bool new_fix = true;
+            if (C->gnss_have_fix) {
+                if (C->last_gnss_fix_mono_ms == f.monotonic_ms)
+                    new_fix = false;
+                else
+                    C->last_gnss_fix_mono_ms = f.monotonic_ms;
+            }
+
+            {
+                static double t_freshlog = 0.0;
+                if (tmeas - t_freshlog > 10.0) {
+                    dbg_printf(C, "GNSS_FRESHNESS fresh=%u stale=%u repeated=%u last_age=%.2fs",
+                               g_gnss_fresh.fresh_count, g_gnss_fresh.stale_reject_count,
+                               g_gnss_fresh.repeated_count, 0.0);
+                    t_freshlog = tmeas;
                 }
             }
 
-            if (speed_ok) {
-                C->gnss_speed_mps = raw_speed;
-                C->gnss_prev_speed_mps = raw_speed;
-                C->gnss_prev_speed_time = tmeas;
-                C->gnss_prev_speed_valid = true;
-            } else {
-                // Speed spike: keep previous accepted speed, invalidate heading+velocity
-                C->gnss_speed_rejected = true;
-                dbg_printf(C, "GNSS_SPIKE speed=%.2f prev=%.2f REJECTED", raw_speed,
-                           C->gnss_prev_speed_valid ? C->gnss_prev_speed_mps : -1.0f);
-                // Use last good speed for logging, but mark heading/vel invalid below
-            }
+            if (C->gnss_have_fix) {
+                double lat_deg = (double)f.lat_e7 / 1e7;
+                double lon_deg = (double)f.lon_e7 / 1e7;
+                double alt_m   = (double)f.alt_mm / 1000.0;
+
+                C->gnss_lat_rad = lat_deg * (M_PI / 180.0);
+                C->gnss_lon_rad = lon_deg * (M_PI / 180.0);
+                C->gnss_alt_m   = alt_m;
+
+                float raw_speed = (float)f.speed_mmps / 1000.0f;
+                bool speed_ok = true;
+                C->gnss_speed_rejected = false;
+                if (raw_speed > MAX_GNSS_SPEED_MPS) {
+                    speed_ok = false;
+                } else if (C->gnss_prev_speed_valid) {
+                    double dt_gnss = tmeas - C->gnss_prev_speed_time;
+                    if (dt_gnss > 0.1 && dt_gnss < 10.0) {
+                        float delta_v   = fabsf(raw_speed - C->gnss_prev_speed_mps);
+                        float max_delta = MAX_GNSS_ACCEL_MPS2 * (float)dt_gnss;
+                        if (delta_v > max_delta) speed_ok = false;
+                    }
+                }
+                if (speed_ok) {
+                    C->gnss_speed_mps        = raw_speed;
+                    C->gnss_prev_speed_mps   = raw_speed;
+                    C->gnss_prev_speed_time  = tmeas;
+                    C->gnss_prev_speed_valid = true;
+                } else {
+                    C->gnss_speed_rejected = true;
+                    dbg_printf(C, "GNSS_SPIKE speed=%.2f prev=%.2f REJECTED", raw_speed,
+                               C->gnss_prev_speed_valid ? C->gnss_prev_speed_mps : -1.0f);
+                }
 
 #if HAVE_GNSS_HDOP
-            // Expected fields if you extended your driver:
-            //   f.hdop_valid (bool-like), f.hdop_x100 (uint16/uint8)
-            // If not present, set HAVE_GNSS_HDOP=0.
-            if (f.hdop_valid) {
-                C->gnss_hdop = (float)f.hdop_x100 / 100.0f;
-                C->gnss_hdop_valid = true;
-            } else {
-                C->gnss_hdop_valid = false;
-            }
+                if (f.hdop_valid) {
+                    C->gnss_hdop       = (float)f.hdop_x100 / 100.0f;
+                    C->gnss_hdop_valid = true;
+                } else {
+                    C->gnss_hdop_valid = false;
+                }
 #else
-            C->gnss_hdop_valid = false;
+                C->gnss_hdop_valid = false;
 #endif
 
 #if HAVE_GNSS_HEADING
-            // Expected fields if you extended your driver:
-            //   f.heading_valid (bool-like), f.course_deg_e5 (int32, deg*1e5)
-            // When speed spike is detected, also reject heading and derived velocity
-            // (COG is unreliable during speed glitches)
-            if (f.heading_valid && C->gnss_speed_mps > 0.5f && !C->gnss_speed_rejected) {
-                float heading_deg = (float)f.course_deg_e5 / 1e5f;
-                float yaw_enu = (0.5*M_PI)-(heading_deg * DEG2RAD);
-                yaw_enu = wrap_pi(yaw_enu);
-
-                C->gnss_heading_rad = yaw_enu;
-                C->gnss_heading_valid = true;
-
-                C->gnss_last_course_deg = heading_deg;
-                C->gnss_last_yaw_enu_deg = yaw_enu/DEG2RAD;
-
-                // derive ENU velocity (course over ground)
-                float spd = C->gnss_speed_mps;
-                float psi = C->gnss_heading_rad;
-                C->gnss_vel_enu = v3(spd*cosf(psi), spd*sinf(psi), 0.0f);
-                C->gnss_vel_valid = true;
-            } else {
-                C->gnss_heading_valid = false;
-                C->gnss_vel_valid = false;
-            }
+                if (f.heading_valid && C->gnss_speed_mps > 0.5f && !C->gnss_speed_rejected) {
+                    float heading_deg = (float)f.course_deg_e5 / 1e5f;
+                    float yaw_enu     = (0.5f * (float)M_PI) - (heading_deg * DEG2RAD);
+                    yaw_enu = wrap_pi(yaw_enu);
+                    C->gnss_heading_rad      = yaw_enu;
+                    C->gnss_heading_valid    = true;
+                    C->gnss_last_course_deg  = heading_deg;
+                    C->gnss_last_yaw_enu_deg = yaw_enu / DEG2RAD;
+                    C->gnss_last_heading_deg = yaw_enu / DEG2RAD;
+                    float spd = C->gnss_speed_mps;
+                    float psi = C->gnss_heading_rad;
+                    C->gnss_vel_enu   = v3(spd * cosf(psi), spd * sinf(psi), 0.0f);
+                    C->gnss_vel_valid = true;
+                } else {
+                    C->gnss_heading_valid = false;
+                    C->gnss_vel_valid     = false;
+                }
 #else
-            C->gnss_heading_valid = false;
-            C->gnss_vel_valid = false;
+                C->gnss_heading_valid = false;
+                C->gnss_vel_valid     = false;
 #endif
 
-            C->have_gnss = (C->gnss_have_fix && new_fix) ;
-// Mark GNSS measurement presence (independent of EKF gating)
+                C->have_gnss = (C->gnss_have_fix && new_fix);
 
+                C->gnss_last_lat_deg   = lat_deg;
+                C->gnss_last_lon_deg   = lon_deg;
+                C->gnss_last_alt_m     = alt_m;
+                C->gnss_last_speed_mps = C->gnss_speed_mps;
+                C->gnss_last_fix       = 1;
+                C->gnss_last_heading_deg = C->gnss_heading_valid
+                                         ? (C->gnss_heading_rad / DEG2RAD) : 0.0f;
+                C->gnss_last_hdop      = C->gnss_hdop_valid ? C->gnss_hdop : -1.0f;
+                C->gnss_last_valid     = true;
+                if (new_fix) C->gnss_fix_count++;
+            } else {
+                C->gnss_last_fix   = 0;
+                C->gnss_last_valid = true;
+            }
 
-
-            // Save for logging
-            C->gnss_last_lat_deg = lat_deg;
-            C->gnss_last_lon_deg = lon_deg;
-            C->gnss_last_alt_m = alt_m;
-            C->gnss_last_speed_mps = C->gnss_speed_mps;
-            C->gnss_last_fix = 1;
-            C->gnss_last_heading_deg = C->gnss_heading_valid ? (C->gnss_heading_rad / DEG2RAD) : 0.0f;
-            C->gnss_last_hdop = C->gnss_hdop_valid ? C->gnss_hdop : -1.0f;
-            C->gnss_last_valid = true;
-
-            // Count valid fixes (for cold-start skip in fusion thread)
-            if (new_fix) C->gnss_fix_count++;
-        } else {
-            // No fix: still keep last values for logging
-            C->gnss_last_fix = 0;
-            C->gnss_last_valid = true;
+            pthread_cond_signal(&C->cv);
+            pthread_mutex_unlock(&C->mtx);
+            usleep(100000);
         }
-
-        pthread_cond_signal(&C->cv);
-        pthread_mutex_unlock(&C->mtx);
-
-        usleep(100000); // ~10 Hz poll (GNSS typically 1 Hz)
     }
 
     close(fd);
@@ -3958,7 +4123,7 @@ static void* fusion_thread(void *arg) {
     int i;
     ctx_t *C = (ctx_t*)arg;
     static yaw_learn_t yawL = {0};
-    uint64_t last_tick_ns = monotonic_ns();
+    uint32_t last_tick_ms = monotonic_ms();
 
     while (__atomic_load_n(&C->running, __ATOMIC_ACQUIRE)) {
         pthread_mutex_lock(&C->mtx);
@@ -3970,10 +4135,10 @@ static void* fusion_thread(void *arg) {
         if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
         (void)pthread_cond_timedwait(&C->cv, &C->mtx, &ts);
 
-        uint64_t now_ns = monotonic_ns();
-        float dt = (float)((now_ns - last_tick_ns) * 1e-9);
+        uint32_t now_ms = monotonic_ms();
+        float dt = (float)((now_ms - last_tick_ms) * 1e-3f);
         if (dt <= 0.0f || dt > 1.0f) dt = DT_IMU_DEFAULT;
-        last_tick_ns = now_ns;
+        last_tick_ms = now_ms;
 
         if (!C->have_imu) {
             pthread_mutex_unlock(&C->mtx);
@@ -4340,7 +4505,7 @@ static void* fusion_thread(void *arg) {
                 C->ins.P[2*15+2] = p0_v * p0_v;   // Up
 
                 if (C->gnss_heading_valid) {
-                    yaw_learn_on_gnss_fix(&yawL, C->gnss_heading_rad, C->last_gnss_fix_mono_ns);
+                    yaw_learn_on_gnss_fix(&yawL, C->gnss_heading_rad, C->last_gnss_fix_mono_ms);
                 }
                 float yaw0 = 0.0f;
                 if (C->gnss_heading_valid && C->gnss_speed_mps > YAW_FUSION_SPEED_MIN) {
@@ -4658,7 +4823,7 @@ bool gnss_ok = (C->gnss_present && C->gnss_valid && C->gnss_have_fix && C->gnss_
         // GNSS fusion (pos + optional vel + optional yaw complementary)
         if (C->have_gnss && C->gnss_have_fix) {
             if( C->gnss_heading_valid ){
-                yaw_learn_on_gnss_fix(&yawL, C->gnss_heading_rad, C->last_gnss_fix_mono_ns);
+                yaw_learn_on_gnss_fix(&yawL, C->gnss_heading_rad, C->last_gnss_fix_mono_ms);
             }
             lla_t L = { C->gnss_lat_rad, C->gnss_lon_rad, C->gnss_alt_m };
             ecef_t E = lla2ecef(L);
@@ -5442,7 +5607,7 @@ C.zupt_count = 0;
     C.last_aw = v3(0,0,0);
 C.last_gnss_used_pos = 0;
 C.last_gnss_used_vel = 0;
-C.last_gnss_fix_mono_ns = -1;
+C.last_gnss_fix_mono_ms = UINT32_MAX;
 C.gnss_enu_last_valid = false;
 C.anchor_set = false;
 C.sustained_still = 0;

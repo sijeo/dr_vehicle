@@ -39,6 +39,19 @@
 #define DRV_NAME "neo6m_gnss_serdev"
 #define NMEA_MAX_LINE 128
 #define RX_RING_SIZE 2048
+#define NMEA_PARSE_QUEUE_MAX 32
+
+/**
+ * struct nmea_line - one completed NMEA sentence waiting to be parsed.
+ *
+ * Allocated with GFP_ATOMIC in the serdev receive callback, freed by the
+ * worker after parsing.  Kept on parse_queue in FIFO order.
+ */
+struct nmea_line {
+    struct list_head node;
+    size_t           len;
+    char             buf[NMEA_MAX_LINE];
+};
 
 /*******************Utilities ********************/
 
@@ -189,106 +202,105 @@ static inline long strtod_milli(const char *p, long def )
 
 static bool nmea_latlon_to_e7(const char *val, const char *hem, s32 *out_e7)
 {
-    long sign = 1;
-    long deg;
-    size_t len;
+    long sign;
+    int  exp_deg_digits;          /* 2 for N/S (latitude), 3 for E/W (longitude) */
+    int  dot_pos;
+    const char *p;
     const char *dot;
-    size_t mm_start;
-    char deg_str[4] = {0};
-    char mm_str[16] = {0};
+    char deg_str[4] = {0};        /* holds up to 3 degree digits + NUL */
+    long deg;
+    long mm_whole = 0;            /* integer minutes */
+    long mm_frac  = 0;            /* fractional minutes scaled to 1e-7 */
+    int  frac_dig = 0;
+    long minutes_e7_raw;
+    long degrees_e7_from_min;
     long total;
-    /* Note: minutes parsing uses locals (mm_whole, mm_frac, minutes_e7_raw,
-     * degrees_e7_from_min) inside the inner block below — no top-level
-     * declarations needed for those. The previous declarations of
-     * `milli`, `deg_e7`, `minutes_deg_milli`, `minutes_e7` were leftovers
-     * from a prior algorithm and have been removed. */
 
-    if (!val || !*val || !hem || !*hem) {
-        return false; // empty field
-    }
-    if (hem[0] == 'S' || hem[0] == 'W') {
-        sign = -1;
-    }
+    /* 1. Reject NULL / empty inputs */
+    if (!val || !*val || !hem || !*hem || !out_e7)
+        return false;
 
-    /* Split degrees vs minutes: degrees are first 2 (lat) or 3 (lon) chars */
-    len = strlen(val);
-    if (len < 4)
-        return false; // too short
-
-    /* Find the decimal point to decide */
-    dot = strchr(val, '.');
-    mm_start = (len > 5) ? (len - 7) : 2; /* heuristic */
-    /* Better: degrees are all chars before the last 7 mm.mmmm */
-    if (dot && (dot - val >= 3)) {
-        /* for lon: 3 deg digits */
-        mm_start = (dot - val) - 2; /* xxmm.mmmm => mm start 2 before dot */
+    /* 2. Validate hemisphere — derive sign and expected degree-digit count.
+     *    N/S → latitude → 2 degree digits (ddmm.mmmm).
+     *    E/W → longitude → 3 degree digits (dddmm.mmmm). */
+    switch (hem[0]) {
+    case 'N': sign =  1; exp_deg_digits = 2; break;
+    case 'S': sign = -1; exp_deg_digits = 2; break;
+    case 'E': sign =  1; exp_deg_digits = 3; break;
+    case 'W': sign = -1; exp_deg_digits = 3; break;
+    default:
+        return false;
     }
 
-    /* Copy degrees part */
-    if (mm_start > sizeof(deg_str)) {
-        if (mm_start > 3)
-            return false; // too long
-        strncpy(deg_str, val, mm_start);
-    } else {
-        strncpy(deg_str, val, mm_start);
-    }
-
-    /* Copy minutes part */
-    strlcpy(mm_str, val + mm_start, sizeof(mm_str));
-
-    deg = strtol_safe(deg_str, 0);
-
-    /*
-     * Parse minutes with full precision for lat_e7/lon_e7.
-     *
-     * NMEA minutes field is mm.mmmmmm (up to 6 fractional digits from TAU1204).
-     * We need: degrees * 1e7 = deg*1e7 + (minutes/60)*1e7
-     *
-     * Strategy: parse minutes as integer in units of 1e-7 minutes (i.e. read
-     * up to 7 fractional digits), then divide by 60 to get degrees*1e7.
-     *
-     * Old code used strtod_milli() which only reads 3 fractional digits,
-     * giving 0.001 degree (~111m) resolution — completely inadequate.
-     */
-    {
-        const char *p = mm_str;
-        long mm_whole = 0;        /* integer part of minutes */
-        long mm_frac  = 0;        /* fractional part scaled to 1e7 */
-        int  frac_dig = 0;
-
-        /* Parse integer part of minutes (the "mm" in mm.mmmmmm) */
-        while (isdigit(*p)) {
-            mm_whole = mm_whole * 10 + (*p - '0');
-            p++;
-        }
-        /* Parse fractional part — read up to 7 digits, pad remainder with zeros */
+    /* 3. Validate all characters in val: only ASCII digits and at most one '.'.
+     *    Reject empty string, sign characters, letters, or multiple dots. */
+    dot = NULL;
+    for (p = val; *p; p++) {
         if (*p == '.') {
-            p++;
-            while (isdigit(*p) && frac_dig < 7) {
-                mm_frac = mm_frac * 10 + (*p - '0');
-                frac_dig++;
-                p++;
-            }
-        }
-        /* Pad to exactly 7 digits (scale to 1e-7 minutes) */
-        while (frac_dig < 7) {
-            mm_frac *= 10;
-            frac_dig++;
-        }
-
-        /*
-         * minutes_e7 = mm_whole * 1e7  +  mm_frac   (in units of 1e-7 minutes)
-         * degrees_e7 = minutes_e7 / 60               (in units of 1e-7 degrees)
-         *
-         * Use +30 for rounding before integer division.
-         */
-        {
-            long minutes_e7_raw = mm_whole * 10000000L + mm_frac;
-            long degrees_e7_from_min = (minutes_e7_raw + 30) / 60;
-
-            total = deg * 10000000L + degrees_e7_from_min;
+            if (dot)
+                return false;   /* second decimal point */
+            dot = p;
+        } else if (!isdigit((unsigned char)*p)) {
+            return false;       /* non-digit, non-dot character */
         }
     }
+
+    /* 4. Determine position of decimal point (or end-of-string if absent).
+     *    NMEA format: <deg_digits><mm>[.<frac>]
+     *    The two characters immediately before the decimal (or end) are the
+     *    integer minute digits. Everything before them is the degree field.
+     *
+     *    Strict requirement: dot_pos must equal exp_deg_digits + 2.
+     *    Examples: "4807.038" N  → dot_pos=4, exp=2+2=4 ✓
+     *              "01230.456" E → dot_pos=5, exp=3+2=5 ✓
+     *              "1260.000" N  → dot_pos=4, deg="12", min=60 → range fail
+     *              "18100.00" E  → dot_pos=5, deg="181" → range fail          */
+    dot_pos = (int)(dot ? (dot - val) : (long)(p - val));
+    if (dot_pos != exp_deg_digits + 2)
+        return false;
+
+    /* 5. Parse degree portion (first exp_deg_digits characters) — safe: buffer
+     *    is 4 bytes and exp_deg_digits is at most 3. */
+    memcpy(deg_str, val, (size_t)exp_deg_digits);
+    deg_str[exp_deg_digits] = '\0';
+    deg = simple_strtol(deg_str, NULL, 10);
+
+    /* 6. Validate degree range */
+    if (exp_deg_digits == 2) {
+        if (deg < 0 || deg > 90)       /* latitude  0..90  */
+            return false;
+    } else {
+        if (deg < 0 || deg > 180)      /* longitude 0..180 */
+            return false;
+    }
+
+    /* 7. Parse integer minutes: the two digits at [exp_deg_digits .. dot_pos-1] */
+    for (p = val + exp_deg_digits; p < val + dot_pos; p++)
+        mm_whole = mm_whole * 10 + (*p - '0');
+
+    /* 8. Validate integer minutes: 0 ≤ mm_whole < 60 */
+    if (mm_whole < 0 || mm_whole >= 60)
+        return false;
+
+    /* 9. Parse fractional minutes — up to 7 digits after the decimal point */
+    if (dot) {
+        for (p = dot + 1; isdigit((unsigned char)*p) && frac_dig < 7; p++, frac_dig++)
+            mm_frac = mm_frac * 10 + (*p - '0');
+    }
+    /* Pad to exactly 7 fractional digits (units of 1e-7 minutes) */
+    while (frac_dig < 7) {
+        mm_frac *= 10;
+        frac_dig++;
+    }
+
+    /* 10. Convert minutes → degrees × 1e7.  All values fit in 32-bit long on
+     *     ARM32 (no 64-bit intermediates):
+     *       minutes_e7_raw  max = 59*10_000_000 + 9_999_999 = 599_999_999 < 2^31
+     *       deg*10_000_000  max = 180*10_000_000 = 1_800_000_000           < 2^31
+     *       total           max ≈ 1_810_000_000                            < 2^31 */
+    minutes_e7_raw      = mm_whole * 10000000L + mm_frac;
+    degrees_e7_from_min = (minutes_e7_raw + 30L) / 60L;
+    total               = deg * 10000000L + degrees_e7_from_min;
 
     *out_e7 = (s32)(sign * total);
     return true;
@@ -363,15 +375,36 @@ struct neo6m_priv {
     char line[NMEA_MAX_LINE];
     size_t line_len;
 
-    /* Workqueue to parse completed lines */
+    /* Workqueue + FIFO queue of completed NMEA lines */
     struct work_struct parse_work;
-    /* Simple buffer to hand one line to  work context */
-    char parse_buf[NMEA_MAX_LINE];
-    size_t parse_len;
+    struct list_head   parse_queue;       /* protected by qlock */
+    spinlock_t         qlock;
+    unsigned int       parse_queue_depth;   /* current depth */
+    unsigned int       parse_queue_dropped; /* lines lost due to full queue or OOM */
 
-    /* Latest parses fix (protected )*/
+    /* Parser diagnostics — read from sysfs for field health checks.
+     * All fields below are protected by lock except queue_drop_count (qlock). */
+    u32 nmea_rx_lines;              /* sentences reaching the parser */
+    u32 nmea_bad_checksum;          /* sentences rejected by checksum */
+    u32 nmea_parse_ok;              /* recognised sentences (RMC/GGA/VTG) with good checksum */
+    u32 rmc_count;                  /* RMC sentences seen */
+    u32 gga_count;                  /* GGA sentences seen */
+    u32 vtg_count;                  /* VTG sentences seen */
+    u32 rmc_invalid_count;          /* RMC sentences with status != 'A' */
+    u32 gga_no_fix_count;           /* GGA sentences with fixq == 0 */
+    u32 vtg_ignored_no_fix_count;   /* VTG sentences skipped due to no fix / mode N */
+    u32 latlon_parse_fail_count;    /* lat or lon field failed nmea_latlon_to_e7() */
+    u32 speed_parse_fail_count;     /* speed field present but failed to parse */
+    u32 queue_drop_count;           /* queue overflow / OOM drops (mirrors parse_queue_dropped, protected by qlock) */
+    u32 pos_update_count;           /* times pos_seq was incremented */
+    u32 vel_update_count;           /* times vel_seq was incremented */
+
+    /* Latest fix snapshot (v2, protected by lock) */
     spinlock_t lock;
-    struct neo6m_gnss_fix fix;
+    struct neo6m_gnss_fix_v2 fix_v2;
+    /* Last accepted RMC-A UTC epoch (hour*3600+min*60+sec).
+     * Initialised to U32_MAX so the first valid RMC always triggers epoch_changed. */
+    u32 last_utc_epoch;
 
     /* Character device */
     dev_t devt;
@@ -399,13 +432,42 @@ MODULE_DEVICE_TABLE(of, neo6m_of_match);
  */
  static void neo6m_push_line_for_parse(struct neo6m_priv *priv, const char *s, size_t len)
  {
-    if(len >= sizeof(priv->parse_buf))
-    {
-        len = sizeof(priv->parse_buf) - 1;
+    struct nmea_line *nl;
+    unsigned long flags;
+
+    if (len >= NMEA_MAX_LINE)
+        len = NMEA_MAX_LINE - 1;
+
+    /* Allocate outside the lock — GFP_ATOMIC is safe in any callback context */
+    nl = kmalloc(sizeof(*nl), GFP_ATOMIC);
+    if (!nl) {
+        spin_lock_irqsave(&priv->qlock, flags);
+        priv->parse_queue_dropped++;
+        priv->queue_drop_count++;
+        spin_unlock_irqrestore(&priv->qlock, flags);
+        dev_warn_ratelimited(priv->dev, "NMEA: kmalloc failed, line dropped\n");
+        return;
     }
-    memcpy(priv->parse_buf, s, len);
-    priv->parse_buf[len] = '\0';
-    priv->parse_len = len;
+
+    memcpy(nl->buf, s, len);
+    nl->buf[len] = '\0';
+    nl->len = len;
+
+    spin_lock_irqsave(&priv->qlock, flags);
+    if (priv->parse_queue_depth >= NMEA_PARSE_QUEUE_MAX) {
+        priv->parse_queue_dropped++;
+        priv->queue_drop_count++;
+        spin_unlock_irqrestore(&priv->qlock, flags);
+        kfree(nl);
+        dev_warn_ratelimited(priv->dev,
+            "NMEA: parse queue full, line dropped (total dropped: %u)\n",
+            priv->parse_queue_dropped);
+        return;
+    }
+    list_add_tail(&nl->node, &priv->parse_queue);
+    priv->parse_queue_depth++;
+    spin_unlock_irqrestore(&priv->qlock, flags);
+
     schedule_work(&priv->parse_work);
  }
 
@@ -422,7 +484,7 @@ MODULE_DEVICE_TABLE(of, neo6m_of_match);
  */
 
 
-  static void neo6m_parse_utc( struct neo6m_gnss_fix *f, char *const *fields, int n)
+  static void neo6m_parse_utc( struct neo6m_gnss_fix_v2 *f, char *const *fields, int n)
   {
     /* RMC: hhmmss.sss at fields[1], date ddmmyy at fields[9] */
     const char *t = (n > 1) ? fields[1] : NULL;
@@ -469,227 +531,351 @@ MODULE_DEVICE_TABLE(of, neo6m_of_match);
  * @param len  Length of sentence.
  */
 
+/**
+ * nmea_type_is() - match sentence type by the 3-character message code.
+ *
+ * Accepts any talker ID (GP, GN, BD, GB, GA, GL, …) by comparing only
+ * characters [3..5] of the sentence ID field (tok[0]).
+ *
+ * @sentence_id: tok[0] including the leading '$', e.g. "$GPRMC".
+ * @type:        3-character type string, e.g. "RMC".
+ *
+ * Returns true when sentence_id[3..5] == type[0..2].
+ */
+static bool nmea_type_is(const char *sentence_id, const char *type)
+{
+    /* Need at least '$' + 2 talker chars + 3 type chars = 6 */
+    if (!sentence_id || strlen(sentence_id) < 6)
+        return false;
+    return sentence_id[3] == type[0] &&
+           sentence_id[4] == type[1] &&
+           sentence_id[5] == type[2];
+}
+
    static void neo6m_parse_line(struct neo6m_priv *priv, const char *s, size_t len)
    {
-    char *tmp, *p;
+    char *tmp = NULL;
+    char *p;
     char *tok[32];
-    int ntok = 0;
-    struct neo6m_gnss_fix newfix;
+    int  ntok = 0;
+    struct neo6m_gnss_fix_v2 newfix;
+    u32  saved_utc_epoch;
+    s32  old_lat_e7, old_lon_e7, old_speed, old_course;
+    bool pos_updated   = false;
+    bool vel_updated   = false;
+    bool epoch_changed = false;
+    bool write_fix     = false;
+    u32  new_utc_epoch = 0;
+    u32  now;
+
+    /* Per-call stat deltas — applied under lock at done: */
+    u32 d_badcs   = 0;
+    u32 d_ok      = 0;
+    u32 d_rmc     = 0, d_gga     = 0, d_vtg     = 0;
+    u32 d_rmc_inv = 0, d_gga_nof = 0, d_vtg_ign = 0;
+    u32 d_llfail  = 0, d_spdfail = 0;
+    u32 d_pos     = 0, d_vel     = 0;
 
     if (!nmea_checksum_ok(s, len)) {
         dev_warn(priv->dev, "Bad checksum: %.*s\n", (int)len, s);
-        return;
+        d_badcs = 1;
+        goto done;
     }
 
     tmp = kstrdup(s, GFP_KERNEL);
     if (!tmp)
         return;
 
-    /* Tokenize on ',' and strip trailing *cs */
     p = tmp;
     while ((ntok < ARRAY_SIZE(tok)) && (tok[ntok] = strsep(&p, ",")) != NULL)
         ntok++;
 
-    /* Remove trailing *XX from last token if present */
     if (ntok > 0) {
         char *star = strchr(tok[ntok - 1], '*');
         if (star)
             *star = '\0';
     }
 
-    /* Initialize from last fix */
+    /* Snapshot latest fix and epoch marker under lock */
     spin_lock_bh(&priv->lock);
-    newfix = priv->fix;
+    newfix           = priv->fix_v2;
+    saved_utc_epoch  = priv->last_utc_epoch;
     spin_unlock_bh(&priv->lock);
 
-    if ((ntok > 0)&& (tok[0][0] == '$')){
-        /* Identify sentence type */
-        if ((!strncmp(tok[0]+1, "GPRMC", 5)) || (!strncmp(tok[0]+1, "GNRMC", 5)))
-        {
-            /**
-             * RMC fields:
-             * 1 = time, 2 = status A/V, 3=lat, 4=N/S, 5=lon, 6=E/W,
-             * 7 = sog(knots), 8 = cog, 9 = date, ...
-             *
-             * Strict gating: status 'A' means the receiver has a valid
-             * navigation solution. Anything else ('V' = void) means the
-             * downstream fields (lat/lon/speed/course/UTC) cannot be
-             * trusted, so we MUST NOT refresh them — otherwise stale
-             * values get repeatedly republished as "current".
-             */
-            const char *status = (ntok > 2) ? tok[2] : "";
-            bool active = (status && *status == 'A');
+    /* Save pre-parse position/velocity for change detection */
+    old_lat_e7 = newfix.lat_e7;
+    old_lon_e7 = newfix.lon_e7;
+    old_speed  = newfix.speed_mmps;
+    old_course = newfix.course_deg_e5;
 
-            if (active) {
-                newfix.have_fix = 1;
-                neo6m_parse_utc(&newfix, tok, ntok);
+    if (ntok <= 0 || tok[0][0] != '$')
+        goto done;
 
-                /* Lat / Lon */
-                if (ntok > 5) {
-                    s32 lat_e7, lon_e7;
-                    if (nmea_latlon_to_e7(tok[3], tok[4], &lat_e7))
-                        newfix.lat_e7 = lat_e7;
-                    if (nmea_latlon_to_e7(tok[5], tok[6], &lon_e7))
-                        newfix.lon_e7 = lon_e7;
+    if (nmea_type_is(tok[0], "RMC"))
+    {
+        /**
+         * RMC: 1=time 2=status 3=lat 4=N/S 5=lon 6=E/W 7=sog 8=cog 9=date
+         * Only status='A' provides a valid navigation solution.
+         */
+        const char *status = (ntok > 2) ? tok[2] : "";
+        bool active = (status && *status == 'A');
+
+        d_rmc = 1;
+
+        if (active) {
+            /* Detect new GNSS epoch via UTC second change */
+            const char *t = (ntok > 1) ? tok[1] : NULL;
+            if (t && *t) {
+                long hh  = strtol_safe(t, 0) / 10000;
+                long mmt = (strtol_safe(t, 0) / 100) % 100;
+                long ss  = strtol_safe(t, 0) % 100;
+                new_utc_epoch = (u32)(hh * 3600 + mmt * 60 + ss);
+                if (new_utc_epoch != saved_utc_epoch)
+                    epoch_changed = true;
+            }
+
+            newfix.have_fix = 1;
+            neo6m_parse_utc(&newfix, tok, ntok);
+
+            if (ntok > 5) {
+                s32 lat_e7, lon_e7;
+                bool lat_ok = nmea_latlon_to_e7(tok[3], tok[4], &lat_e7);
+                bool lon_ok = nmea_latlon_to_e7(tok[5], tok[6], &lon_e7);
+                if (lat_ok && lon_ok) {
+                    newfix.lat_e7 = lat_e7;
+                    newfix.lon_e7 = lon_e7;
+                    pos_updated = true;
+                } else {
+                    d_llfail++;
                 }
+            }
 
-                /* Speed (knots) */
-                if (ntok > 7 && tok[7] && *tok[7])
+            if (ntok > 7 && tok[7] && *tok[7]) {
+                long mknots = strtod_milli(tok[7], -1);
+                if (mknots < 0) {
+                    d_spdfail++;
+                } else {
                     newfix.speed_mmps = knots_to_mmps_maybe(tok[7]);
-
-                /* Course over ground (deg) — only valid when present */
-                if (ntok > 8 && tok[8] && *tok[8]) {
-                    long hdg_milli = strtod_milli(tok[8], 0); /* deg x1000 */
-                    newfix.course_deg_e5 = (s32)(hdg_milli * 100);
-                    newfix.heading_valid = true;
-                } else {
-                    newfix.heading_valid = false;
+                    vel_updated = true;
                 }
-            } else {
-                /* Status 'V' (void) — invalidate fix and drop all
-                 * fix-dependent dynamic state. Do NOT update lat/lon,
-                 * altitude, speed (other than zeroing it), course, or
-                 * UTC from this sentence. */
-                newfix.have_fix      = 0;
-                newfix.heading_valid = false;
-                newfix.speed_mmps    = 0;
-                dev_dbg(priv->dev, "RMC invalid status (V) — fix cleared\n");
             }
-        }
-        else if( (!strncmp(tok[0] + 1, "GPGGA", 5)) || (!strncmp(tok[0] + 1, "GNGGA", 5)))
-        {
-            /**
-             * GGA fields:
-             * 1= time, 2= lat, 3 = N/S, 4 = lon, 5 = E/W, 6=fix(0 = no),
-             * 7 = numsats, 8 = hdop, 9 = alt(MSL), 10 = M, 11= geoid sep...
-             *
-             * Strict gating: fixq 0 = "no fix". Lat/lon/altitude from a
-             * no-fix GGA are stale (often the last good values held by
-             * the receiver) and must not be republished as fresh.
-             */
-            long fixq = ((ntok > 6) && (*tok[6])) ? strtol_safe(tok[6], 0) : 0;
 
-            if (fixq > 0) {
-                newfix.have_fix = 1;
-
-                /* lat/lon */
-                if (ntok > 5) {
-                    s32 lat_e7, lon_e7;
-                    if (nmea_latlon_to_e7(tok[2], tok[3], &lat_e7))
-                        newfix.lat_e7 = lat_e7;
-                    if (nmea_latlon_to_e7(tok[4], tok[5], &lon_e7))
-                        newfix.lon_e7 = lon_e7;
-                }
-                /* altitude in metres -> mm */
-                if ((ntok > 9) && tok[9] && *tok[9]) {
-                    long alt_milli = strtod_milli(tok[9], 0);
-                    newfix.alt_mm = (s32)alt_milli;   /* milli-metres already */
-                }
-                /* HDOP (field 8) as x100 */
-                if (ntok > 8 && tok[8] && *tok[8]) {
-                    long hdop_milli = strtod_milli(tok[8], 0); /* x1000 */
-                    newfix.hdop_x100 = (u16)((hdop_milli + 5) / 10); /* x100 */
-                    newfix.hdop_valid = true;
-                }
-                /* UTC from field[1] if not set by RMC */
-                if ((ntok > 1) && tok[1] && *tok[1]) {
-                    const char *t = tok[1];
-                    long hh = strtol_safe(t, 0) / 10000;
-                    long mm = (strtol_safe(t, 0) / 100) % 100;
-                    long ss = strtol_safe(t, 0) % 100;
-                    const char *dot = strchr(t, '.');
-                    long ms = 0;
-                    if (dot) {
-                        ms = strtol_safe(dot + 1, 0);
-                        while (ms > 999) ms /= 10;
-                    }
-                    newfix.utc_hour   = clamp_t(int, hh, 0, 23);
-                    newfix.utc_min    = clamp_t(int, mm, 0, 59);
-                    newfix.utc_sec    = clamp_t(int, ss, 0, 60);
-                    newfix.utc_millis = clamp_t(int, ms, 0, 999);
-                }
+            if (ntok > 8 && tok[8] && *tok[8]) {
+                long hdg_milli = strtod_milli(tok[8], 0);
+                newfix.course_deg_e5 = (s32)(hdg_milli * 100);
+                newfix.heading_valid = true;
+                vel_updated = true;
             } else {
-                /* fixq == 0: no position fix. Clear fix flag and drop
-                 * speed / heading. Lat/lon/altitude are intentionally
-                 * NOT overwritten — the last good values are preserved
-                 * as the "best previous known" snapshot but flagged
-                 * invalid via have_fix = 0. */
-                newfix.have_fix      = 0;
                 newfix.heading_valid = false;
-                newfix.speed_mmps    = 0;
-                /* HDOP from a no-fix sentence is still informative (DOP
-                 * is purely geometric) — update it if the field is non-
-                 * empty, but the position quality remains "invalid". */
-                if (ntok > 8 && tok[8] && *tok[8]) {
-                    long hdop_milli = strtod_milli(tok[8], 0);
-                    newfix.hdop_x100 = (u16)((hdop_milli + 5) / 10);
-                    newfix.hdop_valid = true;
-                }
-                dev_dbg(priv->dev, "GGA no fix (fixq=0) — position invalidated\n");
             }
+        } else {
+            d_rmc_inv = 1;
+            newfix.have_fix      = 0;
+            newfix.heading_valid = false;
+            newfix.speed_mmps    = 0;
+            newfix.pos_valid     = 0;
+            newfix.vel_valid     = 0;
+            dev_dbg(priv->dev, "RMC status V — fix cleared\n");
         }
-        else if ((!strncmp(tok[0] + 1, "GPVTG", 5)) || (!strncmp(tok[0] + 1, "GNVTG", 5)))
-        {
-            /**
-             * VTG fields:
-             *   1 = course true (deg), 2 = 'T'
-             *   3 = course magnetic, 4 = 'M'
-             *   5 = speed (knots),    6 = 'N'
-             *   7 = speed (km/h),     8 = 'K'
-             *   9 = mode indicator (NMEA 2.3+): A=autonomous D=differential
-             *                                   E=estimated  N=no fix
-             *
-             * VTG carries no fix-quality field of its own, so we rely on
-             * have_fix that was set by the most recent RMC/GGA. If the
-             * fix is currently invalid, VTG must not refresh speed or
-             * course — otherwise stale course/speed from before the
-             * outage gets republished as if it were live.
-             */
-            const char *vtg_mode = (ntok > 9 && tok[9]) ? tok[9] : NULL;
-            bool vtg_no_fix = (vtg_mode && *vtg_mode == 'N');
+    }
+    else if (nmea_type_is(tok[0], "GGA"))
+    {
+        /**
+         * GGA: 1=time 2=lat 3=N/S 4=lon 5=E/W 6=fixq 7=nsats 8=hdop 9=alt
+         * fixq==0 means no position fix.
+         */
+        long fixq = ((ntok > 6) && (*tok[6])) ? strtol_safe(tok[6], 0) : 0;
 
-            if (!newfix.have_fix || vtg_no_fix) {
-                /* Drop fix-dependent dynamics from this VTG */
-                newfix.heading_valid = false;
-                newfix.speed_mmps    = 0;
-                dev_dbg(priv->dev, "VTG ignored: %s\n",
-                        vtg_no_fix ? "mode=N" : "no valid fix");
-            } else {
-                /* Course (field 1, degrees true). VTG is the authoritative
-                 * COG source — always overwrite when the field is valid. */
-                if (ntok > 1 && tok[1] && *tok[1]) {
-                    long hdg_milli = strtod_milli(tok[1], 0);
-                    newfix.course_deg_e5 = (s32)(hdg_milli * 100);
-                    newfix.heading_valid = true;
+        d_gga = 1;
+
+        if (fixq > 0) {
+            newfix.have_fix = 1;
+
+            if (ntok > 5) {
+                s32 lat_e7, lon_e7;
+                bool lat_ok = nmea_latlon_to_e7(tok[2], tok[3], &lat_e7);
+                bool lon_ok = nmea_latlon_to_e7(tok[4], tok[5], &lon_e7);
+                if (lat_ok && lon_ok) {
+                    newfix.lat_e7 = lat_e7;
+                    newfix.lon_e7 = lon_e7;
+                    pos_updated = true;
                 } else {
-                    /* No course in this VTG — mark heading invalid even
-                     * if RMC populated it earlier; otherwise stale RMC
-                     * COG masquerades as a fresh VTG observation. */
-                    newfix.heading_valid = false;
+                    d_llfail++;
                 }
+            }
 
-                /* Speed (field 5, knots). When fix is valid but the speed
-                 * field is empty, preserve the previous speed value — do
-                 * NOT zero it (the receiver may simply omit it momentarily
-                 * during steady motion). */
-                if (ntok > 5 && tok[5] && *tok[5])
+            if ((ntok > 9) && tok[9] && *tok[9]) {
+                long alt_milli = strtod_milli(tok[9], 0);
+                newfix.alt_mm = (s32)alt_milli;
+            }
+
+            if (ntok > 8 && tok[8] && *tok[8]) {
+                long hdop_milli = strtod_milli(tok[8], 0);
+                newfix.hdop_x100 = (u16)((hdop_milli + 5) / 10);
+                newfix.hdop_valid = true;
+            }
+
+            if ((ntok > 1) && tok[1] && *tok[1]) {
+                const char *t = tok[1];
+                long hh  = strtol_safe(t, 0) / 10000;
+                long mm  = (strtol_safe(t, 0) / 100) % 100;
+                long ss  = strtol_safe(t, 0) % 100;
+                const char *dot = strchr(t, '.');
+                long ms = 0;
+                if (dot) {
+                    ms = strtol_safe(dot + 1, 0);
+                    while (ms > 999) ms /= 10;
+                }
+                newfix.utc_hour   = clamp_t(int, hh, 0, 23);
+                newfix.utc_min    = clamp_t(int, mm, 0, 59);
+                newfix.utc_sec    = clamp_t(int, ss, 0, 60);
+                newfix.utc_millis = clamp_t(int, ms, 0, 999);
+            }
+        } else {
+            d_gga_nof = 1;
+            newfix.have_fix      = 0;
+            newfix.heading_valid = false;
+            newfix.speed_mmps    = 0;
+            newfix.pos_valid     = 0;
+            newfix.vel_valid     = 0;
+            /* HDOP is geometric — still informative without a position fix */
+            if (ntok > 8 && tok[8] && *tok[8]) {
+                long hdop_milli = strtod_milli(tok[8], 0);
+                newfix.hdop_x100 = (u16)((hdop_milli + 5) / 10);
+                newfix.hdop_valid = true;
+            }
+            dev_dbg(priv->dev, "GGA fixq=0 — position invalidated\n");
+        }
+    }
+    else if (nmea_type_is(tok[0], "VTG"))
+    {
+        /**
+         * VTG: 1=cog-true 5=speed-knots 9=mode(N=no-fix)
+         * Relies on have_fix from the preceding RMC/GGA in the same epoch.
+         */
+        const char *vtg_mode  = (ntok > 9 && tok[9]) ? tok[9] : NULL;
+        bool        vtg_no_fix = (vtg_mode && *vtg_mode == 'N');
+
+        d_vtg = 1;
+
+        if (!newfix.have_fix || vtg_no_fix) {
+            d_vtg_ign = 1;
+            newfix.heading_valid = false;
+            newfix.speed_mmps    = 0;
+            dev_dbg(priv->dev, "VTG ignored: %s\n",
+                    vtg_no_fix ? "mode=N" : "no valid fix");
+        } else {
+            if (ntok > 1 && tok[1] && *tok[1]) {
+                long hdg_milli = strtod_milli(tok[1], 0);
+                newfix.course_deg_e5 = (s32)(hdg_milli * 100);
+                newfix.heading_valid = true;
+                vel_updated = true;
+            } else {
+                newfix.heading_valid = false;
+            }
+
+            if (ntok > 5 && tok[5] && *tok[5]) {
+                long mknots = strtod_milli(tok[5], -1);
+                if (mknots < 0) {
+                    d_spdfail++;
+                } else {
                     newfix.speed_mmps = knots_to_mmps_maybe(tok[5]);
+                    vel_updated = true;
+                }
             }
         }
     }
-    newfix.monotonic_ns = ktime_get_boottime_ns();
+    else {
+        /* Unrecognised sentence (GSV, GSA, …) — silently ignore */
+        goto done;
+    }
 
+    /* ---- Sequence counter updates (only for recognised sentences) ---- */
+    d_ok = 1;
+    write_fix = true;
+
+    now = jiffies_to_msecs(jiffies);
+    newfix.monotonic_ms = now;
+    newfix.nmea_seq++;
+
+    /* pos_seq: fresh lat/lon when have_fix AND (values changed OR new epoch) */
+    if (newfix.have_fix && pos_updated &&
+        (newfix.lat_e7 != old_lat_e7 || newfix.lon_e7 != old_lon_e7 || epoch_changed)) {
+        newfix.pos_seq++;
+        newfix.pos_monotonic_ms = now;
+        newfix.pos_valid = 1;
+        d_pos = 1;
+    }
+
+    /* vel_seq: fresh speed/course when have_fix AND (values changed OR new epoch) */
+    if (newfix.have_fix && vel_updated &&
+        (newfix.speed_mmps != old_speed || newfix.course_deg_e5 != old_course || epoch_changed)) {
+        newfix.vel_seq++;
+        newfix.vel_monotonic_ms = now;
+        newfix.vel_valid = 1;
+        d_vel = 1;
+    }
+
+    /* Clear validity flags when fix is lost */
+    if (!newfix.have_fix) {
+        newfix.pos_valid = 0;
+        newfix.vel_valid = 0;
+    }
+
+    /* fix_seq: new RMC-A epoch with valid fix */
+    if (epoch_changed && newfix.have_fix)
+        newfix.fix_seq++;
+
+    newfix.stale = (u8)(!(pos_updated || vel_updated));
+
+done:
     spin_lock_bh(&priv->lock);
-    priv->fix = newfix;
+    priv->nmea_rx_lines            += 1;
+    priv->nmea_bad_checksum        += d_badcs;
+    priv->nmea_parse_ok            += d_ok;
+    priv->rmc_count                += d_rmc;
+    priv->gga_count                += d_gga;
+    priv->vtg_count                += d_vtg;
+    priv->rmc_invalid_count        += d_rmc_inv;
+    priv->gga_no_fix_count         += d_gga_nof;
+    priv->vtg_ignored_no_fix_count += d_vtg_ign;
+    priv->latlon_parse_fail_count  += d_llfail;
+    priv->speed_parse_fail_count   += d_spdfail;
+    priv->pos_update_count         += d_pos;
+    priv->vel_update_count         += d_vel;
+    if (write_fix) {
+        priv->fix_v2 = newfix;
+        if (epoch_changed)
+            priv->last_utc_epoch = new_utc_epoch;
+    }
     spin_unlock_bh(&priv->lock);
 
     kfree(tmp);
 }
 
-static void neo6m_parse_workfn( struct work_struct *w)
+static void neo6m_parse_workfn(struct work_struct *w)
 {
     struct neo6m_priv *priv = container_of(w, struct neo6m_priv, parse_work);
-    neo6m_parse_line(priv, priv->parse_buf, priv->parse_len);
+
+    /* Drain all queued lines in FIFO order.  Release qlock between each item
+     * so the receive path can continue enqueuing without stalling. */
+    for (;;) {
+        struct nmea_line *nl;
+        unsigned long flags;
+
+        spin_lock_irqsave(&priv->qlock, flags);
+        if (list_empty(&priv->parse_queue)) {
+            spin_unlock_irqrestore(&priv->qlock, flags);
+            break;
+        }
+        nl = list_first_entry(&priv->parse_queue, struct nmea_line, node);
+        list_del(&nl->node);
+        priv->parse_queue_depth--;
+        spin_unlock_irqrestore(&priv->qlock, flags);
+
+        neo6m_parse_line(priv, nl->buf, nl->len);
+        kfree(nl);
+    }
 }
 
 /****************************serdev ops*************************/
@@ -749,7 +935,7 @@ static ssize_t show_lat(struct device *dev, struct device_attribute *attr, char 
     unsigned long flags;
     s32 v;
     spin_lock_irqsave(&p->lock, flags);
-    v = p->fix.lat_e7;
+    v = p->fix_v2.lat_e7;
     spin_unlock_irqrestore(&p->lock, flags);
     return scnprintf(buf, PAGE_SIZE, "%d\n", v);
 }
@@ -761,19 +947,19 @@ static ssize_t show_lon(struct device *dev, struct device_attribute *attr, char 
     unsigned long flags;
     s32 v;
     spin_lock_irqsave(&p->lock, flags);
-    v = p->fix.lon_e7;
+    v = p->fix_v2.lon_e7;
     spin_unlock_irqrestore(&p->lock, flags);
     return scnprintf(buf, PAGE_SIZE, "%d\n", v);
 }
 static DEVICE_ATTR(lon, 0444, show_lon, NULL);
 
-static ssize_t show_alt( struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_alt(struct device *dev, struct device_attribute *attr, char *buf)
 {
     struct neo6m_priv *p = dev_get_drvdata(dev);
     unsigned long flags;
     s32 v;
     spin_lock_irqsave(&p->lock, flags);
-    v = p->fix.alt_mm;
+    v = p->fix_v2.alt_mm;
     spin_unlock_irqrestore(&p->lock, flags);
     return scnprintf(buf, PAGE_SIZE, "%d\n", v);
 }
@@ -783,11 +969,11 @@ static ssize_t show_speed(struct device *dev, struct device_attribute *attr, cha
 {
     struct neo6m_priv *p = dev_get_drvdata(dev);
     unsigned long flags;
-    u32 v;
+    s32 v;
     spin_lock_irqsave(&p->lock, flags);
-    v = p->fix.speed_mmps;
+    v = p->fix_v2.speed_mmps;
     spin_unlock_irqrestore(&p->lock, flags);
-    return scnprintf(buf, PAGE_SIZE, "%u\n", v);
+    return scnprintf(buf, PAGE_SIZE, "%d\n", v);
 }
 static DEVICE_ATTR(speed_mmps, 0444, show_speed, NULL);
 
@@ -797,7 +983,7 @@ static ssize_t show_have_fix(struct device *dev, struct device_attribute *attr, 
     unsigned long flags;
     s8 v;
     spin_lock_irqsave(&p->lock, flags);
-    v = p->fix.have_fix;
+    v = p->fix_v2.have_fix;
     spin_unlock_irqrestore(&p->lock, flags);
     return scnprintf(buf, PAGE_SIZE, "%d\n", v);
 }
@@ -807,9 +993,9 @@ static ssize_t show_utc(struct device *dev, struct device_attribute *attr, char 
 {
     struct neo6m_priv *p = dev_get_drvdata(dev);
     unsigned long flags;
-    struct neo6m_gnss_fix f;
+    struct neo6m_gnss_fix_v2 f;
     spin_lock_irqsave(&p->lock, flags);
-    f = p->fix;
+    f = p->fix_v2;
     spin_unlock_irqrestore(&p->lock, flags);
     return scnprintf(buf, PAGE_SIZE, "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ\n",
         f.utc_year, f.utc_mon, f.utc_day,
@@ -817,33 +1003,202 @@ static ssize_t show_utc(struct device *dev, struct device_attribute *attr, char 
 }
 static DEVICE_ATTR(utc, 0444, show_utc, NULL);
 
-static ssize_t show_hdop(struct device *dev, struct device_attribute *attr, char *buf){
+static ssize_t show_hdop(struct device *dev, struct device_attribute *attr, char *buf)
+{
     struct neo6m_priv *p = dev_get_drvdata(dev);
     unsigned long flags;
     u16 v;
-
     spin_lock_irqsave(&p->lock, flags);
-    v = p->fix.hdop_x100;
+    v = p->fix_v2.hdop_x100;
     spin_unlock_irqrestore(&p->lock, flags);
-
     return scnprintf(buf, PAGE_SIZE, "%u\n", v);
-
 }
 static DEVICE_ATTR(hdop_x100, 0444, show_hdop, NULL);
 
-static ssize_t show_course(struct device *dev, struct device_attribute *attr, char *buf){
+static ssize_t show_course(struct device *dev, struct device_attribute *attr, char *buf)
+{
     struct neo6m_priv *p = dev_get_drvdata(dev);
     unsigned long flags;
-
     s32 v;
-
     spin_lock_irqsave(&p->lock, flags);
-    v = p->fix.course_deg_e5;
+    v = p->fix_v2.course_deg_e5;
     spin_unlock_irqrestore(&p->lock, flags);
-
     return scnprintf(buf, PAGE_SIZE, "%d\n", v);
 }
 static DEVICE_ATTR(course_deg_e5, 0444, show_course, NULL);
+
+/* v2 sequence counter attributes */
+
+static ssize_t show_fix_seq(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    struct neo6m_priv *p = dev_get_drvdata(dev);
+    unsigned long flags;
+    u32 v;
+    spin_lock_irqsave(&p->lock, flags);
+    v = p->fix_v2.fix_seq;
+    spin_unlock_irqrestore(&p->lock, flags);
+    return scnprintf(buf, PAGE_SIZE, "%u\n", v);
+}
+static DEVICE_ATTR(fix_seq, 0444, show_fix_seq, NULL);
+
+static ssize_t show_pos_seq(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    struct neo6m_priv *p = dev_get_drvdata(dev);
+    unsigned long flags;
+    u32 v;
+    spin_lock_irqsave(&p->lock, flags);
+    v = p->fix_v2.pos_seq;
+    spin_unlock_irqrestore(&p->lock, flags);
+    return scnprintf(buf, PAGE_SIZE, "%u\n", v);
+}
+static DEVICE_ATTR(pos_seq, 0444, show_pos_seq, NULL);
+
+static ssize_t show_vel_seq(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    struct neo6m_priv *p = dev_get_drvdata(dev);
+    unsigned long flags;
+    u32 v;
+    spin_lock_irqsave(&p->lock, flags);
+    v = p->fix_v2.vel_seq;
+    spin_unlock_irqrestore(&p->lock, flags);
+    return scnprintf(buf, PAGE_SIZE, "%u\n", v);
+}
+static DEVICE_ATTR(vel_seq, 0444, show_vel_seq, NULL);
+
+static ssize_t show_nmea_seq(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    struct neo6m_priv *p = dev_get_drvdata(dev);
+    unsigned long flags;
+    u32 v;
+    spin_lock_irqsave(&p->lock, flags);
+    v = p->fix_v2.nmea_seq;
+    spin_unlock_irqrestore(&p->lock, flags);
+    return scnprintf(buf, PAGE_SIZE, "%u\n", v);
+}
+static DEVICE_ATTR(nmea_seq, 0444, show_nmea_seq, NULL);
+
+static ssize_t show_pos_monotonic_ms(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    struct neo6m_priv *p = dev_get_drvdata(dev);
+    unsigned long flags;
+    u32 v;
+    spin_lock_irqsave(&p->lock, flags);
+    v = p->fix_v2.pos_monotonic_ms;
+    spin_unlock_irqrestore(&p->lock, flags);
+    return scnprintf(buf, PAGE_SIZE, "%u\n", v);
+}
+static DEVICE_ATTR(pos_monotonic_ms, 0444, show_pos_monotonic_ms, NULL);
+
+static ssize_t show_vel_monotonic_ms(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    struct neo6m_priv *p = dev_get_drvdata(dev);
+    unsigned long flags;
+    u32 v;
+    spin_lock_irqsave(&p->lock, flags);
+    v = p->fix_v2.vel_monotonic_ms;
+    spin_unlock_irqrestore(&p->lock, flags);
+    return scnprintf(buf, PAGE_SIZE, "%u\n", v);
+}
+static DEVICE_ATTR(vel_monotonic_ms, 0444, show_vel_monotonic_ms, NULL);
+
+/* Queue health attributes */
+
+static ssize_t show_parse_queue_depth(struct device *dev,
+                                      struct device_attribute *attr, char *buf)
+{
+    struct neo6m_priv *p = dev_get_drvdata(dev);
+    unsigned long flags;
+    unsigned int v;
+    spin_lock_irqsave(&p->qlock, flags);
+    v = p->parse_queue_depth;
+    spin_unlock_irqrestore(&p->qlock, flags);
+    return scnprintf(buf, PAGE_SIZE, "%u\n", v);
+}
+static DEVICE_ATTR(parse_queue_depth, 0444, show_parse_queue_depth, NULL);
+
+static ssize_t show_parse_queue_dropped(struct device *dev,
+                                        struct device_attribute *attr, char *buf)
+{
+    struct neo6m_priv *p = dev_get_drvdata(dev);
+    unsigned long flags;
+    unsigned int v;
+    spin_lock_irqsave(&p->qlock, flags);
+    v = p->parse_queue_dropped;
+    spin_unlock_irqrestore(&p->qlock, flags);
+    return scnprintf(buf, PAGE_SIZE, "%u\n", v);
+}
+static DEVICE_ATTR(parse_queue_dropped, 0444, show_parse_queue_dropped, NULL);
+
+/* ---- Parser diagnostics attributes ---- */
+
+#define DIAG_SHOW_LOCK(name, field)                                             \
+static ssize_t show_##name(struct device *dev, struct device_attribute *attr,   \
+                           char *buf)                                           \
+{                                                                               \
+    struct neo6m_priv *p = dev_get_drvdata(dev);                                \
+    unsigned long flags;                                                        \
+    u32 v;                                                                      \
+    spin_lock_irqsave(&p->lock, flags);                                         \
+    v = p->field;                                                               \
+    spin_unlock_irqrestore(&p->lock, flags);                                    \
+    return scnprintf(buf, PAGE_SIZE, "%u\n", v);                                \
+}                                                                               \
+static DEVICE_ATTR(name, 0444, show_##name, NULL)
+
+DIAG_SHOW_LOCK(nmea_rx_lines,             nmea_rx_lines);
+DIAG_SHOW_LOCK(nmea_bad_checksum,         nmea_bad_checksum);
+DIAG_SHOW_LOCK(nmea_parse_ok,             nmea_parse_ok);
+DIAG_SHOW_LOCK(rmc_count,                 rmc_count);
+DIAG_SHOW_LOCK(gga_count,                 gga_count);
+DIAG_SHOW_LOCK(vtg_count,                 vtg_count);
+DIAG_SHOW_LOCK(rmc_invalid_count,         rmc_invalid_count);
+DIAG_SHOW_LOCK(gga_no_fix_count,          gga_no_fix_count);
+DIAG_SHOW_LOCK(vtg_ignored_no_fix_count,  vtg_ignored_no_fix_count);
+DIAG_SHOW_LOCK(latlon_parse_fail_count,   latlon_parse_fail_count);
+DIAG_SHOW_LOCK(speed_parse_fail_count,    speed_parse_fail_count);
+DIAG_SHOW_LOCK(pos_update_count,          pos_update_count);
+DIAG_SHOW_LOCK(vel_update_count,          vel_update_count);
+
+static ssize_t show_queue_drop_count(struct device *dev,
+                                     struct device_attribute *attr, char *buf)
+{
+    struct neo6m_priv *p = dev_get_drvdata(dev);
+    unsigned long flags;
+    u32 v;
+    spin_lock_irqsave(&p->qlock, flags);
+    v = p->queue_drop_count;
+    spin_unlock_irqrestore(&p->qlock, flags);
+    return scnprintf(buf, PAGE_SIZE, "%u\n", v);
+}
+static DEVICE_ATTR(queue_drop_count, 0444, show_queue_drop_count, NULL);
+
+static ssize_t show_parser_stats(struct device *dev,
+                                 struct device_attribute *attr, char *buf)
+{
+    struct neo6m_priv *p = dev_get_drvdata(dev);
+    unsigned long flags;
+    u32 rx, ok, badcs, rmc, gga, vtg, pos, vel, drops;
+
+    spin_lock_irqsave(&p->lock, flags);
+    rx    = p->nmea_rx_lines;
+    ok    = p->nmea_parse_ok;
+    badcs = p->nmea_bad_checksum;
+    rmc   = p->rmc_count;
+    gga   = p->gga_count;
+    vtg   = p->vtg_count;
+    pos   = p->pos_update_count;
+    vel   = p->vel_update_count;
+    spin_unlock_irqrestore(&p->lock, flags);
+
+    spin_lock_irqsave(&p->qlock, flags);
+    drops = p->queue_drop_count;
+    spin_unlock_irqrestore(&p->qlock, flags);
+
+    return scnprintf(buf, PAGE_SIZE,
+        "rx=%u ok=%u badcs=%u rmc=%u gga=%u vtg=%u pos=%u vel=%u drops=%u\n",
+        rx, ok, badcs, rmc, gga, vtg, pos, vel, drops);
+}
+static DEVICE_ATTR(parser_stats, 0444, show_parser_stats, NULL);
 
 static struct attribute *neo6m_attrs[] = {
     &dev_attr_lat.attr,
@@ -854,6 +1209,32 @@ static struct attribute *neo6m_attrs[] = {
     &dev_attr_utc.attr,
     &dev_attr_hdop_x100.attr,
     &dev_attr_course_deg_e5.attr,
+    /* v2 sequence counters */
+    &dev_attr_fix_seq.attr,
+    &dev_attr_pos_seq.attr,
+    &dev_attr_vel_seq.attr,
+    &dev_attr_nmea_seq.attr,
+    &dev_attr_pos_monotonic_ms.attr,
+    &dev_attr_vel_monotonic_ms.attr,
+    /* queue health */
+    &dev_attr_parse_queue_depth.attr,
+    &dev_attr_parse_queue_dropped.attr,
+    /* parser diagnostics */
+    &dev_attr_nmea_rx_lines.attr,
+    &dev_attr_nmea_bad_checksum.attr,
+    &dev_attr_nmea_parse_ok.attr,
+    &dev_attr_rmc_count.attr,
+    &dev_attr_gga_count.attr,
+    &dev_attr_vtg_count.attr,
+    &dev_attr_rmc_invalid_count.attr,
+    &dev_attr_gga_no_fix_count.attr,
+    &dev_attr_vtg_ignored_no_fix_count.attr,
+    &dev_attr_latlon_parse_fail_count.attr,
+    &dev_attr_speed_parse_fail_count.attr,
+    &dev_attr_queue_drop_count.attr,
+    &dev_attr_pos_update_count.attr,
+    &dev_attr_vel_update_count.attr,
+    &dev_attr_parser_stats.attr,
     NULL,
 };
 
@@ -865,22 +1246,46 @@ static const struct attribute_group neo6m_attr_group = {
 static long neo6m_chr_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     struct neo6m_priv *p = file->private_data;
-    struct neo6m_gnss_fix f;
+    struct neo6m_gnss_fix_v2 fv2;
     unsigned long flags;
 
-    if ( cmd != NEO6M_GNSS_IOC_GET_FIX)
-    {
-        return -ENOTTY;
-    }
-
     spin_lock_irqsave(&p->lock, flags);
-    f = p->fix;
+    fv2 = p->fix_v2;
     spin_unlock_irqrestore(&p->lock, flags);
 
-    if (copy_to_user((void __user *)arg, &f, sizeof(f)))
-        return -EFAULT;
+    if (cmd == NEO6M_GNSS_IOC_GET_FIX) {
+        /* v1 ABI: synthesise the old struct from the v2 snapshot */
+        struct neo6m_gnss_fix f;
+        memset(&f, 0, sizeof(f));
+        f.monotonic_ms  = fv2.monotonic_ms;
+        f.have_fix      = fv2.have_fix;
+        f.lat_e7        = fv2.lat_e7;
+        f.lon_e7        = fv2.lon_e7;
+        f.alt_mm        = fv2.alt_mm;
+        f.speed_mmps    = fv2.speed_mmps;
+        f.course_deg_e5 = fv2.course_deg_e5;
+        f.hdop_x100     = fv2.hdop_x100;
+        f.utc_year      = fv2.utc_year;
+        f.utc_mon       = fv2.utc_mon;
+        f.utc_day       = fv2.utc_day;
+        f.utc_hour      = fv2.utc_hour;
+        f.utc_min       = fv2.utc_min;
+        f.utc_sec       = fv2.utc_sec;
+        f.utc_millis    = fv2.utc_millis;
+        f.heading_valid = fv2.heading_valid;
+        f.hdop_valid    = fv2.hdop_valid;
+        if (copy_to_user((void __user *)arg, &f, sizeof(f)))
+            return -EFAULT;
+        return 0;
+    }
 
-    return 0;
+    if (cmd == NEO6M_GNSS_IOC_GET_FIX_V2) {
+        if (copy_to_user((void __user *)arg, &fv2, sizeof(fv2)))
+            return -EFAULT;
+        return 0;
+    }
+
+    return -ENOTTY;
 }
 
 static int neo6m_chr_open(struct inode *inode, struct file *file)
@@ -928,10 +1333,13 @@ static int neo6m_probe(struct serdev_device *serdev)
 
     p->dev = dev;
     p->serdev = serdev;
-    memset(&p->fix, 0, sizeof(p->fix));
-    p->fix.heading_valid = false;
-    p->fix.hdop_valid = false;
+    memset(&p->fix_v2, 0, sizeof(p->fix_v2));
+    p->fix_v2.heading_valid = false;
+    p->fix_v2.hdop_valid    = false;
+    p->last_utc_epoch = U32_MAX;   /* sentinel: first valid RMC-A triggers epoch_changed */
     spin_lock_init(&p->lock);
+    INIT_LIST_HEAD(&p->parse_queue);
+    spin_lock_init(&p->qlock);
     INIT_WORK(&p->parse_work, neo6m_parse_workfn);
 
     serdev_device_set_drvdata(serdev, p);
@@ -1012,15 +1420,28 @@ err_unreg_devt:
 static void neo6m_remove(struct serdev_device *serdev)
 {
     struct neo6m_priv *p = serdev_device_get_drvdata(serdev);
+    struct nmea_line *nl, *tmp;
+    unsigned long flags;
 
     sysfs_remove_group(&p->chardev->kobj, &neo6m_attr_group);
     device_destroy(p->cls, p->devt);
     cdev_del(&p->cdev);
     unregister_chrdev_region(p->devt, 1);
     class_destroy(p->cls);
+
+    /* Stop the UART feed first, then wait for the worker to drain what it
+     * picked up before close, then free anything left in the queue. */
     serdev_device_close(serdev);
     cancel_work_sync(&p->parse_work);
-    serdev_device_close(serdev);
+
+    spin_lock_irqsave(&p->qlock, flags);
+    list_for_each_entry_safe(nl, tmp, &p->parse_queue, node) {
+        list_del(&nl->node);
+        kfree(nl);
+    }
+    p->parse_queue_depth = 0;
+    spin_unlock_irqrestore(&p->qlock, flags);
+
     dev_info(p->dev, "NEO-6M GNSS driver removed\n");
 }
 
