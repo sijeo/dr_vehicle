@@ -311,9 +311,20 @@
 // If either threshold is exceeded the accumulator resets and calibration
 // re-starts — this prevents engine vibration or vehicle motion from being
 // baked into the gyro/accel bias estimates.
+//
+// Motion is detected by deviation from a slow EMA of each gyro axis and
+// the accel-norm (bias-independent), NOT by absolute raw value. An older
+// implementation compared raw gyro magnitude against a 3 °/s gate, which
+// silently rejected any unit whose zero-rate offset exceeded 3 °/s
+// (typical ISM330 spec is ±5 °/s, max ±15 °/s) — calibration would never
+// complete on a steady bench. The thresholds below apply to the AC
+// component (sample − EMA).
 #define BOOT_CAL_DURATION_S      20.0f                  // accumulate this many seconds of still data
-#define BOOT_CAL_GYRO_STILL_RAD  (3.0f * DEG2RAD)        // per-axis gyro must stay below ~3 °/s
-#define BOOT_CAL_ACC_STILL_MPS2  (0.50f)                 // | |a|-g | must stay below ~5 % of g
+#define BOOT_CAL_GYRO_STILL_RAD  (1.5f * DEG2RAD)        // AC gyro deviation from EMA (~1.5 °/s)
+#define BOOT_CAL_ACC_STILL_MPS2  (0.30f)                 // AC accel-norm deviation from EMA
+#define BOOT_CAL_ACC_GROSS_MPS2  (1.0f)                  // gross |a|-g sanity (broken sensor catch)
+#define BOOT_CAL_GYRO_GROSS_RAD  (30.0f * DEG2RAD)       // gross gyro sanity (broken sensor catch)
+#define BOOT_CAL_EMA_ALPHA       0.05f                   // ~20-sample LPF for bias tracking
 #define BOOT_CAL_RESET_GRACE_S   1.0f                    // print "moved, restarting" at most once/sec
 
 #define CAL_LED_GPIO        13     //BCM GPIO 13
@@ -1087,7 +1098,13 @@ static void cal_led_init( void )
     cal_led_value_fd = open(path, O_WRONLY);
     if( cal_led_value_fd >= 0 ){
         cal_led_exported = 1;
-        write(cal_led_value_fd, "0", 1); //LED off initially 
+        write(cal_led_value_fd, "0", 1); //LED off initially
+    } else {
+        /* Surface init failure so a "LED never blinks" report has a clear
+         * trail. The fusion thread will still drive cal_led_blink_update;
+         * cal_led_set just becomes a no-op until the GPIO is available. */
+        cal_log("[CAL_LED] init failed: cannot open %s (errno=%d %s) — LED disabled",
+                path, errno, strerror(errno));
     }
 }
 
@@ -1321,20 +1338,39 @@ static dr_cal_t g_cal;
  * Production IMU calibration framework (imu_calib_t).
  *
  * Frame conventions:
- *   IMU/body frame:  X = sensor X (forward when mounted with X→front)
- *                    Y = sensor Y (left when mounted with Y→left)
- *                    Z = sensor Z (up when mounted Z→up)
- *   Vehicle frame:   X_v = vehicle forward (along chassis)
- *                    Y_v = vehicle left
- *                    Z_v = vehicle up
+ *   IMU physical mounting (sensor frame): FRD, right-handed
+ *     X = sensor X — forward (along chassis)
+ *     Y = sensor Y — vehicle right        ← updated per hardware install
+ *     Z = sensor Z — down (toward the road)
+ *     A right-handed sensor chip mounted with X→front and Y→right has
+ *     its Z axis pointing down by construction (X×Y = Z = forward×right
+ *     = down); the chip reads ~-g on Z when stationary.
  *
- * mount_R_bv is the rotation that converts IMU-frame vectors to vehicle
- * frame:  v_vehicle = mount_R_bv * v_imu_body.
+ *   Math vehicle frame (used by AHRS, INS, EKF, ENU integration): FLU
+ *     X_v = vehicle forward
+ *     Y_v = vehicle left
+ *     Z_v = vehicle up
+ *     Gravity reads as +g on Z_v (the math expects this).
  *
- * Default mount_R_bv = identity (assumes IMU is physically aligned with
- * the vehicle chassis). After an installation calibration is performed
- * (drive a straight line at constant speed, compare GNSS course with
- * gyro-integrated heading) update mount_R_bv and persist it.
+ * mount_R_bv rotates a vector from the IMU sensor frame into the math
+ * vehicle frame:  v_vehicle = mount_R_bv * v_imu_body.
+ *
+ * Default mount_R_bv = diag(1, -1, -1) — a 180° rotation about the X
+ * axis that converts FRD sensor → FLU math:
+ *   vehicle_X_forward =  imu_X_forward    (unchanged)
+ *   vehicle_Y_left    = -imu_Y_right      (Y flips)
+ *   vehicle_Z_up      = -imu_Z_down       (Z flips)
+ *
+ * Why not change the math to FRU? FRU (forward-right-up) is left-handed
+ * (forward × right = down ≠ up), and every rotation, quaternion, cross
+ * product, and ENU↔body conversion in this codebase assumes right-handed
+ * conventions. The mount_R_bv default lets the IMU be installed in the
+ * preferred FRD orientation (X→front, Y→right) without touching the
+ * EKF / AHRS internals.
+ *
+ * If the IMU is ever installed in a different orientation, override
+ * mount_R_bv via the persisted calibration blob; boot calibration
+ * preserves the existing mount_R_bv (see apply_poweron_calibration).
  * ===================================================================== */
 
 typedef struct {
@@ -1348,7 +1384,7 @@ typedef struct {
     float    gyro_scale[3];        // unitless scale correction (default 1)
 
     float    accel_misalign[3][3]; // optional cross-axis correction (default I)
-    float    mount_R_bv[3][3];     // IMU → vehicle frame (default I)
+    float    mount_R_bv[3][3];     // IMU → vehicle frame (default diag(1,-1,-1): FRD → FLU)
 
     float    temperature_c;        // sensor temperature at calibration time
     uint32_t created_unix_s;       // wall-clock at creation
@@ -1435,7 +1471,21 @@ static void imu_calib_set_defaults(imu_calib_t *cal) {
     cal->accel_scale[0] = cal->accel_scale[1] = cal->accel_scale[2] = 1.0f;
     cal->gyro_scale [0] = cal->gyro_scale [1] = cal->gyro_scale [2] = 1.0f;
     mat3_identity(cal->accel_misalign);
-    mat3_identity(cal->mount_R_bv);
+
+    /* Default IMU physical mounting: X→forward, Y→vehicle right, Z→down
+     * (FRD body convention — right-handed, standard automotive/aerospace).
+     * The internal AHRS/EKF math operates in FLU vehicle frame (Y→left,
+     * Z→up); mount_R_bv rotates physical FRD into math FLU by 180° about
+     * the X axis, i.e. diag(1, -1, -1). After the rotation, gravity reads
+     * +g on vehicle Z (up) as the FLU math expects.
+     *
+     * If the IMU is ever installed in a different orientation, override
+     * mount_R_bv via the persisted calibration blob — boot calibration
+     * preserves the existing mount_R_bv (see apply_poweron_calibration). */
+    cal->mount_R_bv[0][0] =  1.0f; cal->mount_R_bv[0][1] =  0.0f; cal->mount_R_bv[0][2] =  0.0f;
+    cal->mount_R_bv[1][0] =  0.0f; cal->mount_R_bv[1][1] = -1.0f; cal->mount_R_bv[1][2] =  0.0f;
+    cal->mount_R_bv[2][0] =  0.0f; cal->mount_R_bv[2][1] =  0.0f; cal->mount_R_bv[2][2] = -1.0f;
+
     cal->temperature_c = 25.0f;
     cal->valid_flags   = 0;
 }
@@ -2199,6 +2249,18 @@ typedef struct {
     double acc_norm_sum_sq;
     double gyro_norm_sum;       /* |gyro| in rad/s */
     double gyro_norm_sum_sq;
+
+    /* Bias-independent motion detector state.
+     * The boot calibration accumulator was previously fooled by gyro
+     * zero-rate offset > BOOT_CAL_GYRO_STILL_RAD: any unit with a real
+     * bias above the absolute-value threshold would forever fail the
+     * stillness check and never complete calibration. Instead we now
+     * track a slow EMA of each gyro axis and the accel-norm; the AC
+     * deviation from that EMA is the real motion signal (the bias is
+     * absorbed by the EMA). See apply_poweron_calibration(). */
+    bool   ema_init;
+    float  gx_ema, gy_ema, gz_ema;   /* rad/s, slow EMA = bias estimate */
+    float  an_ema;                   /* m/s², slow EMA of accel-norm */
 } still_accum_t;
 
 static void still_reset(still_accum_t *A ){
@@ -2229,24 +2291,65 @@ static int apply_poweron_calibration(still_accum_t *A,
     float gy_rps = (float)raw->gy * Lgz_inv;
     float gz_rps = (float)raw->gz * Lgz_inv;
     float acc_norm = v3_norm(acc_b_lsq);
-    float acc_dev = fabsf(acc_norm - GRAVITY);
+    float acc_dev_gross = fabsf(acc_norm - GRAVITY);  // |a|-g gross sanity
     float gyro_norm = sqrtf(gx_rps*gx_rps + gy_rps*gy_rps + gz_rps*gz_rps);
 
-    bool moving = (fabsf(gx_rps) > BOOT_CAL_GYRO_STILL_RAD ||
-                   fabsf(gy_rps) > BOOT_CAL_GYRO_STILL_RAD ||
-                   fabsf(gz_rps) > BOOT_CAL_GYRO_STILL_RAD ||
-                   acc_dev      > BOOT_CAL_ACC_STILL_MPS2);
+    /* Seed EMA on first sample after a reset, so the AC deviation starts at 0. */
+    if (!A->ema_init) {
+        A->gx_ema = gx_rps;
+        A->gy_ema = gy_rps;
+        A->gz_ema = gz_rps;
+        A->an_ema = acc_norm;
+        A->ema_init = true;
+    }
+
+    /* AC component = sample minus slow EMA. This is the bias-independent
+     * motion signal: any DC zero-rate offset on the gyro (or DC accel-norm
+     * offset from a slightly mis-trimmed LSQ) is absorbed by the EMA, and
+     * only true motion shows up in the deviation. */
+    float dgx = gx_rps  - A->gx_ema;
+    float dgy = gy_rps  - A->gy_ema;
+    float dgz = gz_rps  - A->gz_ema;
+    float dan = acc_norm - A->an_ema;
+
+    /* Gross sanity: catch a runaway sensor (broken hardware, wrong scale) so
+     * we don't accumulate garbage. These are wide (30 °/s, 1 m/s² from g). */
+    bool gross_bad = (fabsf(gx_rps) > BOOT_CAL_GYRO_GROSS_RAD ||
+                      fabsf(gy_rps) > BOOT_CAL_GYRO_GROSS_RAD ||
+                      fabsf(gz_rps) > BOOT_CAL_GYRO_GROSS_RAD ||
+                      acc_dev_gross > BOOT_CAL_ACC_GROSS_MPS2);
+
+    bool moving_ac = (fabsf(dgx) > BOOT_CAL_GYRO_STILL_RAD ||
+                      fabsf(dgy) > BOOT_CAL_GYRO_STILL_RAD ||
+                      fabsf(dgz) > BOOT_CAL_GYRO_STILL_RAD ||
+                      fabsf(dan) > BOOT_CAL_ACC_STILL_MPS2);
+
+    bool moving = gross_bad || moving_ac;
 
     if (moving) {
         static double t_last_warn = 0.0;
         if (now_s - t_last_warn > BOOT_CAL_RESET_GRACE_S) {
-            cal_log("[CAL_BOOT moved] restarting reason=|g_dev|=%.2f gyro=(%.2f,%.2f,%.2f)deg/s",
-                    acc_dev, gx_rps/DEG2RAD, gy_rps/DEG2RAD, gz_rps/DEG2RAD);
+            cal_log("[CAL_BOOT moved] restarting reason=%s |g_dev|=%.2f "
+                    "gyro_raw=(%.2f,%.2f,%.2f) gyro_ac=(%.2f,%.2f,%.2f)deg/s acc_ac=%.3f",
+                    gross_bad ? "GROSS" : "AC",
+                    acc_dev_gross,
+                    gx_rps/DEG2RAD, gy_rps/DEG2RAD, gz_rps/DEG2RAD,
+                    dgx/DEG2RAD, dgy/DEG2RAD, dgz/DEG2RAD,
+                    dan);
             t_last_warn = now_s;
         }
         still_reset(A);
         return -1;
     }
+
+    /* Update EMA only when not moving so true motion bursts don't bias the
+     * baseline. The seed-on-first-sample above means dgx≈0 initially, which
+     * keeps moving=false on the very first sample and lets the EMA start
+     * tracking from a sensible point. */
+    A->gx_ema = (1.0f - BOOT_CAL_EMA_ALPHA) * A->gx_ema + BOOT_CAL_EMA_ALPHA * gx_rps;
+    A->gy_ema = (1.0f - BOOT_CAL_EMA_ALPHA) * A->gy_ema + BOOT_CAL_EMA_ALPHA * gy_rps;
+    A->gz_ema = (1.0f - BOOT_CAL_EMA_ALPHA) * A->gz_ema + BOOT_CAL_EMA_ALPHA * gz_rps;
+    A->an_ema = (1.0f - BOOT_CAL_EMA_ALPHA) * A->an_ema + BOOT_CAL_EMA_ALPHA * acc_norm;
 
     /* Start accumulation on first call (or after a reset) */
     if( !A->active ){
@@ -4140,15 +4243,19 @@ static void* fusion_thread(void *arg) {
         if (dt <= 0.0f || dt > 1.0f) dt = DT_IMU_DEFAULT;
         last_tick_ms = now_ms;
 
+        /* Drive the calibration LED from the current g_cal_state on every
+         * fusion tick — INCLUDING ticks where the IMU sample hasn't arrived
+         * yet. Otherwise, if the IMU is slow to come up or briefly absent,
+         * the operator sees no visual feedback that the unit is alive and
+         * waiting. cal_led_blink_update is non-blocking and respects
+         * whatever mode the state machine has set (steady ON, slow blink,
+         * fast blink, off). */
+        cal_led_blink_update(now_sec());
+
         if (!C->have_imu) {
             pthread_mutex_unlock(&C->mtx);
             continue;
         }
-
-        /* Drive the calibration LED from the current g_cal_state every step.
-         * cal_led_blink_update is non-blocking and respects whatever mode the
-         * state machine has set (steady ON, slow blink, fast blink, off). */
-        cal_led_blink_update(now_sec());
 
         // Calibrate IMU through the centralized preprocessor (g_cal + g_imu_cal).
         // Output is in vehicle frame (mount_R_bv applied) and SI units, with
@@ -4398,7 +4505,7 @@ static void* fusion_thread(void *arg) {
                 cal_state_set(CAL_STATE_BOOT_RUNNING);
             }
         }
-        /* LED is driven every iteration below (cal_led_blink_update). */
+        /* LED is driven near the top of every loop iteration (cal_led_blink_update). */
 
 
 
