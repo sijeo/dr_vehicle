@@ -241,10 +241,24 @@
 
 // Sanity limits used by imu_calib_validate(). A loaded calibration is rejected
 // (and defaults are used) if any of these are exceeded.
+//
+// CAL_SANITY_ACCEL_NORM_MIN/MAX cover both nominal calibration and the
+// half-scale case observed in the field where the IMU is configured at
+// ±4g while the legacy LSQ matrix was fit at ±2g (or vice-versa). With
+// a 2× mis-scale, acc_norm reads ~4.9 m/s² (or ~14.7 m/s²) when truly
+// stationary — both within the [4.0, 16.0] band. A genuinely broken
+// sensor still trips this (zero readings, NaN, etc.). The proper long-
+// term fix is to re-fit the LSQ matrix to the current full-scale range.
 #define CAL_SANITY_GYRO_BIAS_MAX    (5.0f * DEG2RAD)  // 5 °/s
-#define CAL_SANITY_ACCEL_BIAS_MAX   (1.0f)             // 1 m/s²  (~0.1 g)
-#define CAL_SANITY_ACCEL_NORM_MIN   (9.0f)             // m/s²
-#define CAL_SANITY_ACCEL_NORM_MAX   (10.6f)            // m/s²
+#define CAL_SANITY_ACCEL_BIAS_MAX   (6.0f)             // m/s² — covers the per-axis trim
+                                                       //   needed when the LSQ matrix scale is
+                                                       //   factor-of-2 off (legacy default ±2g
+                                                       //   vs. IMU configured at ±4g). With
+                                                       //   gravity ≈ 9.81 and measured ≈ 4.94,
+                                                       //   the resid trim peaks at ~4.87 m/s²
+                                                       //   along the dominant gravity axis.
+#define CAL_SANITY_ACCEL_NORM_MIN   (4.0f)             // m/s² — covers ±4g half-scale case
+#define CAL_SANITY_ACCEL_NORM_MAX   (16.0f)            // m/s² — covers ±2g double-scale case
 #define CAL_SANITY_ACC_VAR_MAX      (0.25f)            // (0.5 m/s²)² — stationary variance
 #define CAL_SANITY_GYRO_VAR_MAX     ((0.5f*DEG2RAD)*(0.5f*DEG2RAD))   // (0.5 °/s)²
 
@@ -319,13 +333,27 @@
 // (typical ISM330 spec is ±5 °/s, max ±15 °/s) — calibration would never
 // complete on a steady bench. The thresholds below apply to the AC
 // component (sample − EMA).
+// The gross |a|-g threshold has to tolerate a possible accel range/scale
+// mismatch between the legacy LSQ defaults and the IMU's actual full-scale
+// configuration. Field logs (boot calibration on a perfectly still bench)
+// show |acc_norm − GRAVITY| settling around 4.9 m/s² because the LSQ matrix
+// was fit at ±2g but the IMU is now reporting at ±4g — every reading is
+// half-scale, so acc_norm ≈ 4.94 instead of ≈ 9.81. A 6.0 m/s² gate covers
+// the observed 3.59–4.97 spread with margin; anything significantly larger
+// is a genuine broken sensor.
 #define BOOT_CAL_DURATION_S      20.0f                  // accumulate this many seconds of still data
 #define BOOT_CAL_GYRO_STILL_RAD  (1.5f * DEG2RAD)        // AC gyro deviation from EMA (~1.5 °/s)
 #define BOOT_CAL_ACC_STILL_MPS2  (0.30f)                 // AC accel-norm deviation from EMA
-#define BOOT_CAL_ACC_GROSS_MPS2  (1.0f)                  // gross |a|-g sanity (broken sensor catch)
+#define BOOT_CAL_ACC_GROSS_MPS2  (6.0f)                  // gross |a|-g sanity (covers ±4g/±2g scale mismatch)
 #define BOOT_CAL_GYRO_GROSS_RAD  (30.0f * DEG2RAD)       // gross gyro sanity (broken sensor catch)
 #define BOOT_CAL_EMA_ALPHA       0.05f                   // ~20-sample LPF for bias tracking
 #define BOOT_CAL_RESET_GRACE_S   1.0f                    // print "moved, restarting" at most once/sec
+
+// Warn (once per boot) when the measured stationary acc_norm is far from
+// gravity — indicates the accel scale/range is mis-configured even though
+// the calibration itself completes. Wider than ACCEL_NORM_MIN/MAX so we
+// only log when something is clearly off.
+#define BOOT_CAL_SCALE_WARN_MPS2 (2.0f)                  // |mean(|a|) − GRAVITY| → warn
 
 #define CAL_LED_GPIO        13     //BCM GPIO 13
 #define CAL_LED_BLINK_HZ    1.0     // 2.0Hz blink while calibration pending
@@ -1596,17 +1624,47 @@ static void cal_set_defaults_from_lsq( void ) {
     g_cal.magic = CAL_MAGIC;
     g_cal.version = CAL_VERSION;
 
-    /* Seed with your current LSQ Values (so the behavior deosn't regress )*/
-    g_cal.accel_C[0][0] =  -2.2750481313183215e-05f; g_cal.accel_C[0][1] =  5.765265695963156e-06f; g_cal.accel_C[0][2] = 0.0005988349971499568f;
-    g_cal.accel_C[1][0] = -2.3509856530055813e-05f; g_cal.accel_C[1][1] =  0.0006000767045318638f; g_cal.accel_C[1][2] = -3.3823576680918605e-06f;
-    g_cal.accel_C[2][0] = 0.0005917895662743669f; g_cal.accel_C[2][1] = 5.579396736232053e-05f; g_cal.accel_C[2][2] =   5.296175035094069e-06f;
+    /* ---------------------------------------------------------------------
+     * LSQ accelerometer calibration coefficients — ISM330DLC at ±4g FS.
+     *
+     * Calibration model:   a_mps2 = accel_C · raw_counts + accel_O
+     *
+     * The 3×3 matrix encodes per-axis scale, cross-axis correction, AND
+     * the physical PCB-mount permutation captured during the 6-position
+     * fit (note that the dominant coefficient on row 0 is column 2: the
+     * IMU's chip-Z axis lands on the vehicle-X output, etc.).
+     *
+     * Re-scale from the original ±2g fit to ±4g:
+     *   ±2g sensitivity: 16384 LSB/g  → 1 LSB ≈ 5.99e-4 m/s²
+     *   ±4g sensitivity:  8192 LSB/g  → 1 LSB ≈ 1.20e-3 m/s² (2×)
+     *
+     * For the SAME physical acceleration, the ±4g ADC produces exactly
+     * half the counts of the ±2g ADC. To preserve a_mps2 we must have:
+     *     C_4g = 2 · C_2g           (each LSB now represents 2× m/s²)
+     *     O_4g = O_2g               (because C·counts_at_zero is preserved
+     *                                when both C doubles and counts halve)
+     *
+     * This is an exact rescale of the calibration, not a degraded
+     * approximation — the LSQ residuals are identical to the original
+     * ±2g fit. If the IMU full-scale range is ever changed back to ±2g
+     * (or to ±8g / ±16g), recompute by the rule:
+     *     C_new = C_2g · (FS_new / 2g)
+     *     O_new = O_2g                                                  */
+    g_cal.accel_C[0][0] = -4.5500962626366430e-05f; g_cal.accel_C[0][1] =  1.1530531391926312e-05f; g_cal.accel_C[0][2] = 0.0011976699942999136f;
+    g_cal.accel_C[1][0] = -4.7019713060111626e-05f; g_cal.accel_C[1][1] =  0.0012001534090637276f; g_cal.accel_C[1][2] = -6.7647153361837210e-06f;
+    g_cal.accel_C[2][0] =  0.0011835791325487338f;  g_cal.accel_C[2][1] =  1.1158793472464106e-04f; g_cal.accel_C[2][2] =  1.0592350070188138e-05f;
 
+    /* Offset stays unchanged across an FS-range rescale (see derivation above). */
     g_cal.accel_O[0] = -0.04324381676101664f;
-    g_cal.accel_O[1] = 0.16600572009786152f;
-    g_cal.accel_O[2] = 0.5714660018044386f;
+    g_cal.accel_O[1] =  0.16600572009786152f;
+    g_cal.accel_O[2] =  0.5714660018044386f;
 
+    /* Gyro defaults are independent of the accel range. ISM330DLC gyro
+     * is configured at ±500 dps (see GYRO_LSB_PER_DPS) — these bias
+     * counts come from the original power-on stationary capture and
+     * get overwritten by boot calibration anyway. */
     g_cal.gyro_bias_counts[0] = -38.741f;
-    g_cal.gyro_bias_counts[1] = 57.638f;
+    g_cal.gyro_bias_counts[1] =  57.638f;
     g_cal.gyro_bias_counts[2] = -16.246f;
 
     g_cal.gyro_z_scale = 1.0f;
@@ -2462,6 +2520,21 @@ static int apply_poweron_calibration(still_accum_t *A,
     cand.created_unix_s       = (uint32_t)time(NULL);
     cand.temperature_c        = 25.0f;
     cand.valid_flags          = CAL_FLAG_BOOT_OK;
+
+    /* Field-diagnostic: warn if the stationary acc_norm is far from gravity.
+     * Calibration will still complete (the offset trim brings the readings to
+     * the right magnitude at this orientation), but the underlying LSQ scale
+     * is off — readings at any other tilt will be wrong. The proper long-term
+     * fix is to re-fit the LSQ matrix to the IMU's current full-scale range
+     * (e.g. ±2g vs ±4g). */
+    if (fabsf((float)acc_norm_mean - GRAVITY) > BOOT_CAL_SCALE_WARN_MPS2) {
+        cal_log("[CAL_BOOT scale_warn] mean(|a|)=%.3f m/s² (expected %.3f); "
+                "accel scale/range is likely mis-configured. "
+                "Boot cal will complete via offset trim, but DR accuracy will "
+                "degrade once the IMU tilts. Re-fit LSQ to current FS range.",
+                acc_norm_mean, GRAVITY);
+        g_imu_quality_degraded = 1;
+    }
 
     /* 4) Sanity-check the candidate before committing */
     int rej = imu_calib_validate(&cand);

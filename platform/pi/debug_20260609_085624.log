@@ -1,0 +1,830 @@
+[1780975584.646][CAL_STATE] UNKNOWN -> LOADING (saved=0 boot=0 valid=0)
+[1780975584.647][CAL_PATH] using /home/sijeo/dr_vehicle/imu_cal.bin
+[1780975584.647][CAL_STATE] loading calibration
+[1780975584.647][CAL_DEFAULT] no valid saved calibration; boot calibration required
+[1780975584.647][CAL] Power-on IMU calibration will run; navigation is BLOCKED until success.
+[1780975584.648]GNSS_V2 enabled: using pos_seq/vel_seq for freshness detection
+[1780975584.648]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975584.652][CAL_BOOT] started keep vehicle still
+[1780975584.652][CAL_STATE] LOADING -> BOOT_RUNNING (saved=0 boot=0 valid=0)
+[1780975584.652][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.86 gyro_raw=(-1.33,1.02,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975584.653][CAL_STATE] BOOT_RUNNING -> BOOT_RESTARTING (saved=0 boot=0 valid=0)
+[1780975584.653]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975585.653][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.96,0.95,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975586.650]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975586.654][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.95,0.84,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975586.654]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975587.655][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.24,0.69,-0.67) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975588.653]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975588.655][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.63,0.89,-0.20) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975588.655]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975589.657][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.33,1.45,-0.61) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975590.656]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975590.658][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.69,0.87,-0.29) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975590.658]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975591.658][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.86 gyro_raw=(-1.02,0.96,-0.52) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975592.656]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975592.660][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.50,0.67,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975592.660]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975593.660][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.73,1.17,-0.61) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975594.653]BUMP_STATS count=5929/5929 duty=100.0% max_dev=19.72 a_norm=9.84 g_norm=0.00
+[1780975594.662]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975594.666][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.99,1.11,-0.72) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975594.666]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975595.667][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.96,1.10,-0.58) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975596.665]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975596.668][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.75,1.21,-0.52) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975596.668]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975597.668][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.69,0.46,-0.75) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975598.667]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975598.669][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.90,0.31,-0.63) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975598.669]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975599.670][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.73,1.34,-0.75) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975600.670]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975600.670]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975600.671][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.93,0.55,-0.32) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975601.672][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.09,0.93,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975602.670]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975602.672]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975602.674][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.61,1.05,-0.43) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975603.674][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.20,0.49,-0.61) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975604.653]BUMP_STATS count=5979/5979 duty=100.0% max_dev=19.62 a_norm=9.84 g_norm=0.00
+[1780975604.671]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975604.674]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975604.679][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.87,0.81,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975605.676][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.96,1.14,-0.24) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975606.672]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975606.677][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.64,1.42,-0.44) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975606.681]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975607.677][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.56,1.21,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975608.674]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975608.678][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.29,0.55,-0.55) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975608.686]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975609.679][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.32,0.67,-0.67) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975610.675]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975610.679][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.92,1.65,-0.40) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975610.689]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975611.679][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.95,0.56,-0.15) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975612.676]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975612.681][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.99,1.14,-0.47) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975612.691]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975613.681][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.02,0.92,-0.55) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975614.655]BUMP_STATS count=5914/5914 duty=100.0% max_dev=19.63 a_norm=9.85 g_norm=0.00
+[1780975614.677]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975614.682][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.95,1.16,-0.58) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975614.693]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975615.684][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.10,0.95,-0.31) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975616.678]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975616.685][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.43,0.73,-0.31) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975616.696]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975617.686][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.55,1.21,-0.90) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975618.679]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975618.688][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.95,1.02,-0.44) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975618.700]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975619.689][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.72,1.34,-0.29) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975620.680]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975620.690][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.90,1.17,-0.63) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975620.702]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975621.690][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.10,1.33,-0.38) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975622.680]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975622.690][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.64,0.73,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975622.704]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975623.692][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.13,0.84,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975624.656]BUMP_STATS count=5975/5975 duty=100.0% max_dev=19.64 a_norm=9.84 g_norm=0.01
+[1780975624.681]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975624.692][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.64,0.76,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975624.706]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975625.693][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.64,1.02,-0.78) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975626.681]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975626.694][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.69,1.33,-0.56) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975626.708]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975627.695][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.95,0.92,-0.41) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975628.682]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975628.695][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.78,1.25,-0.67) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975628.711]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975629.695][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.89,0.96,-0.69) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975630.683]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975630.696][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.85,0.72,-0.55) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975630.714]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975631.696][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.81,0.98,-0.47) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975632.683]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975632.696][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.38,1.21,-0.32) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975632.716]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975633.698][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.87,1.01,-0.58) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975634.659]BUMP_STATS count=5955/5955 duty=100.0% max_dev=19.63 a_norm=9.85 g_norm=0.00
+[1780975634.685]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975634.698][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.89,1.45,-0.78) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975634.719]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975635.699][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.36,1.17,-0.56) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975636.686]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975636.700][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.01,0.50,-0.56) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975636.722]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975637.701][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.79,1.21,-0.50) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975638.687]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975638.703][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.19,1.04,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975638.724]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975639.704][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.84,0.84,-0.35) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975640.687]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975640.704][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.32,0.70,-0.50) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975640.726]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975641.706][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.92,1.17,-0.32) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975642.687]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975642.707][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.56,1.85,-0.60) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975642.728]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975643.709][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.56,0.70,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975644.659]BUMP_STATS count=5967/5967 duty=100.0% max_dev=19.63 a_norm=9.86 g_norm=0.00
+[1780975644.688]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975644.710][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.90,0.78,-0.60) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975644.730]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975645.710][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.49,0.89,-0.52) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975646.689]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975646.712][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.04,1.11,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975646.733]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975647.712][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.96,1.56,-0.27) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975648.689]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975648.713][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.90,1.13,-0.61) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975648.735]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975649.714][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.89,0.95,-0.47) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975650.691]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975650.715][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.07,0.92,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975650.737]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975651.724][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.85,0.79,-0.47) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975652.691]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975652.726][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.84,1.27,-0.69) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975652.747]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975653.727][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.87,1.25,-0.43) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975654.660]BUMP_STATS count=5954/5954 duty=100.0% max_dev=19.63 a_norm=9.84 g_norm=0.00
+[1780975654.692]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975654.728][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.08,0.87,-0.47) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975654.749]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975655.728][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.86 gyro_raw=(-0.85,1.27,-0.58) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975656.693]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975656.729][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.27,1.59,-0.46) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975656.751]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975657.730][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.21,1.21,-0.32) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975658.693]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975658.730][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.72,1.13,-0.43) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975658.756]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975659.731][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.70,0.79,-0.40) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975660.694]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975660.732][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.96,0.93,-0.76) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975660.758]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975661.733][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.24,0.89,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975662.694]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975662.734][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.66,1.22,-0.52) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975662.760]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975663.735][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.67,1.02,-0.56) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975664.661]BUMP_STATS count=5939/5939 duty=100.0% max_dev=19.63 a_norm=9.86 g_norm=0.00
+[1780975664.695]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975664.735][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.82,1.28,-0.12) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975664.762]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975665.736][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.79,0.85,-0.55) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975666.696]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975666.737][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.85,1.42,-0.60) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975666.764]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975667.739][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.87,1.17,-0.61) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975668.696]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975668.740][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.04,0.84,-0.60) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975668.766]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975669.740][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.75,0.79,-0.63) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975670.698]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975670.741][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.05,1.17,-0.23) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975670.768]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975671.742][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.87,0.93,-0.41) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975672.698]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975672.743][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.07,1.30,-0.24) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975672.771]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975673.744][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.25,0.78,-0.55) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975674.662]BUMP_STATS count=5968/5968 duty=100.0% max_dev=19.64 a_norm=9.87 g_norm=0.00
+[1780975674.699]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975674.744][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.98,0.96,0.00) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975674.774]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975675.744][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.76,0.75,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975676.699]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975676.746][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.84,1.11,-0.35) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975676.776]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975677.747][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.76,0.89,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975678.700]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975678.748][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.78,1.14,-0.52) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975678.778]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975679.750][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.87,1.37,-0.26) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975680.701]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975680.751][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.66,1.33,-0.61) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975680.782]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975681.751][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.98,1.19,-0.73) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975682.702]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975682.752][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.85,1.02,-0.37) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975682.784]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975683.753][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.93,1.11,-0.35) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975684.664]BUMP_STATS count=5949/5949 duty=100.0% max_dev=19.65 a_norm=9.84 g_norm=0.00
+[1780975684.703]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975684.755][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.11,1.17,-0.72) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975684.786]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975685.756][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.81,1.19,-0.18) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975686.705]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975686.757][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.52,1.05,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975686.788]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975687.757][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.89,1.07,-0.66) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975688.705]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975688.758][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.63,0.82,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975688.790]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975689.759][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.21,1.02,-0.69) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975690.707]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975690.760][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.10,0.82,-0.17) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975690.792]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975691.760][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.47,1.30,-0.24) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975692.708]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975692.762][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.93,1.28,-0.46) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975692.794]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975693.762][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.52,0.73,-0.50) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975694.665]BUMP_STATS count=5970/5970 duty=100.0% max_dev=19.63 a_norm=9.85 g_norm=0.00
+[1780975694.710]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975694.763][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.89,1.04,-0.52) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975694.796]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975695.763][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.90,1.14,-0.41) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975696.711]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975696.764][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.05,1.05,-0.63) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975696.800]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975697.764][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.07,1.07,-0.46) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975698.712]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975698.765][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.64,0.44,-0.40) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975698.802]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975699.765][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.84,0.89,-0.02) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975700.713]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975700.767][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.38,1.17,-0.41) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975700.804]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975701.767][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.44,1.28,-0.73) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975702.714]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975702.769][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.75,1.01,-0.63) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975702.818]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975703.770][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.85,1.22,-0.32) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975704.665]BUMP_STATS count=5970/5970 duty=100.0% max_dev=19.64 a_norm=9.86 g_norm=0.00
+[1780975704.714]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975704.772][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.52,1.13,-0.34) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975704.823]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975705.772][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.89,0.93,-0.43) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975706.715]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975706.773][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.93,1.60,-0.44) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975706.825]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975707.774][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.84,1.16,-0.06) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975708.716]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975708.774][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.79,1.28,-0.43) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975708.828]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975709.775][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.33,1.19,-0.37) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975710.716]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975710.776][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.84,0.56,-0.46) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975710.830]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975711.776][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.95,1.17,-0.60) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975712.719]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975712.777][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.64,0.58,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975712.832]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975713.778][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.55,0.79,-0.56) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975714.665]BUMP_STATS count=5985/5985 duty=100.0% max_dev=19.64 a_norm=9.84 g_norm=0.00
+[1780975714.720]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975714.779][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.84,1.25,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975714.837]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975715.781][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.16,1.17,-0.72) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975716.721]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975716.781][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.08,0.84,-0.24) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975716.839]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975717.781][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.58,0.92,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975718.723]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975718.781][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.64,1.14,-0.55) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975718.841]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975719.782][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.98,0.95,-0.72) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975720.724]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975720.782][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.01,1.16,-0.60) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975720.845]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975721.782][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.43,1.66,-0.55) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975722.726]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975722.784][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.75,1.42,-0.78) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975722.848]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975723.785][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.75,0.67,-0.44) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975724.665]BUMP_STATS count=5996/5996 duty=100.0% max_dev=19.63 a_norm=9.84 g_norm=0.00
+[1780975724.727]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975724.786][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.72,1.25,-0.75) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975724.851]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975725.790][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.78,1.34,-0.56) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975726.728]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975726.791][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.44,1.22,-0.60) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975726.853]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975727.791][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.91 gyro_raw=(1.77,5.91,0.08) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975728.730]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975728.791][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.07,1.01,-0.85) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975728.855]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975729.792][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.79,1.30,-0.44) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975730.730]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975730.793][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.87,1.31,-0.44) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975730.858]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975731.793][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.63,1.19,-0.60) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975732.731]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975732.795][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.84,0.47,-0.73) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975732.860]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975733.795][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.66,-0.24,-0.24) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975734.666]BUMP_STATS count=5991/5991 duty=100.0% max_dev=20.86 a_norm=9.87 g_norm=0.00
+[1780975734.732]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975734.797][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.64,0.99,-0.55) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975734.862]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975735.797][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.38,1.30,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975736.733]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975736.797][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.81,0.84,-0.90) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975736.865]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975737.798][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.14,0.92,-0.96) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975738.734]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975738.798][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.40,1.02,-0.29) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975738.867]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975739.799][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.46,0.61,-0.44) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975740.734]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975740.799][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.60,1.31,-0.81) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975740.869]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975741.801][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.16,1.43,-0.55) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975742.735]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975742.802][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.89,0.81,-0.50) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975742.871]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975743.804][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.11,0.63,-0.26) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975744.666]BUMP_STATS count=5949/5949 duty=100.0% max_dev=20.02 a_norm=9.84 g_norm=0.00
+[1780975744.736]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975744.804][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.01,1.45,-0.56) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975744.873]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975745.805][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.31,0.82,-0.41) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975745.957][CAL_STATE] BOOT_RESTARTING -> BOOT_RUNNING (saved=0 boot=0 valid=0)
+[1780975745.958][CAL_STATE] BOOT_RUNNING -> BOOT_RESTARTING (saved=0 boot=0 valid=0)
+[1780975746.028][CAL_STATE] BOOT_RESTARTING -> BOOT_RUNNING (saved=0 boot=0 valid=0)
+[1780975746.030][CAL_STATE] BOOT_RUNNING -> BOOT_RESTARTING (saved=0 boot=0 valid=0)
+[1780975746.737]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975746.805][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.84,0.84,-0.63) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975746.875]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975747.806][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.69,0.70,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975748.739]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975748.806][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.60,0.90,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975748.879]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975749.807][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.01,1.60,-0.47) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975750.740]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975750.808][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.75,0.89,-1.17) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975750.881]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975751.810][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.52,0.81,-0.89) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975752.740]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975752.811][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.87,1.13,-0.27) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975752.883]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975753.812][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.78,1.16,-0.15) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975754.667]BUMP_STATS count=5960/5960 duty=100.0% max_dev=22.99 a_norm=9.87 g_norm=0.00
+[1780975754.742]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975754.813][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.37,0.73,-0.66) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975754.885]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975755.813][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.95,1.36,-0.40) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975756.742]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975756.815][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.05,1.46,-0.47) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975756.888]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975757.815][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.38,1.11,-0.52) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975758.743]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975758.817][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.75,1.22,-0.43) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975758.896]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975759.818][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.89,1.19,-0.60) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975760.743]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975760.819][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.42,1.28,-0.60) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975760.899]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975761.820][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.98,1.30,-0.32) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975762.744]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975762.821][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.84,1.22,-0.85) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975762.908]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975763.822][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.05,1.34,-0.35) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975764.668]BUMP_STATS count=5959/5959 duty=100.0% max_dev=19.65 a_norm=9.85 g_norm=0.00
+[1780975764.745]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975764.823][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.61,1.21,-0.90) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975764.910]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975765.823][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.78,0.98,-0.32) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975766.745]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975766.824][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.92,0.92,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975766.913]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975767.825][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.01,0.73,-0.69) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975768.746]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975768.826][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.90,1.34,-0.69) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975768.915]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975769.828][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.95,1.40,-0.75) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975770.746]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975770.829][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.58,1.01,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975770.918]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975771.829][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.72,1.10,-0.61) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975772.747]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975772.830][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.42,1.10,-0.32) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975772.923]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975773.831][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.85,1.16,-0.52) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975774.669]BUMP_STATS count=5948/5948 duty=100.0% max_dev=19.64 a_norm=9.86 g_norm=0.00
+[1780975774.748]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975774.831][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.34,1.27,-0.98) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975774.926]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975775.831][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.76,1.17,-0.26) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975776.748]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975776.832][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.69,1.05,-0.61) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975776.930]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975777.833][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.61,1.02,-0.90) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975778.749]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975778.834][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.84,0.70,-0.69) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975778.932]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975779.834][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.89,1.33,-0.56) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975780.749]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975780.835][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.63,1.24,-0.40) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975780.937]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975781.835][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.43,1.37,-0.34) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975782.750]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975782.835][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.82,1.39,-0.73) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975782.940]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975783.836][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.93,1.34,-0.60) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975784.669]BUMP_STATS count=5944/5944 duty=100.0% max_dev=19.64 a_norm=9.85 g_norm=0.00
+[1780975784.751]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975784.836][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.73,1.22,-0.79) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975784.946]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975785.837][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.56,1.25,-0.72) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975786.751]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975786.838][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.99,0.98,-0.47) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975786.958]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975787.839][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.82,1.37,-0.56) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975788.753]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975788.840][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.92,0.99,-0.43) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975788.960]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975789.841][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.40,0.61,-0.34) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975790.754]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975790.841][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.81,1.22,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975790.962]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975791.842][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.53,0.85,-0.82) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975792.756]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975792.842][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.25,1.11,-0.21) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975792.964]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975793.843][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.76,1.01,-0.41) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975794.669]BUMP_STATS count=5943/5943 duty=100.0% max_dev=19.66 a_norm=9.84 g_norm=0.00
+[1780975794.756]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975794.843][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.92,0.95,-0.56) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975794.966]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975795.844][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.55,1.08,-0.50) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975796.758]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975796.845][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.72,0.41,-0.50) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975796.969]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975797.845][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.90,1.43,-0.75) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975798.759]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975798.846][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.92,0.93,-0.46) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975798.971]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975799.848][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.17,1.10,-0.47) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975800.759]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975800.849][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.90,0.95,-0.75) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975800.973]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975801.850][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.13,0.98,-0.55) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975802.759]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975802.852][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.67,0.99,-0.78) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975802.975]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975803.853][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.05,1.19,-0.93) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975804.669]BUMP_STATS count=5973/5973 duty=100.0% max_dev=19.71 a_norm=9.85 g_norm=0.00
+[1780975804.761]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975804.853][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.98,1.02,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975804.977]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975805.854][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.72,1.16,-0.52) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975806.762]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975806.854][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.81,1.13,-0.50) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975806.979]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975807.855][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.96,1.40,-0.41) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975808.763]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975808.855][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.56,1.28,-0.40) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975808.981]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975809.856][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.11,0.90,-0.50) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975810.764]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975810.857][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.19,0.99,-0.31) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975810.985]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975811.858][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.64,0.75,-0.96) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975812.765]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975812.860][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.75,1.59,-0.76) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975812.987]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975813.860][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.76,1.14,-0.60) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975814.672]BUMP_STATS count=5987/5987 duty=100.0% max_dev=19.74 a_norm=9.85 g_norm=0.00
+[1780975814.765]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975814.861][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.24,1.45,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975814.989]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975815.862][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.76,1.10,-0.82) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975816.767]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975816.863][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.46,1.28,-0.34) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975816.991]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975817.864][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.61,1.30,-0.61) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975818.768]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975818.865][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.72,1.30,-0.75) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975818.993]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975819.866][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.43,0.92,-0.31) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975820.769]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975820.866][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.84,1.62,-0.14) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975820.996]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975821.867][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.69,0.72,-0.60) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975822.770]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975822.868][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.08,1.33,-0.37) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975823.007]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975823.870][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.41,1.02,-0.32) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975824.672]BUMP_STATS count=5945/5945 duty=100.0% max_dev=19.64 a_norm=9.85 g_norm=0.00
+[1780975824.770]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975824.870][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.07,0.98,-0.78) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975825.009]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975825.872][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.40,0.90,-0.58) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975826.770]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975826.872][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.96,1.33,-0.72) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975827.011]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975827.876][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.07,1.22,-0.79) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975828.771]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975828.877][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.99,1.25,-0.55) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975829.016]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975829.878][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.85,1.13,-0.44) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975830.773]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975830.879][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.64,0.96,-0.18) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975831.018]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975831.880][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.92,1.33,-0.32) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975832.774]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975832.880][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.69,1.04,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975833.021]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975833.882][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.07,1.40,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975834.672]BUMP_STATS count=5937/5937 duty=100.0% max_dev=19.64 a_norm=9.87 g_norm=0.00
+[1780975834.775]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975834.882][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.76,0.89,-0.67) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975835.023]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975835.883][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.87,1.25,-0.27) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975836.776]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975836.884][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.84,1.56,-0.58) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975837.026]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975837.885][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.08,1.11,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975838.777]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975838.887][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.98,1.14,-0.44) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975839.031]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975839.887][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.66,1.60,-0.60) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975840.777]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975840.888][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.89,0.95,-0.26) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975841.032]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975841.889][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.49,1.14,-0.81) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975842.778]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975842.890][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.79,1.01,-0.52) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975843.034]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975843.890][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.89,1.24,-0.66) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975844.673]BUMP_STATS count=5971/5971 duty=100.0% max_dev=19.63 a_norm=9.84 g_norm=0.00
+[1780975844.778]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975844.891][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.92,1.05,-0.37) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975845.037]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975845.892][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.67,1.28,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975846.779]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975846.893][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.07,1.50,-0.79) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975847.043]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975847.895][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.69,1.19,-1.02) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975848.780]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975848.896][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.90,0.89,-0.60) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975849.045]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975849.896][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.38,1.48,-0.63) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975850.782]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975850.898][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.84,1.27,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975851.047]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975851.899][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.01,1.48,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975852.782]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975852.900][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.18,0.96,-0.56) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975853.049]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975853.900][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.89,1.04,-0.75) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975854.674]BUMP_STATS count=5997/5997 duty=100.0% max_dev=19.64 a_norm=9.85 g_norm=0.00
+[1780975854.784]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975854.900][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.46,1.11,-0.31) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975855.052]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975855.900][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.34,1.04,-0.79) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975856.785]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975856.901][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.70,1.34,-0.61) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975857.054]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975857.902][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.79,1.25,-0.27) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975858.786]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975858.903][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.99,1.45,-0.63) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975859.056]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975859.904][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.61,1.05,-0.26) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975860.787]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975860.906][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.52,1.08,-0.72) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975861.060]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975861.907][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.79,1.27,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975862.789]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975862.908][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.47,0.85,-0.67) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975863.062]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975863.909][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.61,1.19,-0.44) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975864.676]BUMP_STATS count=6048/6048 duty=100.0% max_dev=19.65 a_norm=9.85 g_norm=0.00
+[1780975864.790]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975864.909][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.55,0.84,-0.46) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975865.064]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975865.910][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.75,0.58,-0.15) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975866.792]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975866.912][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.53,1.21,-0.50) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975867.069]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975867.912][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.64,1.36,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975868.793]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975868.913][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.21,1.14,-0.52) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975869.073]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975869.914][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.05,1.62,-0.66) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975870.794]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975870.916][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.63,1.08,-0.66) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975871.078]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975871.917][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.43,0.89,-0.43) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975872.796]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975872.917][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.61,1.39,-0.37) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975873.080]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975873.917][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.81,0.72,-0.44) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975874.676]BUMP_STATS count=5998/5998 duty=100.0% max_dev=19.65 a_norm=9.85 g_norm=0.00
+[1780975874.796]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975874.917][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.89,1.25,-0.67) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975875.082]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975875.918][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.38,1.48,-0.66) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975876.800]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975876.919][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.85,1.13,-0.38) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975877.085]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975877.919][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.82,0.95,-0.69) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975878.801]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975878.920][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.32,1.34,-0.84) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975879.087]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975879.921][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.95,1.60,-0.67) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975880.802]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975880.922][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.47,1.13,-0.73) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975881.089]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975881.923][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.87,1.43,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975882.803]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975882.923][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.22,1.39,-0.47) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975883.091]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975883.924][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.76,0.89,-0.26) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975884.677]BUMP_STATS count=5956/5956 duty=100.0% max_dev=19.65 a_norm=9.84 g_norm=0.00
+[1780975884.803]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975884.924][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.08,0.95,-0.44) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975885.093]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975885.925][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.25,1.16,-0.84) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975886.804]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975886.926][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-1.22,1.11,-0.46) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975887.096]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975887.927][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.37,0.84,-0.40) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975888.806]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975888.928][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.66,1.17,-0.81) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975889.098]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975889.929][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.78,1.08,-0.55) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975890.807]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975890.930][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.11,0.89,-0.52) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975891.100]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975891.931][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.85,1.50,-0.50) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975892.807]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975892.932][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.61,1.14,-0.34) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975893.102]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975893.932][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.04,1.31,-0.75) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975894.677]BUMP_STATS count=5976/5976 duty=100.0% max_dev=19.68 a_norm=9.86 g_norm=0.00
+[1780975894.808]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975894.933][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.95,0.64,-0.43) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975895.104]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975895.935][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.11,1.08,-0.32) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975896.808]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975896.935][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.55,1.16,-0.70) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975897.107]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975897.937][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.73,1.13,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975898.809]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975898.938][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.72,1.11,-0.55) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975899.109]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975899.938][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.72,0.81,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975900.809]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975900.940][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.64,1.27,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975901.115]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975901.940][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.76,0.69,-0.58) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975902.810]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975902.940][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.89,1.39,-0.52) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975903.117]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975903.941][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.69,1.13,-0.73) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975904.678]BUMP_STATS count=5963/5963 duty=100.0% max_dev=19.65 a_norm=9.87 g_norm=0.00
+[1780975904.811]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975904.941][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.10,1.08,-0.67) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975905.119]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975905.942][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.24,1.27,-0.46) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975906.811]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975906.942][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.87,1.27,-0.66) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975907.121]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975907.943][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.69,1.11,-0.34) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975908.813]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975908.943][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.73,0.61,-0.29) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975909.124]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975909.945][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.84,0.87,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975910.813]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975910.945][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.82,1.42,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975911.130]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975911.946][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.25,1.34,-0.67) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975912.814]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975912.949][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.14,0.82,-0.72) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975913.133]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975913.949][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.24,1.11,-0.47) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975914.680]BUMP_STATS count=6006/6006 duty=100.0% max_dev=19.64 a_norm=9.86 g_norm=0.00
+[1780975914.816]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975914.950][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.27,1.28,-0.18) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975915.135]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975915.951][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.99,1.11,-0.66) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975916.817]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975916.951][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.67,0.93,-0.67) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975917.138]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975917.951][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.47,1.16,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975918.819]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975918.952][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.76,1.36,-0.61) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975919.140]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975919.954][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.96,1.14,-0.29) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975920.819]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975920.955][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.72,1.13,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975921.142]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975921.957][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.49,0.79,-0.56) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975922.820]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975922.958][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.21,1.27,-0.58) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975923.148]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975923.959][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.55,1.10,-0.55) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975924.681]BUMP_STATS count=5970/5970 duty=100.0% max_dev=19.64 a_norm=9.87 g_norm=0.00
+[1780975924.821]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975924.960][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.48,1.56,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975925.151]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975925.961][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.60,0.98,-0.89) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975926.822]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975926.961][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.81,0.72,-0.49) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975927.153]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975927.963][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.58,0.96,-0.61) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975928.823]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975928.964][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.01,1.60,-0.78) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975929.156]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975929.964][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.82,1.11,-0.46) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975930.824]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975930.965][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.89,1.25,-0.78) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975931.157]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975931.966][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.87,0.90,-0.24) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975932.826]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975932.967][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.32,1.02,-0.61) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975933.160]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975933.968][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.96,0.95,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975934.681]BUMP_STATS count=5922/5922 duty=100.0% max_dev=19.75 a_norm=9.85 g_norm=0.00
+[1780975934.827]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975934.969][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.10,1.28,-0.37) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975935.162]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975935.969][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.85,1.19,-0.46) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975936.827]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975936.970][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.44,1.43,-0.47) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975937.164]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975937.972][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.07,0.87,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975938.829]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975938.973][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.85,1.27,-0.64) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975939.166]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975939.975][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.89,0.69,-0.27) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975940.830]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975940.975][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.69,2.00,-0.37) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975941.168]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975941.977][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.89 gyro_raw=(-0.78,-0.58,0.29) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975942.831]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975942.977][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.94 gyro_raw=(5.02,-0.63,1.34) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975943.171]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975943.979][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.79,4.81,-0.14) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975944.681]BUMP_STATS count=5975/5975 duty=100.0% max_dev=26.13 a_norm=9.79 g_norm=0.00
+[1780975944.832]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975944.980][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(1.31,0.03,-0.05) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975945.173]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975945.981][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.92,1.04,-0.41) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975946.833]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975946.982][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.93,0.75,-0.56) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975947.175]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975947.983][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.05,1.14,-0.67) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975948.834]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975948.983][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.13,1.02,-0.34) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975949.177]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975949.984][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.24,1.14,-0.67) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975950.834]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975950.985][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.11,1.01,-0.52) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975951.181]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975951.985][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.87,2.03,-0.47) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975952.835]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975952.986][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.36,0.90,-0.23) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975953.183]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975953.986][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.64,0.90,-1.01) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975954.683]BUMP_STATS count=6017/6017 duty=100.0% max_dev=20.24 a_norm=9.86 g_norm=0.00
+[1780975954.836]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975954.987][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.40,1.28,-0.63) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975955.185]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975955.988][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.85,0.96,-0.61) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975956.836]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975956.989][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.87,1.17,-0.67) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975957.187]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975957.989][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.73,1.13,-0.76) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975958.837]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975958.990][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.89,1.05,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975959.190]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975959.991][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.92,1.14,-0.27) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975960.839]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975960.991][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.87,1.39,-0.72) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975961.192]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975961.992][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.46,1.10,-0.50) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975962.839]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975962.994][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.01,1.11,-0.63) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975963.194]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975963.995][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.50,1.11,-0.53) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975964.683]BUMP_STATS count=5983/5983 duty=100.0% max_dev=19.80 a_norm=9.87 g_norm=0.00
+[1780975964.839]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975964.995][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.17,1.46,-0.84) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975965.196]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975965.995][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.46,0.98,-0.58) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975966.839]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975966.996][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.76,1.36,-0.44) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975967.202]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975967.998][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.98,0.63,-0.78) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975968.841]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975968.999][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.07,1.07,-0.58) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975969.204]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975969.999][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.72,1.25,-0.84) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975970.842]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975971.000][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.87 gyro_raw=(-0.34,-0.17,-0.37) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975971.208]GNSS_STALE pos_seq=0 vel_seq=0 have_fix=0
+[1780975972.002][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-1.28,0.63,-0.46) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+[1780975972.843]NAV_BLOCKED waiting for valid IMU calibration (cal_state=BOOT_RESTARTING saved=0 boot=0)
+[1780975973.002][CAL_BOOT moved] restarting reason=GROSS |g_dev|=4.88 gyro_raw=(-0.66,1.13,-0.41) gyro_ac=(0.00,0.00,0.00)deg/s acc_ac=0.000
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          
