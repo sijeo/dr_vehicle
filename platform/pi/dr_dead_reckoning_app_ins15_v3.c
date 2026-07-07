@@ -3742,16 +3742,30 @@ static void imulog_write_sample(ctx_t *C,
     r.gy_rps  = gyro_b->y;
     r.gz_rps  = gyro_b->z;
 
-    r.ekf_speed_mps    = v3_norm(C->ins.v);
     r.ekf_yaw_rate_rps = gyro_b->z;    /* body-frame yaw rate, cheapest proxy */
 
-    /* Yaw from AHRS quaternion. R_from_q gives the same math as the fusion
-     * thread uses; extract yaw as atan2(R[3], R[0]) in ENU convention. */
+    /* Match whichever EKF variant is compiled in. The 2D EKF keeps velocity
+     * in {v_E, v_N} and yaw in ahrs.q / ins2d.psi (both track together after
+     * NAV_INIT); the 15-state 3D EKF keeps v as vec3f and attitude in ins.q.
+     * Use ahrs.q for the R matrix under USE_2D_EKF because it's the single
+     * source of truth the fusion thread itself reads (see the up_body block
+     * elsewhere in this thread). */
+#if USE_2D_EKF
+    r.ekf_speed_mps = sqrtf(C->ins2d.v_E * C->ins2d.v_E
+                          + C->ins2d.v_N * C->ins2d.v_N);
+    {
+        float R[9];
+        R_from_q(C->ahrs.q, R);
+        r.ekf_yaw_rad = atan2f(R[3], R[0]);
+    }
+#else
+    r.ekf_speed_mps = v3_norm(C->ins.v);
     {
         float R[9];
         R_from_q(C->ins.q, R);
         r.ekf_yaw_rad = atan2f(R[3], R[0]);
     }
+#endif
 
     r.gnss_speed_mps  = C->gnss_speed_mps;
     r.gnss_fix_age_s  = (C->last_fresh_gnss_s > 0.0)
