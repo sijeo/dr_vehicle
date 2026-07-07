@@ -29,6 +29,9 @@ app_v2: dr_dead_reckoning_app_ins15.c
 app_v3: dr_dead_reckoning_app_ins15_v2.c
 	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o dr_dead_reckoning_app_ins15 $< $(CORE_SRCS) -lm -lpthread
 
+app_v4: dr_dead_reckoning_app_ins15_v3.c
+	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o dr_dead_reckoning_app_ins15 $< $(CORE_SRCS) -lm -lpthread
+
 driver_test: test_app/mpu6050_lateral_streamer_v2.c
 	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o test_app/mpu6050_lateral_streamer_v2 $< $(CORE_SRCS) -lm
 
