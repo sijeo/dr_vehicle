@@ -3620,6 +3620,13 @@ static void make_debug_log_file(ctx_t *C){
     setvbuf(C->dbglog, NULL, _IOLBF, 0); /* Line Buffered */
 }
 
+/* Forward declaration: dbg_printf is defined a bit further down (right after
+ * the imulog helpers below). The imulog write path calls dbg_printf to
+ * report a rate-limited "disk full / fwrite failed" warning, so it needs
+ * the prototype visible here to avoid an implicit-declaration error. */
+static void dbg_printf(ctx_t *C, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+
 /* --------- High-rate IMU binary logger ---------
  * Sidecar to the 1 Hz navlog.csv — writes one packed record per IMU tick so
  * ML training pipelines can consume raw + calibrated samples at the sensor
