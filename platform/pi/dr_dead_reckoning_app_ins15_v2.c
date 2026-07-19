@@ -1,8 +1,44 @@
-// dr_dead_reckoning_app_ins15.c
+// dr_dead_reckoning_app_ins15_v2.c
 //
-// 15-state INS (Error-State EKF) + GNSS (TAU1204) dead-reckoning app for RPi3B + ISM330
+// FIELD-HARDENED production build. Derived from v1 with targeted fixes for
+// bugs discovered during on-vehicle testing (calibration never completing,
+// GNSS freshness misdetection, IMU-mount frame mismatch, half-scale accel
+// readings). Use this for real deployments where ML data collection is not
+// required (use v3 if you need the high-rate IMU sidecar log).
 //
-// Output: ENU only (stdout) AFTER first GNSS fix initializes ENU origin and nav state.
+// Changes from v1:
+//   * Bias-independent boot calibration. The v1 gate on raw gyro magnitude
+//     (≤3 °/s per axis) silently rejected any unit whose zero-rate offset
+//     exceeded the threshold — ISM330 spec is ±5 °/s typical / ±15 °/s max.
+//     v2 tracks a slow EMA per axis as the bias baseline and detects motion
+//     from the AC deviation, so calibration completes reliably on real
+//     hardware regardless of individual sensor bias.
+//   * v2 GNSS driver ABI (NEO6M_GNSS_IOC_GET_FIX_V2) with pos_seq / vel_seq
+//     / nmea_seq counters. Fresh-data detection is event-driven (per-seq)
+//     rather than timestamp-derived. Falls back to v1 ioctl on ENOTTY for
+//     backwards compatibility with older drivers.
+//   * IMU physical mounting corrected to FRD (X→forward, Y→right, Z→down —
+//     right-handed automotive convention). mount_R_bv default is
+//     diag(1,-1,-1) — a 180° rotation about the X axis that converts FRD
+//     sensor vectors into the math's internal FLU vehicle frame. The AHRS
+//     / EKF / ENU integration remains right-handed FLU/ENU internally.
+//   * Accelerometer LSQ matrix rescaled for ±4g full-scale (the IMU driver
+//     and device tree select ±4g; v1's ±2g matrix was reading half-scale,
+//     giving |acc_norm| ≈ 4.94 m/s² and blocking boot cal). Rule used:
+//     C_4g = 2·C_2g, offset O unchanged. Exact rescale, no fit-quality loss.
+//   * All 64-bit integer arithmetic removed — pure u32/s32 throughout so
+//     the userspace and kernel halves share a safe ABI on 32-bit ARM
+//     without needing libgcc division helpers (__aeabi_ldivmod / __udivdi3).
+//     Timestamps compare via unsigned modular arithmetic (wrap-safe).
+//   * Calibration LED lifecycle fix: cal_led_blink_update() now runs
+//     BEFORE the have_imu gate so the operator sees the unit is alive
+//     during IMU startup. cal_led_init failures are logged explicitly
+//     instead of silently no-op'ing subsequent LED writes.
+//
+// This build:
+//   * 15-state error-state EKF for full 3D navigation, plus a compile-time
+//     USE_2D_EKF toggle that swaps to a 2D filter (p_E, p_N, v_E, v_N, ψ,
+//     b_a, b_g). 2D mode is much cheaper on the RPi3B for ground vehicles.
 //
 // State (nominal):
 //   p^e (3)  position in ENU (m)
@@ -30,12 +66,14 @@
 //   - Logs (1 Hz): timestamp, ENU p/v/a, raw IMU, GNSS fields, outage_s, NIS, q_scale.
 //
 // Dependencies:
-//   - mpu6050_ioctl.h (struct mpu6050_sample with ax,ay,az,gx,gy,gz raw counts)
-//   - neo6m_gnss_ioctl.h (struct neo6m_gnss_fix; reused ABI for TAU1204 dual-band GNSS)
-//     If you haven't extended the driver yet, set HAVE_GNSS_HDOP=0 and HAVE_GNSS_HEADING=0 below.
+//   - mpu6050_ioctl.h (struct mpu6050_sample with ax,ay,az,gx,gy,gz raw counts.
+//     Struct/driver name kept for legacy ABI compatibility — the actual chip
+//     on the Pi HAT is an ISM330DLC.)
+//   - neo6m_gnss_ioctl.h (struct neo6m_gnss_fix and struct neo6m_gnss_fix_v2
+//     with sequence counters for the TAU1204 dual-band GNSS)
 //
 // Build (example):
-//   gcc -O2 -pthread -lm -o dr_ins15 dr_dead_reckoning_app_ins15.c
+//   gcc -O2 -pthread -lm -o dr_ins15_v2 dr_dead_reckoning_app_ins15_v2.c
 //
 #define _GNU_SOURCE
 #include <errno.h>

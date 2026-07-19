@@ -1,8 +1,49 @@
-// dr_dead_reckoning_app_ins15.c
+// dr_dead_reckoning_app_ins15_v3.c
 //
-// 15-state INS (Error-State EKF) + GNSS (TAU1204) dead-reckoning app for RPi3B + ISM330
+// v2 + ML DATA COLLECTION. All v2 field-hardening features, plus a high-rate
+// IMU binary logger written from the fusion thread at IMU rate (~100 Hz).
+// Use this build while gathering training data for the planned motion-state
+// classifier and any future ML augmentation of the fusion pipeline. Fusion
+// behaviour is bit-for-bit identical to v2 when the ML additions are unused
+// — the logger is additive and does not touch the EKF / AHRS / calibration
+// code paths.
 //
-// Output: ENU only (stdout) AFTER first GNSS fix initializes ENU origin and nav state.
+// Changes from v2:
+//   * High-rate IMU binary sidecar log. One packed 72-byte record per
+//     fusion tick (~100 Hz) written to LOG_DIR/imulog_<timestamp>.bin
+//     alongside the 1 Hz navlog.csv. Each record carries:
+//       - raw ADC counts (ax, ay, az, gx, gy, gz, temp)
+//       - calibrated m/s² and rad/s in the vehicle frame
+//       - EKF-derived speed / yaw / yaw-rate (works under both USE_2D_EKF
+//         and the 3D EKF path — quaternion pulled from ahrs.q or ins.q
+//         depending on which is compiled in)
+//       - GNSS speed and fix-age (m/s and seconds respectively)
+//       - a validity flag word (GNSS_VALID / GNSS_FRESH / NAV_READY / HAVE_FIX)
+//       - a coarse online label hint (STATIONARY / CRUISING / TURNING /
+//         ACCEL_BRAKE, or UNKNOWN before first fresh GNSS). The hint is a
+//         starting point for the offline auto-labeler — not the final label.
+//     A fixed 120-byte header captures the IMU FS range, LSB constants,
+//     chip identifier ("ISM330"), wall-clock and monotonic timestamps at
+//     open, so the offline pipeline needs no runtime knowledge to decode.
+//     ~7.2 KB/s on disk; ~360 MB per 14-hour drive on the RPi3B SD card.
+//   * Companion side-tool platform/pi/tools/imulog_to_csv.c converts the
+//     .bin into a pandas-friendly CSV (metadata as comment='#' header
+//     lines, one wide row per sample). Struct sizes are checked at
+//     compile time via _Static_assert to catch layout drift; bump
+//     IMULOG_VERSION and both static asserts together if you change the
+//     record shape.
+//   * Intended downstream use: a small XGBoost or shallow-MLP motion
+//     classifier trained offline in Python, exported to C via m2cgen or
+//     CMSIS-NN, and integrated as a ~10 Hz tick that drives adaptive Q
+//     scaling, ZUPT enabling, and NHC strictness. The EKF is NOT
+//     replaced — ML augments existing hand-tuned decisions.
+//
+// This build:
+//   * All v2 fixes: EMA-based bias-independent boot cal, v2 GNSS ABI
+//     with sequence counters, mount_R_bv = diag(1,-1,-1) for FRD sensor
+//     mounting, ±4g LSQ matrix, pure 32-bit arithmetic, LED lifecycle fix.
+//   * 15-state error-state EKF for full 3D, plus USE_2D_EKF compile-time
+//     toggle for the reduced 2D filter (default under v3 for RPi3B).
 //
 // State (nominal):
 //   p^e (3)  position in ENU (m)
@@ -26,16 +67,23 @@
 //   - When GNSS returns: gate by NIS; fade-in measurement covariance for a few fixes.
 //
 // Logging:
-//   - Creates a new CSV file each run under /home/sijeo/nav_logs/ (change LOG_DIR).
-//   - Logs (1 Hz): timestamp, ENU p/v/a, raw IMU, GNSS fields, outage_s, NIS, q_scale.
+//   - 1 Hz nav CSV under /home/sijeo/nav_logs/ (change LOG_DIR): timestamp,
+//     ENU p/v/a, raw IMU, GNSS fields, outage_s, NIS, q_scale.
+//   - 100 Hz IMU binary sidecar in the same directory (imulog_<ts>.bin) —
+//     see imulog_write_sample() and platform/pi/tools/imulog_to_csv.c.
+//   - Debug text log (debug_<ts>.log) — cal state transitions, boot cal
+//     progress, NAV_INIT / NAV_BLOCKED reasons, EKF divergence flags.
 //
 // Dependencies:
-//   - mpu6050_ioctl.h (struct mpu6050_sample with ax,ay,az,gx,gy,gz raw counts)
-//   - neo6m_gnss_ioctl.h (struct neo6m_gnss_fix; reused ABI for TAU1204 dual-band GNSS)
-//     If you haven't extended the driver yet, set HAVE_GNSS_HDOP=0 and HAVE_GNSS_HEADING=0 below.
+//   - mpu6050_ioctl.h (struct mpu6050_sample with ax,ay,az,gx,gy,gz raw counts.
+//     Struct/driver name kept for legacy ABI compatibility — the actual chip
+//     on the Pi HAT is an ISM330DLC.)
+//   - neo6m_gnss_ioctl.h (struct neo6m_gnss_fix and struct neo6m_gnss_fix_v2
+//     with sequence counters for the TAU1204 dual-band GNSS)
 //
 // Build (example):
-//   gcc -O2 -pthread -lm -o dr_ins15 dr_dead_reckoning_app_ins15.c
+//   gcc -O2 -pthread -lm -o dr_ins15_v3 dr_dead_reckoning_app_ins15_v3.c
+//   (cd platform/pi/tools && make)          # builds imulog_to_csv side-tool
 //
 #define _GNU_SOURCE
 #include <errno.h>

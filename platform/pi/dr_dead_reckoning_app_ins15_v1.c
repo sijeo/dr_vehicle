@@ -1,8 +1,30 @@
-// dr_dead_reckoning_app_ins15.c
+// dr_dead_reckoning_app_ins15_v1.c
 //
-// 15-state INS (Error-State EKF) + GNSS (TAU1204) dead-reckoning app for RPi3B + ISM330
+// BASELINE dead-reckoning application — first working end-to-end fusion for
+// the ISM330 IMU + NEO-6M / TAU1204 GNSS on Raspberry Pi 3B. Retained as the
+// historical / regression reference from which v2 (production hardening) and
+// v3 (ML data collection) were derived. Prefer v2 or v3 for real deployments;
+// keep v1 buildable so field regressions can be A/B-compared against the
+// original behaviour.
 //
-// Output: ENU only (stdout) AFTER first GNSS fix initializes ENU origin and nav state.
+// What this build has:
+//   * 15-state error-state EKF for full 3D navigation, plus a compile-time
+//     USE_2D_EKF toggle that swaps to a reduced 2D filter (p_E, p_N, v_E,
+//     v_N, ψ, b_a, b_g). 2D mode is much cheaper on the RPi3B for the
+//     ground-vehicle use case.
+//   * v1 GNSS driver ABI only (NEO6M_GNSS_IOC_GET_FIX). Freshness is
+//     inferred from timestamp change — no sequence counters.
+//   * IMU LSQ calibration matrix fit at ±2g full-scale.
+//   * mount_R_bv default = identity: assumes the IMU is physically mounted
+//     in FLU orientation (X→forward, Y→left, Z→up). Real hardware installs
+//     were later found to be FRD; that was corrected in v2.
+//   * Absolute-threshold boot calibration (raw gyro magnitude vs. a fixed
+//     3 °/s gate). Later found to falsely fail on any unit whose gyro
+//     zero-rate offset exceeded the gate. v2 replaced this with a
+//     bias-independent EMA-based motion detector.
+//   * 64-bit integer types used freely (int64_t timestamps etc.). v2 later
+//     removed all 64-bit arithmetic so the kernel/user halves compile
+//     cleanly on 32-bit ARM without libgcc division helpers.
 //
 // State (nominal):
 //   p^e (3)  position in ENU (m)
@@ -30,12 +52,14 @@
 //   - Logs (1 Hz): timestamp, ENU p/v/a, raw IMU, GNSS fields, outage_s, NIS, q_scale.
 //
 // Dependencies:
-//   - mpu6050_ioctl.h (struct mpu6050_sample with ax,ay,az,gx,gy,gz raw counts)
+//   - mpu6050_ioctl.h (struct mpu6050_sample with ax,ay,az,gx,gy,gz raw counts.
+//     Struct/driver name kept for legacy ABI compatibility — the actual chip
+//     on the Pi HAT is an ISM330DLC.)
 //   - neo6m_gnss_ioctl.h (struct neo6m_gnss_fix; reused ABI for TAU1204 dual-band GNSS)
 //     If you haven't extended the driver yet, set HAVE_GNSS_HDOP=0 and HAVE_GNSS_HEADING=0 below.
 //
 // Build (example):
-//   gcc -O2 -pthread -lm -o dr_ins15 dr_dead_reckoning_app_ins15.c
+//   gcc -O2 -pthread -lm -o dr_ins15_v1 dr_dead_reckoning_app_ins15_v1.c
 //
 #define _GNU_SOURCE
 #include <errno.h>
