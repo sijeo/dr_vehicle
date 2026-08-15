@@ -122,6 +122,16 @@ void imu_config_set_dr_defaults(imu_config_t *cfg) {
     cfg->boot_gyro_gross_threshold_rps = 20.0f * IMU_DEG2RAD;
     cfg->boot_acc_norm_gross_threshold_mps2 = 3.0f;
 
+    /*
+    * ISM330DLC zero-rate offset can exceed 5 deg/s on an individual unit.
+    * Accept up to 15 deg/s per axis, then validate repeatability/variance.
+    */
+   cfg->cal_gyro_bias_abs_max_rps = 15.0f * IMU_DEG2RAD;
+   cfg->cal_acc_norm_min_mps2 = 8.8f;
+   cfg->cal_acc_norm_max_mps2 = 10.8f;
+   cfg->cal_acc_axis_var_max = 0.25f;
+   cfg->cal_gyro_axis_var_max = (0.5f * IMU_DEG2RAD) * (0.5f * IMU_DEG2RAD);
+
     cfg->stationary_acc_norm_tol_mps2 = 0.30f;
     cfg->stationary_gyro_axis_max_rps = 1.0f * IMU_DEG2RAD;
     cfg->bump_vertical_threshold_mps2 = 5.0f;
@@ -197,17 +207,16 @@ const char *imu_cal_state_name( imu_cal_state_t state ) {
         case IMU_CAL_RESTARTING:    return "RESTARTING";
         case IMU_CAL_VALID:         return "VALID";
         case IMU_CAL_FAILED:        return "FAILED";
-        default:
+        default:                    return "UNKNOWN";
     }
 }
 
 static int validate_loaded_calibration( const imu_pipeline_t *p, const imu_calibration_t *cal ){
-    if(!p || !cal->valid) return -EINVAL;
+    if(!p || !cal->valid || !cal) return -EINVAL;
     if(cal->config_crc32 != imu_config_crc32(&p->cfg)) return -ESTALE;
     size_t i;
-    float bias_rps;
     for(i = 0; i < 3; i++) {
-        bias_rps = cal->gyro_bias_counts[i] * (IMU_DEG2RAD / p->cfg.gyro_lsb_per_dps);
+        float bias_rps = cal->gyro_bias_counts[i] * (IMU_DEG2RAD / p->cfg.gyro_lsb_per_dps);
         if( !finite_float(cal->gyro_bias_counts[i]) || fabsf(bias_rps) > p->cfg.cal_gyro_bias_abs_max_rps) return -ERANGE;
         if( !finite_float(cal->gyro_scale[i]) || cal->gyro_scale[i] < 0.8f || cal->gyro_scale[i] > 1.2f) return -ERANGE;
         if (!finite_float(cal->boot_accel_var[i]) || cal->boot_accel_var[i] < 0.0f || cal->boot_accel_var[i] > p->cfg.cal_acc_axis_var_max) return -ERANGE;
@@ -389,7 +398,7 @@ static void update_rate( imu_pipeline_t *p, uint64_t ns, uint32_t *flags ){
         double hz = 1.0 / dt;
         if ( p->rate_ema_hz <= 0.0 ) p->rate_ema_hz = hz;
         else p->rate_ema_hz = 0.98 * p->rate_ema_hz + 0.02 * hz;
-        if( dt > 2.5 / (double)p->cfg.sample_rate_hz) * flags != IMU_QF_SAMPLE_GAP;
+        if( dt > 2.5 / (double)p->cfg.sample_rate_hz) *flags |= IMU_QF_SAMPLE_GAP;
     }
     if (p->rate_ema_hz > 0.0 && (p->rate_ema_hz < 0.8 * p->cfg.sample_rate_hz || p->rate_ema_hz > 1.2 * p->cfg.sample_rate_hz)) {
         *flags |= IMU_QF_RATE_BAD;
@@ -416,7 +425,7 @@ static void update_stats(imu_pipeline_t *p, const float acc[3], const float gyro
         if( full ){
             float old = p->stats_ring[axis][idx];
             p->stats_sum[axis] -= old;
-            p->stats_sum_sq[axis] += (double)old * old;
+            p->stats_sum_sq[axis] -= (double)old * old;
         }
         p->stats_ring[axis][idx] = values[axis];
         p->stats_sum[axis] += values[axis];
@@ -424,7 +433,6 @@ static void update_stats(imu_pipeline_t *p, const float acc[3], const float gyro
     }
     if( full ) p->bump_sum -= p->bump_ring[idx];
     p->bump_ring[idx] = bump ? 1u : 0u;
-    p->bump_sum += p->bump_ring[idx];
     p->bump_sum += p->bump_ring[idx];
 
     if( !full ) ++p->stats_count;
@@ -482,7 +490,7 @@ static int finalize_boot_calibration(imu_pipeline_t *p ){
     if( b->n == 0u) return -EINVAL;
     double inv_n = 1.0 / (double)b->n;
     imu_calibration_t candidate;
-    memset(&candidate, 0 sizeof(candidtate));
+    memset(&candidate, 0, sizeof(candidtate));
     candidate.gyro_scale[0] = candidate.gyro_scale[1] = candidate.gyro_scale[2] = 1.0f;
     candidate.boot_sample_count = b->n;
     candidate.config_crc32 = imu_config_crc32(&p->cfg);
@@ -665,7 +673,7 @@ int imu_pipeline_process(imu_pipeline_t *p,
     out->gyro_norm_filtered_rps = vec_norm3( out->gyro_vehicle_filtered_rps);
 
     bool bump = fabsf( out->accel_norm_filtered - p->cfg.gravity_mps2 ) > p->cfg.bump_vertical_threshold_mps2;
-    if ( bump ) flags != IMU_QF_BUMP;
+    if ( bump ) flags |= IMU_QF_BUMP;
     update_stats(p, out->accel_vehicle_filtered, out->gyro_vehicle_filtered_rps, bump, 
     out->accel_mean, out->accel_std, out->gyro_mean_rps, out->gyro_std_rps, 
     &out->bump_duty_percent);
