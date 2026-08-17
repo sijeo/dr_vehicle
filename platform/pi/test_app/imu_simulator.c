@@ -107,7 +107,13 @@ int main(int argc, char **argv ) {
     peer.sin_port = htons((uint16_t)port);
     if( inet_pton(AF_INET, host, &peer.sin_addr ) != 1) {fprintf(stderr, "bad host\n"); return 2; }
 
-    const float gyro_bias_counts[3] = {-38.741f, 57.638f, -16.246f };
+    /* Simulated zero-rate offset in raw ADC counts. These were originally
+     * captured at ±500 dps (65.536 LSB/dps); the ISM330 driver default has
+     * since been raised to ±2000 dps (16.384 LSB/dps → ¼ the counts for the
+     * same physical bias in °/s), so divide by 4 to keep the simulated
+     * physical bias (~0.59, 0.88, -0.25 °/s) unchanged. Update if you
+     * change gyro_lsb_per_dps in imu_config_set_dr_defaults(). */
+    const float gyro_bias_counts[3] = { -9.685f, 14.410f, -4.062f };
     const long period_ns = 10000000L;
     struct timespec sleep_ts - {.tv_sec = 0, .tv_nsec=period_ns };
     uint64_t start = mono_ns();

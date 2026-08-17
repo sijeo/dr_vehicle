@@ -2,7 +2,7 @@
 
 This package isolates the IMU path from the dead-reckoning application so calibration and filtering can be tested without GNSS, AHRS, EKF, ZUPT, or position feedback hiding sensor defects.
 
-It uses the exact ±4 g LSQ accelerometer matrix and offset from the uploaded application and the same default FRD-to-FLU mount rotation. The implementation then corrects the sequencing, validation, filter, frame, and persistence problems documented in `docs/PRODUCTION_REVIEW.md`.
+It uses the exact ±8 g LSQ accelerometer matrix and offset from the uploaded application (rescaled from the original ±2 g fit by the FS-ratio rule `C_new = C_2g · (FS_new / 2g)`, `O` unchanged), together with the ±2000 dps gyro sensitivity (`gyro_lsb_per_dps = 16.384`) and the default FRD-to-FLU mount rotation. The implementation then corrects the sequencing, validation, filter, frame, and persistence problems documented in `docs/PRODUCTION_REVIEW.md`. If you re-configure the IMU driver to a different FS range, update both `cfg->gyro_lsb_per_dps` and the `accel_C` matrix in `imu_config_set_dr_defaults()` (see the comments there).
 
 ## Contents
 

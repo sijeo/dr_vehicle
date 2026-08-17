@@ -511,10 +511,14 @@ static int mpu6050_hw_init(struct mpu6050_priv *p)
         return ret;
     
     }
-    /* Defaults */
+    /* Defaults — accel ±8g / gyro ±2000 dps.
+     * Sensitivities: 4096 LSB/g and 16.384 LSB/dps (32768/2000).
+     * Userspace calibration constants MUST match (see
+     * dr_dead_reckoning_app_ins15_v*.c: cal_set_defaults_from_lsq()
+     * and GYRO_LSB_PER_DPS). */
     if(!p->odr_hz) p->odr_hz = 200;
-    if(!p->accel_fs) p->accel_fs = ACCEL_4G;
-    if(!p->gyro_fs) p->gyro_fs = GYRO_500DPS;
+    if(!p->accel_fs) p->accel_fs = ACCEL_8G;
+    if(!p->gyro_fs) p->gyro_fs = GYRO_2000DPS;
     ret = mpu6050_set_odr(p, p->odr_hz);
     if (ret) {
         dev_err(p->dev, "ODR config failed: %d\n", ret);
@@ -552,7 +556,7 @@ static int mpu6050_probe(struct i2c_client *client)
     struct device *dev = &client->dev;
     struct mpu6050_priv *p;
     int ret;
-    u32 ag = 4, gd = 500; /* defaults */
+    u32 ag = 8, gd = 2000; /* defaults — ±8g / ±2000 dps (see mpu6050_hw_init) */
 
     p = devm_kzalloc(dev, sizeof(*p), GFP_KERNEL);
     if (!p) {

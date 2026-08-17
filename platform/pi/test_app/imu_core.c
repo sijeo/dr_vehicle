@@ -111,7 +111,7 @@ void imu_config_set_dr_defaults(imu_config_t *cfg) {
     cfg->sample_rate_hz = 100.0f;
     cfg->lpf_cutoff_hz = 6.0f;
     cfg->stats_window_s = 2.0f;
-    cfg->gyro_lsb_per_dps = 65.536f;
+    cfg->gyro_lsb_per_dps = 16.384f;   /* ±2000 dps FS on the ISM330 driver default (was 65.536 @ ±500 dps) */
     cfg->gravity_mps2 = IMU_GRAVITY_MPS2;
 
     cfg->boot_settle_s = 2.0f;
@@ -137,16 +137,20 @@ void imu_config_set_dr_defaults(imu_config_t *cfg) {
     cfg->bump_vertical_threshold_mps2 = 5.0f;
     cfg->raw_saturation_fraction = 0.98f;
 
-    /* Exact ±4 g LSQ constants copied from cal_set_defaults_from_lsq(). */
-    cfg->accel_C[0][0] = -4.5500962626366430e-05f;
-    cfg->accel_C[0][1] =  1.1530531391926312e-05f;
-    cfg->accel_C[0][2] =  0.0011976699942999136f;
-    cfg->accel_C[1][0] = -4.7019713060111626e-05f;
-    cfg->accel_C[1][1] =  0.0012001534090637276f;
-    cfg->accel_C[1][2] = -6.7647153361837210e-06f;
-    cfg->accel_C[2][0] =  0.0011835791325487338f;
-    cfg->accel_C[2][1] =  1.1158793472464106e-04f;
-    cfg->accel_C[2][2] =  1.0592350070188138e-05f;
+    /* Exact ±8 g LSQ constants (mirrors cal_set_defaults_from_lsq() in
+     * dr_dead_reckoning_app_ins15_v3.c). Rescale rule for a new FS range:
+     *     C_new = C_2g · (FS_new / 2g)     (matrix scales by FS ratio)
+     *     O_new = O_2g                     (offset is FS-invariant)
+     * These values are the original ±2g LSQ × 4 (also = ±4g × 2). */
+    cfg->accel_C[0][0] = -9.1001925252732860e-05f;
+    cfg->accel_C[0][1] =  2.3061062783852624e-05f;
+    cfg->accel_C[0][2] =  0.0023953399885998272f;
+    cfg->accel_C[1][0] = -9.4039426120223252e-05f;
+    cfg->accel_C[1][1] =  0.0024003068181274552f;
+    cfg->accel_C[1][2] = -1.3529430672367442e-05f;
+    cfg->accel_C[2][0] =  0.0023671582650974676f;
+    cfg->accel_C[2][1] =  2.2317586944928212e-04f;
+    cfg->accel_C[2][2] =  2.1184700140376276e-05f;
 
     cfg->accel_O[0] = -0.04324381676101664f;
     cfg->accel_O[1] =  0.16600572009786152f;

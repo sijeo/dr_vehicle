@@ -230,9 +230,11 @@
 // Logging
 #define LOG_DIR             "/home/sijeo/nav_logs"
 
-// ISM330 gyro scale: ±500 dps full-scale → 32768/500 = 65.536 LSB/dps
-// (was 57.143 which corresponds to ±573 dps — 14.7% too fast, causing yaw drift)
-#define GYRO_LSB_PER_DPS    65.536f
+// ISM330 gyro scale: ±2000 dps full-scale → 32768/2000 = 16.384 LSB/dps.
+// (Was 65.536 for ±500 dps; the IMU driver default was raised to ±2000 dps to
+//  give more dynamic range for aggressive-manoeuvre logging. Keep this value
+//  in step with p->gyro_fs in mpu6050_char.c and st,gyro-fsr-dps in the DT.)
+#define GYRO_LSB_PER_DPS    16.384f
 
 #define aWGS        6378137.0
 #define fWGS        (1.0/298.257223563)
@@ -1663,7 +1665,7 @@ static void cal_set_defaults_from_lsq( void ) {
     g_cal.version = CAL_VERSION;
 
     /* ---------------------------------------------------------------------
-     * LSQ accelerometer calibration coefficients — ISM330DLC at ±4g FS.
+     * LSQ accelerometer calibration coefficients — ISM330DLC at ±8g FS.
      *
      * Calibration model:   a_mps2 = accel_C · raw_counts + accel_O
      *
@@ -1672,25 +1674,22 @@ static void cal_set_defaults_from_lsq( void ) {
      * fit (note that the dominant coefficient on row 0 is column 2: the
      * IMU's chip-Z axis lands on the vehicle-X output, etc.).
      *
-     * Re-scale from the original ±2g fit to ±4g:
-     *   ±2g sensitivity: 16384 LSB/g  → 1 LSB ≈ 5.99e-4 m/s²
-     *   ±4g sensitivity:  8192 LSB/g  → 1 LSB ≈ 1.20e-3 m/s² (2×)
+     * Re-scale rule for a new full-scale range:
+     *   ±2g sensitivity: 16384 LSB/g  → 1 LSB ≈ 5.99e-4 m/s²   (original fit)
+     *   ±4g sensitivity:  8192 LSB/g  → 1 LSB ≈ 1.20e-3 m/s²   (2× C_2g)
+     *   ±8g sensitivity:  4096 LSB/g  → 1 LSB ≈ 2.40e-3 m/s²   (4× C_2g)
+     *   ±16g sensitivity: 2048 LSB/g  → 1 LSB ≈ 4.79e-3 m/s²   (8× C_2g)
      *
-     * For the SAME physical acceleration, the ±4g ADC produces exactly
-     * half the counts of the ±2g ADC. To preserve a_mps2 we must have:
-     *     C_4g = 2 · C_2g           (each LSB now represents 2× m/s²)
-     *     O_4g = O_2g               (because C·counts_at_zero is preserved
-     *                                when both C doubles and counts halve)
+     * For the SAME physical acceleration, a lower-sensitivity ADC produces
+     * proportionally fewer counts. To preserve a_mps2:
+     *     C_new = C_2g · (FS_new / 2g)     (matrix scales by the FS ratio)
+     *     O_new = O_2g                     (C·counts_at_zero is preserved)
      *
-     * This is an exact rescale of the calibration, not a degraded
-     * approximation — the LSQ residuals are identical to the original
-     * ±2g fit. If the IMU full-scale range is ever changed back to ±2g
-     * (or to ±8g / ±16g), recompute by the rule:
-     *     C_new = C_2g · (FS_new / 2g)
-     *     O_new = O_2g                                                  */
-    g_cal.accel_C[0][0] = -4.5500962626366430e-05f; g_cal.accel_C[0][1] =  1.1530531391926312e-05f; g_cal.accel_C[0][2] = 0.0011976699942999136f;
-    g_cal.accel_C[1][0] = -4.7019713060111626e-05f; g_cal.accel_C[1][1] =  0.0012001534090637276f; g_cal.accel_C[1][2] = -6.7647153361837210e-06f;
-    g_cal.accel_C[2][0] =  0.0011835791325487338f;  g_cal.accel_C[2][1] =  1.1158793472464106e-04f; g_cal.accel_C[2][2] =  1.0592350070188138e-05f;
+     * This is an exact rescale — LSQ residuals are identical to the ±2g
+     * fit. Below are the ±2g × 4 = ±8g coefficients (also = ±4g × 2). */
+    g_cal.accel_C[0][0] = -9.1001925252732860e-05f; g_cal.accel_C[0][1] =  2.3061062783852624e-05f; g_cal.accel_C[0][2] = 0.0023953399885998272f;
+    g_cal.accel_C[1][0] = -9.4039426120223252e-05f; g_cal.accel_C[1][1] =  0.0024003068181274552f;  g_cal.accel_C[1][2] = -1.3529430672367442e-05f;
+    g_cal.accel_C[2][0] =  0.0023671582650974676f;  g_cal.accel_C[2][1] =  2.2317586944928212e-04f; g_cal.accel_C[2][2] =  2.1184700140376276e-05f;
 
     /* Offset stays unchanged across an FS-range rescale (see derivation above). */
     g_cal.accel_O[0] = -0.04324381676101664f;
@@ -1698,7 +1697,7 @@ static void cal_set_defaults_from_lsq( void ) {
     g_cal.accel_O[2] =  0.5714660018044386f;
 
     /* Gyro defaults are independent of the accel range. ISM330DLC gyro
-     * is configured at ±500 dps (see GYRO_LSB_PER_DPS) — these bias
+     * is configured at ±2000 dps (see GYRO_LSB_PER_DPS) — these bias
      * counts come from the original power-on stationary capture and
      * get overwritten by boot calibration anyway. */
     g_cal.gyro_bias_counts[0] = -38.741f;
