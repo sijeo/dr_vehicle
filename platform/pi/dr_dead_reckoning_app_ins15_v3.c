@@ -111,8 +111,8 @@
 #define IMU_DEVICE_PATH     "/dev/mpu6050-0"
 #define NEO6M_DEVICE_PATH   "/dev/neo6m0"
 
-#define IMU_HZ              100.0f
-#define DT_IMU_DEFAULT      (1.0f/IMU_HZ)
+#define IMU_HZ              200.0f        /* matches mpu6050_char.c default ODR (1000/(1+div=4)) */
+#define DT_IMU_DEFAULT      (1.0f/IMU_HZ) /* fallback dt used only when the measured tick is out of range */
 
 #define GNSS_TIMEOUT_S      2.0f
 
@@ -251,7 +251,7 @@
  * across the RPi (little-endian ARM) and any Linux x86-64 dev host. */
 #define IMULOG_MAGIC              "IMULOG01"
 #define IMULOG_VERSION            1u
-#define IMULOG_SAMPLE_RATE_HZ     100u
+#define IMULOG_SAMPLE_RATE_HZ     200u   /* nominal — must match mpu6050_char.c ODR default */
 #define IMULOG_BUF_KB             64  /* setvbuf batch size */
 #define IMULOG_FLUSH_INTERVAL_S   1.0
 

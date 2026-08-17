@@ -101,8 +101,8 @@
 #define IMU_DEVICE_PATH     "/dev/mpu6050-0"
 #define NEO6M_DEVICE_PATH   "/dev/neo6m0"
 
-#define IMU_HZ              100.0f
-#define DT_IMU_DEFAULT      (1.0f/IMU_HZ)
+#define IMU_HZ              200.0f        /* matches mpu6050_char.c default ODR (1000/(1+div=4)) */
+#define DT_IMU_DEFAULT      (1.0f/IMU_HZ) /* fallback dt used only when the measured tick is out of range */
 
 #define GNSS_TIMEOUT_S      2.0f
 

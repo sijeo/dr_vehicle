@@ -108,7 +108,7 @@ void imu_config_set_dr_defaults(imu_config_t *cfg) {
     if( !cfg ) return;
     memset(cfg, 0, sizeof(*cfg));
 
-    cfg->sample_rate_hz = 100.0f;
+    cfg->sample_rate_hz = 200.0f;   /* matches mpu6050_char.c default ODR; overridable via imu_streamer --sample-rate */
     cfg->lpf_cutoff_hz = 6.0f;
     cfg->stats_window_s = 2.0f;
     cfg->gyro_lsb_per_dps = 16.384f;   /* ±2000 dps FS on the ISM330 driver default (was 65.536 @ ±500 dps) */

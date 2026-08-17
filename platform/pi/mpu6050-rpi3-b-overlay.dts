@@ -20,8 +20,8 @@
                 interrupts = <25 2>;   /*<GPIO rising edge>*/
 
                 // Optional defaults (match your driver's DT parsing)
-                st,accel-fsr-g = <4>;   //2/4/8/16 g
-                st,gyro-fsr-dps = <500>;    // 250/500/1000/2000 dps
+                st,accel-fsr-g = <8>;   //2/4/8/16 g
+                st,gyro-fsr-dps = <2000>;    // 250/500/1000/2000 dps
                 st,odr-hz = <200>;          //effective ODR with DLPF = On 
             };
         };

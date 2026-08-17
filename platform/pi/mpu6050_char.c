@@ -579,9 +579,9 @@ static int mpu6050_probe(struct i2c_client *client)
     // Keep device always active (no pm_runtime)
 
     /* Parse DT (optional) */
-    device_property_read_u32(dev, "invensense,odr-hz", &p->odr_hz);
-    device_property_read_u32(dev, "invensense,accel-fsr-g", &ag);
-    device_property_read_u32(dev, "invensense,gyro-fsr-dps", &gd);
+    device_property_read_u32(dev, "st,odr-hz", &p->odr_hz);
+    device_property_read_u32(dev, "st,accel-fsr-g", &ag);
+    device_property_read_u32(dev, "st,gyro-fsr-dps", &gd);
     p->accel_fs = (ag <= 2) ? ACCEL_2G :
                    (ag <= 4) ? ACCEL_4G :
                    (ag <= 8) ? ACCEL_8G : ACCEL_16G;
