@@ -167,7 +167,7 @@ int imu_config_validate(const imu_config_t *cfg ){
     if(!cfg) return -EINVAL;
     if( !finite_float(cfg->sample_rate_hz) || cfg->sample_rate_hz < 10.0f || cfg->sample_rate_hz > 5000.0f )
         return -ERANGE;
-    if( !finite_float(cfg->lpf_cutoff_hz) || cfg->lpf_cutoff_hz <= 0.0f || cfg->lpf_cutoff_hz > 0.45f * cfg->sample_rate_hz )
+    if( !finite_float(cfg->lpf_cutoff_hz) || cfg->lpf_cutoff_hz <= 0.0f || cfg->lpf_cutoff_hz >= 0.45f * cfg->sample_rate_hz )
         return -ERANGE;
     if( !finite_float(cfg->gyro_lsb_per_dps) || cfg->gyro_lsb_per_dps <= 0.0f) return -ERANGE;
     if( !finite_float(cfg->gravity_mps2) || cfg->gravity_mps2 < 8.0f || cfg->gravity_mps2 > 12.0f ) return -ERANGE;
