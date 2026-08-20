@@ -2,7 +2,7 @@
 
 This package isolates the IMU path from the dead-reckoning application so calibration and filtering can be tested without GNSS, AHRS, EKF, ZUPT, or position feedback hiding sensor defects.
 
-It uses the exact ±4 g LSQ accelerometer matrix and offset from the uploaded application and the same default FRD-to-FLU mount rotation. The implementation then corrects the sequencing, validation, filter, frame, and persistence problems documented in `docs/PRODUCTION_REVIEW.md`.
+It uses the exact ±8 g LSQ accelerometer matrix and offset from the uploaded application and the same default FRD-to-FLU mount rotation. The implementation then corrects the sequencing, validation, filter, frame, and persistence problems documented in `docs/PRODUCTION_REVIEW.md`.
 
 ## Contents
 
