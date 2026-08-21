@@ -1,8 +1,10 @@
-#define _POSIX_C_SOURCE 200809L
+
+#include "imu_core.h"
+#include "imu_wire.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
-#include <fnctl.h>
+#include <fcntl.h>
 #include <getopt.h>
 #include <netinet/in.h>
 #include <signal.h>
@@ -14,8 +16,7 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
-#include "imu_core.h"
-#include "imu_wire.h"
+
 
 
 /* This is the existing kernel-driver ABI used by the DR application. */
@@ -79,7 +80,7 @@ int main( int argc, char **argv ) {
             case 'r' : recalibrate = true; break;
             case 'f' : cfg.sample_rate_hz = strtof(optarg, NULL); break;
             case 'l' : cfg.lpf_cutoff_hz = strtof(optarg, NULL); break;
-            default: usage(argv[0]); return (opt == '?') : ? : 2;
+            default: usage(argv[0]); return (opt == '?') ? 0 : 2;
         }
     }
     if( !host || port < 1 || port > 65535 ){
@@ -130,7 +131,7 @@ int main( int argc, char **argv ) {
         struct mpu6050_sample s;
         ssize_t n = read(imu_fd, &s, sizeof(s));
         if( n < 0 ){
-            if( errono == EINTR ) continue;
+            if( errno == EINTR ) continue;
             perror("read IMU");
             break;
         }

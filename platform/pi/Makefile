@@ -32,8 +32,8 @@ app_v3: dr_dead_reckoning_app_ins15_v2.c
 app_v4: dr_dead_reckoning_app_ins15_v3.c
 	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o dr_dead_reckoning_app_ins15 $< $(CORE_SRCS) -lm -lpthread
 
-driver_test: test_app/mpu6050_lateral_streamer_v2.c
-	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o test_app/mpu6050_lateral_streamer_v2 $< $(CORE_SRCS) -lm
+driver_test: test_app/imu_streamer.c
+	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o test_app/imu_streamer $< $(CORE_SRCS) -lm
 
 deploy:
 	scp *.ko sijeo@10.198.217.7:/home/sijeo/dr_vehicle/
@@ -45,6 +45,6 @@ deploy_app_2:
 	scp dr_dead_reckoning_app_ins15 sijeo@10.198.217.7:/home/sijeo/dr_vehicle/
 	
 deploy_test:
-	scp test_app/mpu6050_lateral_streamer_v2 sijeo@10.198.217.7:/home/sijeo/dr_vehicle/
+	scp test_app/imu_streamer sijeo@10.198.217.7:/home/sijeo/dr_vehicle/
 	
 .PHONY: all clean app driver_test deploy deploy_app
