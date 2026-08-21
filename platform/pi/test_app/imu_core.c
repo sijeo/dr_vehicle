@@ -328,7 +328,7 @@ void imu_pipeline_force_recalibration(imu_pipeline_t *p){
     if(!p) return;
     memset(&p->cal, 0, sizeof(p->cal));
     p->cal.gyro_scale[0] = p->cal.gyro_scale[1] = p->cal.gyro_scale[2] = 1.0f;
-    reset_boot_accumulator(&p->boot, true)
+    reset_boot_accumulator(&p->boot, true);
     p->cal_state = IMU_CAL_SETTLING;
 }
 
@@ -340,7 +340,7 @@ int imu_pipeline_init( imu_pipeline_t *p,
     if(!p || !cfg) return -EINVAL;
     int rc = imu_config_validate(cfg);
     if( rc != 0) return rc;
-    memset(p, 0 sizeof(*p));
+    memset(p, 0, sizeof(*p));
     p->cfg = *cfg;
     p->cal.gyro_scale[0] = p->cal.gyro_scale[1] = p->cal.gyro_scale[2] = 1.0f;
     p->stats_capacity = (uint32_t)lroundf(cfg->stats_window_s * cfg->sample_rate_hz);
@@ -358,7 +358,7 @@ int imu_pipeline_init( imu_pipeline_t *p,
         if( rc == 0 ) return 0;
         if (rc == -ESTALE ) p->quality_flags_latched |= IMU_QF_CONFIG_MISMATCH;
     }
-    imu_pipeline_force_recalibration(p)
+    imu_pipeline_force_recalibration(p);
     return 0;
 }
 
@@ -494,7 +494,7 @@ static int finalize_boot_calibration(imu_pipeline_t *p ){
     if( b->n == 0u) return -EINVAL;
     double inv_n = 1.0 / (double)b->n;
     imu_calibration_t candidate;
-    memset(&candidate, 0, sizeof(candidtate));
+    memset(&candidate, 0, sizeof(candidate));
     candidate.gyro_scale[0] = candidate.gyro_scale[1] = candidate.gyro_scale[2] = 1.0f;
     candidate.boot_sample_count = b->n;
     candidate.config_crc32 = imu_config_crc32(&p->cfg);
@@ -519,7 +519,7 @@ static int finalize_boot_calibration(imu_pipeline_t *p ){
         candidate.boot_accel_var[i] = (float)a_var;
 
         if( fabsf(candidate.boot_gyro_mean_rps[i]) > p->cfg.cal_gyro_bias_abs_max_rps ) return -ERANGE;
-        if( candidate.boot_gyro_var[i] > p->cfg.cal_gyro_axis_var_max || candidate.bool_accel_var[i] > p->cfg.cal_acc_axis_var_max ) variance_bad = true;
+        if( candidate.boot_gyro_var[i] > p->cfg.cal_gyro_axis_var_max || candidate.boot_accel_var[i] > p->cfg.cal_acc_axis_var_max ) variance_bad = true;
     }
 
     double norm_mean = b->acc_norm_sum * inv_n;

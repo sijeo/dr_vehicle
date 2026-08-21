@@ -70,7 +70,7 @@ size_t *encoded_size ){
     put_u32(&p, s->boot_sample_count);
     put_u32(&p, cal->created_unix_s);
 
-    conat float *groups[] = {
+    const float *groups[] = {
         s->accel_sensor_mps2,
         s->gyro_sensor_raw_rps,
         s->accel_vehicle_unfiltered,
@@ -83,7 +83,7 @@ size_t *encoded_size ){
         s->gyro_std_rps,
         cal->gyro_bias_counts
     };
-    for( g = 0; g < sizeof(groups)/sizeof(gourps[0]); ++g)
+    for( g = 0; g < sizeof(groups)/sizeof(groups[0]); ++g)
         for( i = 0; i < 3; ++i ) put_f32(&p, groups[g][i]);
 
     put_f32(&p, s->accel_norm_unfiltered);

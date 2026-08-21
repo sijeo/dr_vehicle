@@ -52,7 +52,7 @@ static bool inv3( const float A[3][3], float B[3][3]) {
 static float guassian(void) {
     float u1 = ((float)rand() + 1.0f) / ((float)RAND_MAX + 2.0f);
     float u2 = ((float)rand() + 1.0f) / ((float)RAND_MAX + 2.0f);
-    return sqrtf(-2.0f*logf(ul)) * cosf(2.0f*(float)M_PI*u2);
+    return sqrtf(-2.0f*logf(u1)) * cosf(2.0f*(float)M_PI*u2);
 }
 
 static void accel_to_raw(const imu_config_t *cfg, const float target_sensor[3], int32_t raw[3])
@@ -62,7 +62,7 @@ static void accel_to_raw(const imu_config_t *cfg, const float target_sensor[3], 
         raw[0]=raw[1]=raw[2] = 0;
         return;
     }
-    float y[3] = {target_sensor[0] - cfg->accel_O[0], target_sensor[1]-cfg->accel_O[1], target_sensor-cfg->accel_O[2]};
+    float y[3] = {target_sensor[0] - cfg->accel_O[0], target_sensor[1]-cfg->accel_O[1], target_sensor[2]-cfg->accel_O[2]};
     int r;
     for( r = 0; r< 3; r++) {
         float v = inv[r][0] * y[0] + inv[r][1]*y[1] + inv[r][2]*y[2];
@@ -97,7 +97,7 @@ int main(int argc, char **argv ) {
     imu_config_set_dr_defaults(&cfg);
     if(fast_cal) { cfg.boot_settle_s = 0.5f; cfg.boot_collect_s = 3.0f;}
     imu_pipeline_t pipe;
-    int rc = imu_pipline_init( &pipe, &cfg, "/tmp/imu_sim_cal.bin", true);
+    int rc = imu_pipeline_init( &pipe, &cfg, "/tmp/imu_sim_cal.bin", true);
     if( rc != 0 ) {fprintf(stderr, "pipeline init failed %d\n", rc); return 1; }
 
     int sock = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
@@ -115,11 +115,11 @@ int main(int argc, char **argv ) {
      * change gyro_lsb_per_dps in imu_config_set_dr_defaults(). */
     const float gyro_bias_counts[3] = { -9.685f, 14.410f, -4.062f };
     const long period_ns = 10000000L;
-    struct timespec sleep_ts - {.tv_sec = 0, .tv_nsec=period_ns };
+    struct timespec sleep_ts = {.tv_sec = 0, .tv_nsec=period_ns };
     uint64_t start = mono_ns();
 
     while(!g_stop ){
-        float elapsed = (float)((double)(mono_ns() - start)* 1.0e-9)
+        float elapsed = (float)((double)(mono_ns() - start)* 1.0e-9);
         bool calibrated = pipe.cal_state == IMU_CAL_VALID;
         float vehicle_acc[3] = {0.0f, 0.0f, cfg.gravity_mps2};
         float gyro_vehicle[3] = {0.0f, 0.0f, 0.0f};
