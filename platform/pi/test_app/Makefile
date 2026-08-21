@@ -14,8 +14,8 @@
 #
 # Cross-compile note (host x86 -> Pi ARM): override CC on the command line
 #   make CC=arm-linux-gnueabihf-gcc
-
-CC       ?= gcc
+CROSS_COMPILE ?= arm-linux-gnueabihf-
+CC       ?= $(CROSS_COMPILE)gcc
 CFLAGS   ?= -O2 -Wall -Wextra -Wpedantic -std=c11 -D_GNU_SOURCE
 LDFLAGS  ?=
 LDLIBS   ?= -lm -pthread

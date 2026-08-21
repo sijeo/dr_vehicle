@@ -14,7 +14,7 @@ all:
 
 clean:
 	$(MAKE) -C $(KDIR) ARCH=arm CROSS_COMPILE=$(CROSS_COMPILE) M=$(PWD) clean
-	$(RM) test_app/mpu6050_lateral_streamer_v2
+	$(RM) test_app/imu_streamer
 	$(RM) dr_app_1
 	$(RM) dr_dead_reckoning_app
 	$(RM) dr_dead_reckoning_app_ins15
