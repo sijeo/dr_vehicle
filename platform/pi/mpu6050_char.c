@@ -330,7 +330,6 @@ static ssize_t mpu6050_read_file(struct file *f, char __user *buf, size_t len, l
     struct mpu6050_priv *p = f->private_data;
     size_t count = len/sizeof(struct mpu6050_sample);
     size_t done = 0;
-    
 
     if( count == 0 ) return -EINVAL;
     dev_info(p->dev, "read request for %zu samples\n", count);
@@ -360,13 +359,14 @@ static ssize_t mpu6050_read_file(struct file *f, char __user *buf, size_t len, l
         } else {
             /* On demand snapshot mode */
             struct mpu6050_sample s; int ret;
+            size_t off;
             mutex_lock(&p->io_lock);
             ret = mpu6050_read_burst(p, &s);
             
             mutex_unlock(&p->io_lock);
             if (ret)
                 return done ? (ssize_t)(done * sizeof(s)) : ret;
-            size_t off = done * sizeof(struct mpu6050_sample);
+            off = done * sizeof(struct mpu6050_sample);
             if (copy_to_user((void __user *)(buf + off), &s, sizeof(s)))
                 return -EFAULT;
             dev_info(p->dev, "snapshot read: ax=%d ay=%d az=%d gx=%d gy=%d gz=%d temp=%d\n",
