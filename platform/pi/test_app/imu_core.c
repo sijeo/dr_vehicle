@@ -176,7 +176,7 @@ int imu_config_validate(const imu_config_t *cfg ){
 
     size_t r, c, r0, r1;
     for(r = 0; r < 3; ++r) {
-        for( c = 0; r < 3; ++c) {
+        for( c = 0; c < 3; ++c) {   /* was: r < 3  — typo caused OOB read → EINVAL */
             if(!finite_float(cfg->accel_C[r][c]) || !finite_float(cfg->mount_R_bv[r][c])) return -EINVAL;
         }
         if(!finite_float(cfg->accel_O[r])) return -EINVAL;
@@ -226,9 +226,9 @@ static int validate_loaded_calibration( const imu_pipeline_t *p, const imu_calib
         if (!finite_float(cal->boot_accel_var[i]) || cal->boot_accel_var[i] < 0.0f || cal->boot_accel_var[i] > p->cfg.cal_acc_axis_var_max) return -ERANGE;
         if (!finite_float(cal->boot_gyro_var[i]) || cal->boot_gyro_var[i] < 0.0f || cal->boot_gyro_var[i] > p->cfg.cal_gyro_axis_var_max) return -ERANGE;
     }
-    if(!finite_float(cal->boot_acc_norm_mean) || 
+    if(!finite_float(cal->boot_acc_norm_mean) ||
         cal->boot_acc_norm_mean < p->cfg.cal_acc_norm_min_mps2 ||
-        cal->boot_acc_norm_mean > p->cfg.cal_acc_norm_min_mps2) return -ERANGE;
+        cal->boot_acc_norm_mean > p->cfg.cal_acc_norm_max_mps2) return -ERANGE;  /* was: min (typo) */
     if(!finite_float(cal->observed_rate_hz) || cal->observed_rate_hz < 0.8f * p->cfg.sample_rate_hz ||
         cal->observed_rate_hz > 1.2f*p->cfg.sample_rate_hz) return -ERANGE;
     return 0;
