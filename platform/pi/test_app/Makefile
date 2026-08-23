@@ -6,15 +6,36 @@
 # symbols are DEFINED in imu_core.c and imu_wire.c. Headers only carry
 # declarations; the linker needs the .c files (or object files) too.
 #
-# Usage:
-#   make              # build all three binaries: imu_streamer, imu_simulator, test_imu_core
-#   make imu_streamer # build a single target
-#   make test         # build and run test_imu_core
-#   make clean        # remove all binaries and .o files
+# ============================ ARCHITECTURE ==============================
+# The "Syntax error: (" unexpected" shell error at runtime means the ELF
+# arch doesn't match the kernel — the shell falls back to reading the
+# binary as a script and chokes on the first byte after the magic. The
+# usual causes on a Pi are:
+#   - Built 64-bit (aarch64) but the Pi runs 32-bit Raspberry Pi OS (armv7l)
+#   - Built 32-bit (armhf)   but the Pi runs 64-bit Raspberry Pi OS (aarch64)
+# Check with `uname -m` on the Pi and `file <binary>` on the build host.
 #
-# Cross-compile note (host x86 -> Pi ARM): override CC on the command line
-#   make CC=arm-linux-gnueabihf-gcc
-CROSS_COMPILE ?= arm-linux-gnueabihf-
+# Convenience targets pick the right toolchain up-front:
+#   make armhf        # 32-bit ARM hard-float — Raspberry Pi OS 32-bit (armv7l)
+#   make aarch64      # 64-bit ARM — Raspberry Pi OS 64-bit
+#   make native       # whatever gcc is on this box (default alias below)
+#
+# Or set the toolchain yourself:
+#   make                                              # native gcc
+#   make CROSS_COMPILE=arm-linux-gnueabihf-           # 32-bit armhf
+#   make CROSS_COMPILE=aarch64-linux-gnu-             # 64-bit aarch64
+#
+# Other targets:
+#   make imu_streamer # build a single program
+#   make test         # build and run test_imu_core
+#   make clean        # remove all binaries, objects, and dep files
+#
+# Install the cross toolchains once (on Debian/Ubuntu/Raspberry Pi OS):
+#   sudo apt install gcc-arm-linux-gnueabihf   # for armhf target
+#   sudo apt install gcc-aarch64-linux-gnu     # for aarch64 target
+# ========================================================================
+
+CROSS_COMPILE ?=
 CC       ?= $(CROSS_COMPILE)gcc
 CFLAGS   ?= -O2 -Wall -Wextra -Wpedantic -std=c11 -D_GNU_SOURCE
 LDFLAGS  ?=
@@ -49,10 +70,27 @@ test_imu_core: test_imu_core.o $(LIB_OBJS)
 test: test_imu_core
 	./test_imu_core
 
+# ---- Per-target-architecture convenience targets ----
+# These force the cross-compiler AND wipe stale object files from a previous
+# arch build, so the resulting binaries are guaranteed to match the label.
+# (Without the clean, %.o from an aarch64 build would silently link into an
+# armhf binary and produce an ELF the linker refuses.)
+armhf:
+	$(MAKE) clean
+	$(MAKE) CROSS_COMPILE=arm-linux-gnueabihf- all
+
+aarch64:
+	$(MAKE) clean
+	$(MAKE) CROSS_COMPILE=aarch64-linux-gnu- all
+
+native:
+	$(MAKE) clean
+	$(MAKE) CROSS_COMPILE= all
+
 clean:
 	rm -f $(BINS) *.o *.d
 
 # Auto-generated header-dependency includes (from -MMD -MP above).
 -include $(LIB_OBJS:.o=.d) imu_streamer.d imu_simulator.d test_imu_core.d
 
-.PHONY: all clean test
+.PHONY: all clean test armhf aarch64 native

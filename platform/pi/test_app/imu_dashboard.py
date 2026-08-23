@@ -273,7 +273,7 @@ def main() -> int:
     packets = 0
     lost = 0
 
-    fig, axes = plt.subplot(2, 2, figsize=[13, 8])
+    fig, axes = plt.subplots(2, 2, figsize=[13, 8])
     fig.canvas.manager.set_window_title("Dead Reckoning IMU Validation")
     ax_acc, ax_gyro, ax_noise, ax_quality = axes.flat
 
@@ -289,7 +289,7 @@ def main() -> int:
     ax_gyro.legend(loc="upper right")
     ax_gyro.grid(True)
 
-    noise_lines = [ax_noise([], [], label=label)[0] for label in ("cAx", "cAy", "cAz")]
+    noise_lines = [ax_noise.plot([], [], label=label)[0] for label in ("cAx", "cAy", "cAz")]
     gyro_noise_lines = [ax_noise.plot([], [], linestyle="--", label=label)[0] for label in ("Gx deg/s", "Gy deg/s", "Gz deg/s")]
     ax_noise.set_ylabel("Rolling standard deviation")
     ax_noise.set_xlabel("Time (s)")
