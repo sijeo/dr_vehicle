@@ -68,7 +68,7 @@
  *
  * Datasheet: STMicroelectronics DocID028901 (ISM330DLC).
  * ------------------------------------------------------------------- */
-#define ISM330_REG_WHO_AM_I         0x0F   /* r/o, returns 0x6A */
+#define ISM330_REG_WHO_AM_I         0x0F   /* r/o, returns 0x71 */
 #define ISM330_REG_INT1_CTRL        0x0D   /* which sources drive INT1 pin */
 #define ISM330_REG_INT2_CTRL        0x0E
 #define ISM330_REG_CTRL1_XL         0x10   /* accel: ODR_XL[7:4], FS_XL[3:2], LPF1_BW_SEL[1], BW0_XL[0] */
@@ -644,8 +644,82 @@ static int mpu6050_hw_init(struct mpu6050_priv *p)
         return ret;
     }
 
-    dev_info(p->dev, "ISM330DLC configured: ODR=%u Hz  accel_fs_enum=%u  gyro_fs_enum=%u\n",
-             p->odr_hz, p->accel_fs, p->gyro_fs);
+    /* ---- Read-back verification ----
+     * Read CTRL1_XL and CTRL2_G back from the chip and print the ACTUAL
+     * FS + ODR the sensor is now running at. This catches (a) I²C write
+     * failures that returned 0 but silently didn't stick, (b) BOOT still
+     * in progress overwriting our writes, and (c) any future FS-encoding
+     * mismatch between the driver and the chip family. If the read-back
+     * doesn't match what we intended, dev_warn draws attention in dmesg
+     * even though we don't fail the probe (the driver stays useful and
+     * userspace can also inspect via /sys/…/fullscale). */
+    {
+        static const u16 fs_xl_to_g[4]   = { 2, 16, 4, 8 };    /* ISM330 FS_XL order */
+        static const u16 fs_g_to_dps[4]  = { 250, 500, 1000, 2000 };
+        static const u16 odr_to_hz[16]   = {
+            [ISM330_ODR_POWER_DOWN] = 0,
+            [ISM330_ODR_12_5_HZ]    = 13,   /* nominal 12.5 */
+            [ISM330_ODR_26_HZ]      = 26,
+            [ISM330_ODR_52_HZ]      = 52,
+            [ISM330_ODR_104_HZ]     = 104,
+            [ISM330_ODR_208_HZ]     = 208,
+            [ISM330_ODR_416_HZ]     = 416,
+            [ISM330_ODR_833_HZ]     = 833,
+            [ISM330_ODR_1666_HZ]    = 1666,
+        };
+        static const u16 fs_xl_expect_g[4] = {
+            [ACCEL_2G]  = 2,
+            [ACCEL_4G]  = 4,
+            [ACCEL_8G]  = 8,
+            [ACCEL_16G] = 16,
+        };
+        static const u16 fs_g_expect_dps[4] = {
+            [GYRO_250DPS]  = 250,
+            [GYRO_500DPS]  = 500,
+            [GYRO_1000DPS] = 1000,
+            [GYRO_2000DPS] = 2000,
+        };
+        unsigned int rb_ctrl1_xl = 0, rb_ctrl2_g = 0;
+        int rd;
+
+        rd  = mpu6050_read(p, ISM330_REG_CTRL1_XL, &rb_ctrl1_xl);
+        rd |= mpu6050_read(p, ISM330_REG_CTRL2_G,  &rb_ctrl2_g);
+        if (rd) {
+            dev_warn(p->dev, "read-back failed (ret=%d) — cannot verify FS/ODR\n", rd);
+        } else {
+            u8 odr_xl = (rb_ctrl1_xl >> 4) & 0x0F;
+            u8 fs_xl  = (rb_ctrl1_xl >> 2) & 0x03;
+            u8 odr_g  = (rb_ctrl2_g  >> 4) & 0x0F;
+            u8 fs_g   = (rb_ctrl2_g  >> 2) & 0x03;
+
+            u16 read_accel_g   = fs_xl_to_g[fs_xl];
+            u16 read_gyro_dps  = fs_g_to_dps[fs_g];
+            u16 read_odr_xl_hz = (odr_xl < ARRAY_SIZE(odr_to_hz)) ? odr_to_hz[odr_xl] : 0;
+            u16 read_odr_g_hz  = (odr_g  < ARRAY_SIZE(odr_to_hz)) ? odr_to_hz[odr_g]  : 0;
+            u16 want_accel_g   = fs_xl_expect_g[p->accel_fs];
+            u16 want_gyro_dps  = fs_g_expect_dps[p->gyro_fs];
+
+            dev_info(p->dev,
+                "ISM330DLC READBACK: CTRL1_XL=0x%02X (accel ODR=%u Hz, FS=±%ug)  "
+                "CTRL2_G=0x%02X (gyro ODR=%u Hz, FS=±%u dps)\n",
+                rb_ctrl1_xl, read_odr_xl_hz, read_accel_g,
+                rb_ctrl2_g,  read_odr_g_hz,  read_gyro_dps);
+
+            if (read_accel_g   != want_accel_g  ||
+                read_gyro_dps  != want_gyro_dps ||
+                read_odr_xl_hz != p->odr_hz     ||
+                read_odr_g_hz  != p->odr_hz) {
+                dev_warn(p->dev,
+                    "ISM330DLC READBACK MISMATCH: wanted accel=±%ug gyro=±%u dps ODR=%u Hz "
+                    "-- got accel=±%ug gyro=±%u dps ODR_XL=%u ODR_G=%u\n",
+                    want_accel_g, want_gyro_dps, p->odr_hz,
+                    read_accel_g, read_gyro_dps, read_odr_xl_hz, read_odr_g_hz);
+            } else {
+                dev_info(p->dev, "ISM330DLC READBACK OK: settings match driver intent\n");
+            }
+        }
+    }
+
     return 0;
 }
 
