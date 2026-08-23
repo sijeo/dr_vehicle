@@ -86,7 +86,7 @@
 #define ISM330_REG_OUTX_L_G         0x22   /* gyro  X L, X H, Y L, Y H, Z L, Z H (LE) */
 #define ISM330_REG_OUTX_L_XL        0x28   /* accel X L, X H, Y L, Y H, Z L, Z H (LE) */
 
-#define ISM330_WHO_AM_I_ID          0x6A
+#define ISM330_WHO_AM_I_ID          0x71
 
 /* CTRL3_C bit fields */
 #define ISM330_CTRL3C_SW_RESET      BIT(0)
