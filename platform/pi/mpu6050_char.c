@@ -54,35 +54,78 @@
 #define MPU6050_MAX_DEVICES 8
 #define MPU6050_FIFO_SAMPLES   2048 /* in-kernel sample FIFO depth */
 
-/* MPU6050 register map */
-#define MPU6050_REG_SMPLRT_DIV    0x19
-#define MPU6050_REG_CONFIG        0x1A
-#define MPU6050_REG_GYRO_CONFIG   0x1B
-#define MPU6050_REG_ACCEL_CONFIG  0x1C
-#define MPU6050_REG_FIFO_EN       0x23
-#define MPU6050_REG_INT_ENABLE    0x38
-#define MPU6050_REG_INT_STATUS    0x3A
-#define MPU6050_REG_ACCEL_XOUT_H  0x3B
-#define MPU6050_REG_TEMP_OUT_H    0x41
-#define MPU6050_REG_GYRO_XOUT_H   0x43
-#define MPU6050_REG_SIGNAL_PATH_RESET 0x68
-#define MPU6050_REG_USER_CTRL     0x6A
-#define MPU6050_REG_PWR_MGMT_1    0x6B
-#define MPU6050_REG_PWR_MGMT_2    0x6C
-#define MPU6050_REG_FIFO_COUNT_H  0x72
-#define MPU6050_REG_FIFO_R_W      0x74
-#define MPU6050_REG_WHO_AM_I      0x75
+/* ---------------------------------------------------------------------
+ * ISM330DLC register map.
+ *
+ * The physical chip on the board is an ST ISM330DLC (I²C address 0x6A),
+ * NOT an Invensense MPU6050. File names, /dev node, struct mpu6050_sample,
+ * and the ioctl ABI are kept unchanged so that userspace (the DR app, the
+ * test_app, and any legacy tooling) does not have to change. Only the
+ * driver internals below actually talk to the chip. Register names are
+ * ISM330-native to avoid confusion — the MPU6050_REG_* prefix used
+ * previously mapped onto reserved / repurposed ISM330 addresses and was
+ * silently misconfiguring the sensor.
+ *
+ * Datasheet: STMicroelectronics DocID028901 (ISM330DLC).
+ * ------------------------------------------------------------------- */
+#define ISM330_REG_WHO_AM_I         0x0F   /* r/o, returns 0x6A */
+#define ISM330_REG_INT1_CTRL        0x0D   /* which sources drive INT1 pin */
+#define ISM330_REG_INT2_CTRL        0x0E
+#define ISM330_REG_CTRL1_XL         0x10   /* accel: ODR_XL[7:4], FS_XL[3:2], LPF1_BW_SEL[1], BW0_XL[0] */
+#define ISM330_REG_CTRL2_G          0x11   /* gyro:  ODR_G[7:4],  FS_G[3:2],  FS_125[1] */
+#define ISM330_REG_CTRL3_C          0x12   /* BOOT[7] BDU[6] H_LACTIVE[5] PP_OD[4] SIM[3] IF_INC[2] BLE[1] SW_RESET[0] */
+#define ISM330_REG_CTRL4_C          0x13
+#define ISM330_REG_CTRL5_C          0x14
+#define ISM330_REG_CTRL6_C          0x15
+#define ISM330_REG_CTRL7_G          0x16
+#define ISM330_REG_CTRL8_XL         0x17
+#define ISM330_REG_CTRL9_XL         0x18
+#define ISM330_REG_CTRL10_C         0x19
+#define ISM330_REG_STATUS_REG       0x1E   /* XLDA[0], GDA[1], TDA[2] */
+#define ISM330_REG_OUT_TEMP_L       0x20   /* temp L/H (little-endian pair) */
+#define ISM330_REG_OUTX_L_G         0x22   /* gyro  X L, X H, Y L, Y H, Z L, Z H (LE) */
+#define ISM330_REG_OUTX_L_XL        0x28   /* accel X L, X H, Y L, Y H, Z L, Z H (LE) */
 
-#define MPU6050_WHO_AM_I_ID       0x68
+#define ISM330_WHO_AM_I_ID          0x6A
 
-/* Bit field */
-#define MPU6050_PWR1_DEVICE_RESET   BIT(7)
-#define MPU6050_PWR1_CLKSEL_PLL_X   0x01
-#define MPU6050_USERCTRL_FIFO_EN    BIT(6)
-#define MPU6050_USERCTRL_FIFO_RST   BIT(2)
-#define MPU6050_INT_DATA_RDY_EN     BIT(0)
-#define MPU6050_INT_DATA_RDY        BIT(0)
-#define MPU6050_PWR1_SLEEP         BIT(6)
+/* CTRL3_C bit fields */
+#define ISM330_CTRL3C_SW_RESET      BIT(0)
+#define ISM330_CTRL3C_IF_INC        BIT(2)  /* auto-increment register address on burst read */
+#define ISM330_CTRL3C_BDU           BIT(6)  /* block-data-update: prevents low/high byte mismatch */
+
+/* INT1_CTRL bit fields — route data-ready to the INT1 pin */
+#define ISM330_INT1_DRDY_XL         BIT(0)  /* accel data-ready */
+#define ISM330_INT1_DRDY_G          BIT(1)  /* gyro  data-ready */
+
+/* STATUS_REG bit fields */
+#define ISM330_STATUS_XLDA          BIT(0)  /* new accel sample available */
+#define ISM330_STATUS_GDA           BIT(1)  /* new gyro  sample available */
+#define ISM330_STATUS_TDA           BIT(2)  /* new temp  sample available */
+
+/* ODR encoding (bits [7:4] of CTRL1_XL / CTRL2_G) — discrete values only */
+#define ISM330_ODR_POWER_DOWN       0x0
+#define ISM330_ODR_12_5_HZ          0x1
+#define ISM330_ODR_26_HZ            0x2
+#define ISM330_ODR_52_HZ            0x3
+#define ISM330_ODR_104_HZ           0x4
+#define ISM330_ODR_208_HZ           0x5    /* nearest supported to 200 Hz */
+#define ISM330_ODR_416_HZ           0x6
+#define ISM330_ODR_833_HZ           0x7
+#define ISM330_ODR_1666_HZ          0x8
+
+/* FS_XL encoding (bits [3:2] of CTRL1_XL) — NOTE non-monotonic ordering
+ * (2/16/4/8, not 2/4/8/16 like MPU6050) — a lookup table is used below. */
+#define ISM330_FS_XL_2G             0x0
+#define ISM330_FS_XL_16G            0x1
+#define ISM330_FS_XL_4G             0x2
+#define ISM330_FS_XL_8G             0x3
+
+/* FS_G encoding (bits [3:2] of CTRL2_G) — monotonic; coincidentally lines
+ * up with the mpu6050_gyro_fs enum so a direct shift works. */
+#define ISM330_FS_G_250DPS          0x0
+#define ISM330_FS_G_500DPS          0x1
+#define ISM330_FS_G_1000DPS         0x2
+#define ISM330_FS_G_2000DPS         0x3
 
 /* Module parameter: prefer FIFO path */
 #if 0
@@ -148,77 +191,117 @@ static inline int mpu6050_read_burst(struct mpu6050_priv *p, struct mpu6050_samp
     u8 buf[14];
     int ret;
 
-    ret = regmap_bulk_read(p->regmap, MPU6050_REG_ACCEL_XOUT_H, buf, sizeof(buf));
+    /* ISM330 layout with IF_INC=1 (auto-increment) starting at OUT_TEMP_L:
+     *   buf[0..1]   OUT_TEMP  (temp L, temp H)             — little-endian
+     *   buf[2..7]   gyro  X, Y, Z                          — LE pairs each
+     *   buf[8..13]  accel X, Y, Z                          — LE pairs each
+     *
+     * NOTE the two differences vs. the MPU6050 layout the driver used to
+     * assume: (a) LSB-first, and (b) temp precedes gyro precedes accel. */
+    ret = regmap_bulk_read(p->regmap, ISM330_REG_OUT_TEMP_L, buf, sizeof(buf));
     if (ret) return ret;
-    s->ax = (s16)((buf[0] << 8) | buf[1]);
-    s->ay = (s16)((buf[2] << 8) | buf[3]);
-    s->az = (s16)((buf[4] << 8) | buf[5]);
-    s->temp = (s16)((buf[6] << 8) | buf[7]);
-    s->gx = (s16)((buf[8] << 8) | buf[9]);
-    s->gy = (s16)((buf[10] << 8) | buf[11]);
-    s->gz = (s16)((buf[12] << 8) | buf[13]);
-    s->t_ns = ktime_get_boottime_ns(); 
+
+    s->temp = (s16)((buf[1]  << 8) | buf[0]);
+    s->gx   = (s16)((buf[3]  << 8) | buf[2]);
+    s->gy   = (s16)((buf[5]  << 8) | buf[4]);
+    s->gz   = (s16)((buf[7]  << 8) | buf[6]);
+    s->ax   = (s16)((buf[9]  << 8) | buf[8]);
+    s->ay   = (s16)((buf[11] << 8) | buf[10]);
+    s->az   = (s16)((buf[13] << 8) | buf[12]);
+    s->t_ns = ktime_get_boottime_ns();
     return 0;
 }
 
-static int mpu6050_set_ranges(struct mpu6050_priv *p )
+static int mpu6050_set_ranges(struct mpu6050_priv *p)
 {
+    /* mpu6050_accel_fs enum values are (0,1,2,3) = (2g, 4g, 8g, 16g).
+     * ISM330 FS_XL bits are (0,1,2,3) = (2g, 16g, 4g, 8g). Lookup table
+     * translates the enum to the register value. */
+    static const u8 fs_xl_map[4] = {
+        [ACCEL_2G]  = ISM330_FS_XL_2G,
+        [ACCEL_4G]  = ISM330_FS_XL_4G,
+        [ACCEL_8G]  = ISM330_FS_XL_8G,
+        [ACCEL_16G] = ISM330_FS_XL_16G,
+    };
+    /* mpu6050_gyro_fs enum values coincidentally match ISM330 FS_G bits
+     * 1:1 (0,1,2,3 = 250,500,1000,2000 dps). Kept as a table for symmetry
+     * and to future-proof against enum reordering. */
+    static const u8 fs_g_map[4] = {
+        [GYRO_250DPS]  = ISM330_FS_G_250DPS,
+        [GYRO_500DPS]  = ISM330_FS_G_500DPS,
+        [GYRO_1000DPS] = ISM330_FS_G_1000DPS,
+        [GYRO_2000DPS] = ISM330_FS_G_2000DPS,
+    };
     int ret;
-    u8 a = (u8)(p->accel_fs << 3); /* AFS_SEL bits 4:3 */
-    u8 g = (u8)(p->gyro_fs << 3);  /* FS_SEL bits 4:3 */
-    ret = regmap_update_bits(p->regmap, MPU6050_REG_ACCEL_CONFIG, GENMASK(4, 3), a);
+    u8 fs_xl, fs_g;
+
+    if ((unsigned)p->accel_fs > ACCEL_16G || (unsigned)p->gyro_fs > GYRO_2000DPS)
+        return -EINVAL;
+
+    fs_xl = fs_xl_map[p->accel_fs];
+    fs_g  = fs_g_map[p->gyro_fs];
+
+    /* FS occupies bits [3:2] of each control register — preserve ODR bits. */
+    ret = regmap_update_bits(p->regmap, ISM330_REG_CTRL1_XL,
+                             GENMASK(3, 2), (u8)(fs_xl << 2));
     if (ret) return ret;
-    ret = regmap_update_bits(p->regmap, MPU6050_REG_GYRO_CONFIG, GENMASK(4, 3), g);
+    ret = regmap_update_bits(p->regmap, ISM330_REG_CTRL2_G,
+                             GENMASK(3, 2), (u8)(fs_g << 2));
     return ret;
 }
 
 static int mpu6050_set_odr(struct mpu6050_priv *p, u32 hz)
 {
+    /* ISM330 has DISCRETE ODRs (no divisor). We snap the requested rate to
+     * the nearest supported value, store the achieved rate for reporting,
+     * and write the code to bits [7:4] of BOTH CTRL1_XL and CTRL2_G so
+     * accel and gyro tick in lockstep. hz == 0 powers both blocks down. */
+    static const struct { u32 hz; u8 code; } odr_table[] = {
+        {   13, ISM330_ODR_12_5_HZ }, /* nominal 12.5 Hz — stored as 13 for integer table */
+        {   26, ISM330_ODR_26_HZ   },
+        {   52, ISM330_ODR_52_HZ   },
+        {  104, ISM330_ODR_104_HZ  },
+        {  208, ISM330_ODR_208_HZ  },
+        {  416, ISM330_ODR_416_HZ  },
+        {  833, ISM330_ODR_833_HZ  },
+        { 1666, ISM330_ODR_1666_HZ },
+    };
+    size_t i, best = 0;
+    u32 best_diff = U32_MAX;
+    u8 code;
     int ret;
-    u32 base = 1000; /* with DLPF, gyro output rate is 1KHz */
-    u32 div = (hz == 0) ? 0 : clamp_val(base / hz - 1, 0, 255);
-    ret = regmap_write(p->regmap, MPU6050_REG_SMPLRT_DIV, div);
+
+    if (hz == 0) {
+        code = ISM330_ODR_POWER_DOWN;
+        p->odr_hz = 0;
+    } else {
+        for (i = 0; i < ARRAY_SIZE(odr_table); i++) {
+            u32 d = (odr_table[i].hz > hz)
+                    ? (odr_table[i].hz - hz)
+                    : (hz - odr_table[i].hz);
+            if (d < best_diff) { best_diff = d; best = i; }
+        }
+        code       = odr_table[best].code;
+        p->odr_hz  = odr_table[best].hz;
+        if (best_diff != 0)
+            dev_info(p->dev, "ODR request %u Hz snapped to %u Hz (ISM330 has discrete ODRs)\n",
+                     hz, p->odr_hz);
+    }
+
+    /* ODR field occupies bits [7:4] of each control register — preserve FS bits. */
+    ret = regmap_update_bits(p->regmap, ISM330_REG_CTRL1_XL,
+                             GENMASK(7, 4), (u8)(code << 4));
     if (ret) return ret;
-    p->odr_hz = base / (1 + div);
+    ret = regmap_update_bits(p->regmap, ISM330_REG_CTRL2_G,
+                             GENMASK(7, 4), (u8)(code << 4));
+    if (ret) return ret;
+
+    /* hrt_period stays for downstream code that may consult it, but this
+     * driver does not use an hrtimer (see file header). */
     p->hrt_period = ktime_set(0, NSEC_PER_SEC / (p->odr_hz ? p->odr_hz : 1));
     return 0;
 }
 
-/**
- * @brief Read a single raw sensor burst and push a calibrated, timestamped sample into the FIFO
- */
-#if 0
-static int mpu6050_read_and_push(struct mpu6050_priv *p)
-{
-    u8 buf[14];
-    int ret;
-    struct mpu6050_sample s = {0};
-
-    ret = regmap_bulk_read(p->regmap, MPU6050_REG_ACCEL_XOUT_H, buf, sizeof(buf));
-    if (ret) return ret;
-    s.ax = (s16)((buf[0] << 8) | buf[1]);
-    s.ay = (s16)((buf[2] << 8) | buf[3]);
-    s.az = (s16)((buf[4] << 8) | buf[5]);
-    s.temp = (s16)((buf[6] << 8) | buf[7]);
-    s.gx = (s16)((buf[8] << 8) | buf[9]);
-    s.gy = (s16)((buf[10] << 8) | buf[11]);
-    s.gz = (s16)((buf[12] << 8) | buf[13]);
-    s.t_ns = ktime_get_boottime_ns(); 
-    
-    /* Push to FIFO */
-    spin_lock(&p->fifo_lock);
-    if (!kfifo_is_full(&p->sample_fifo)) {
-        kfifo_in(&p->sample_fifo, &s, 1);
-        spin_unlock(&p->fifo_lock);
-        wake_up_interruptible(&p->wq);
-    } else {
-        spin_unlock(&p->fifo_lock);
-        dev_warn_ratelimited(p->dev, "Sample FIFO Overrun\n");
-    }
-    return 0;
-
-}
-#endif 
 /*-------------IRQ and Timer -----------------*/
 static irqreturn_t mpu6050_irq_thread(int irq, void *data)
 {
@@ -226,39 +309,37 @@ static irqreturn_t mpu6050_irq_thread(int irq, void *data)
     unsigned int st;
     struct mpu6050_sample s;
     unsigned long flags;
-    
-    if(!p->irq_mode)
-        return IRQ_NONE;
-    
-    if( regmap_read(p->regmap, MPU6050_REG_INT_STATUS, &st))
-        return IRQ_NONE;
-    if( !(st & MPU6050_INT_DATA_RDY))
-        return IRQ_NONE;
-    
-        if( mpu6050_read_burst(p, &s) == 0){
-            spin_lock_irqsave(&p->fifo_lock, flags);
-            if (!kfifo_is_full(&p->sample_fifo)) {
-                kfifo_in(&p->sample_fifo, &s, 1);
-            }
-            spin_unlock_irqrestore(&p->fifo_lock, flags);
-            wake_up_interruptible(&p->wq);
-        }
+
+    if (!p->irq_mode) return IRQ_NONE;
+
+    /* Consult STATUS_REG for XLDA (accel data-ready). Reading the data
+     * register (below) is what actually deasserts INT1 on ISM330. */
+    if (regmap_read(p->regmap, ISM330_REG_STATUS_REG, &st)) return IRQ_NONE;
+    if (!(st & ISM330_STATUS_XLDA))                       return IRQ_NONE;
+
+    if (mpu6050_read_burst(p, &s) == 0) {
+        spin_lock_irqsave(&p->fifo_lock, flags);
+        if (!kfifo_is_full(&p->sample_fifo))
+            kfifo_in(&p->sample_fifo, &s, 1);
+        spin_unlock_irqrestore(&p->fifo_lock, flags);
+        wake_up_interruptible(&p->wq);
+    }
     return IRQ_HANDLED;
 }
 
 static int mpu6050_set_irq_mode(struct mpu6050_priv *p, bool enable)
 {
-    int ret = 0;
-    if( enable && p->irq ){
-        /* Enable DATA_RDY interrupt on the sensor */
-        ret = regmap_write(p->regmap, MPU6050_REG_INT_ENABLE, MPU6050_INT_DATA_RDY_EN);
-        if (!ret)
-            p->irq_mode = true;
+    int ret;
+    /* On ISM330, INT1 is routed via INT1_CTRL: bit 0 = accel DRDY,
+     * bit 1 = gyro DRDY. We route accel DRDY only — accel and gyro
+     * data-ready are synchronised at the same ODR, so routing both
+     * would just double-fire the interrupt. */
+    if (enable && p->irq) {
+        ret = regmap_write(p->regmap, ISM330_REG_INT1_CTRL, ISM330_INT1_DRDY_XL);
+        if (!ret) p->irq_mode = true;
     } else {
-        /* Disable interrupts */
-        ret = regmap_write(p->regmap, MPU6050_REG_INT_ENABLE, 0);
-        if (!ret)
-            p->irq_mode = false;
+        ret = regmap_write(p->regmap, ISM330_REG_INT1_CTRL, 0);
+        if (!ret) p->irq_mode = false;
     }
     return ret;
 }
@@ -276,7 +357,7 @@ static long mpu6050_unlocked_ioctl( struct file *filp, unsigned int cmd, unsigne
     switch(cmd) {
         case MPU6050_IOC_GET_WHOAMI: {
             v = 0;
-            mpu6050_read(p, MPU6050_REG_WHO_AM_I, &v);
+            mpu6050_read(p, ISM330_REG_WHO_AM_I, &v);
             if (copy_to_user((void __user*)arg, &v, sizeof(v)))
                 return -EFAULT;
             break;
@@ -494,60 +575,77 @@ static const struct attribute_group mpu6050_attr_group = {
 
 static int mpu6050_hw_init(struct mpu6050_priv *p)
 {
-    int ret;
-    unsigned int v;
-    /* Reset Device */
-    ret = mpu6050_write(p, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR1_DEVICE_RESET);
+    int ret, tries;
+    unsigned int v = 0;
+
+    /* 1. Software reset via CTRL3_C SW_RESET. Datasheet says the bit
+     *    self-clears within ~50 µs — we poll with a generous timeout. */
+    ret = mpu6050_write(p, ISM330_REG_CTRL3_C, ISM330_CTRL3C_SW_RESET);
     if (ret) {
-        dev_err(p->dev, "Device reset failed: %d\n", ret);
+        dev_err(p->dev, "CTRL3_C SW_RESET write failed: %d\n", ret);
+        return ret;
+    }
+    for (tries = 0; tries < 20; tries++) {
+        usleep_range(1000, 2000);
+        ret = mpu6050_read(p, ISM330_REG_CTRL3_C, &v);
+        if (ret) return ret;
+        if (!(v & ISM330_CTRL3C_SW_RESET)) break;
+    }
+    if (v & ISM330_CTRL3C_SW_RESET) {
+        dev_err(p->dev, "SW reset did not clear within timeout\n");
+        return -EIO;
+    }
+
+    /* 2. WHO_AM_I check — now that the chip has settled, verify identity.
+     *    This is a HARD fail: previously this was silently commented out
+     *    while the driver was writing MPU6050 register addresses to an
+     *    ISM330 chip, misconfiguring it. Never disable this check again. */
+    ret = mpu6050_read(p, ISM330_REG_WHO_AM_I, &v);
+    if (ret) {
+        dev_err(p->dev, "WHO_AM_I read failed: %d\n", ret);
+        return ret;
+    }
+    if (v != ISM330_WHO_AM_I_ID) {
+        dev_err(p->dev, "WHO_AM_I mismatch: 0x%02X (expected 0x%02X for ISM330DLC)\n",
+                v, ISM330_WHO_AM_I_ID);
+        return -ENODEV;
+    }
+    dev_info(p->dev, "ISM330DLC detected (WHO_AM_I=0x%02X)\n", v);
+
+    /* 3. CTRL3_C: enable BDU (block-data-update — freezes low/high byte
+     *    pair until both are read, preventing torn reads) and IF_INC
+     *    (auto-increment register address for burst read). */
+    ret = mpu6050_write(p, ISM330_REG_CTRL3_C,
+                        ISM330_CTRL3C_BDU | ISM330_CTRL3C_IF_INC);
+    if (ret) {
+        dev_err(p->dev, "CTRL3_C config failed: %d\n", ret);
         return ret;
     }
 
-    usleep_range(10000, 15000); /* 10-15ms reset time */
-    /* DLPF ~42/44Hz, see datasheet */
-    ret = mpu6050_write(p, MPU6050_REG_CONFIG, 0x03);
+    /* 4. Defaults — accel ±8g / gyro ±2000 dps @ 208 Hz.
+     *    Sensitivities: 4096 LSB/g and 16.384 LSB/dps (= 32768/2000).
+     *    Userspace calibration constants MUST match (see
+     *    dr_dead_reckoning_app_ins15_v*.c: cal_set_defaults_from_lsq()
+     *    and GYRO_LSB_PER_DPS).
+     *    NOTE ISM330 has no exact 200 Hz — the nearest supported ODR is
+     *    208 Hz. If a legacy config passes 200, set_odr() snaps it up. */
+    if (!p->odr_hz)   p->odr_hz   = 208;
+    if (!p->accel_fs) p->accel_fs = ACCEL_8G;
+    if (!p->gyro_fs)  p->gyro_fs  = GYRO_2000DPS;
+
+    ret = mpu6050_set_ranges(p);
     if (ret) {
-        dev_err(p->dev, "LPF config failed: %d\n", ret);
+        dev_err(p->dev, "FS range config failed: %d\n", ret);
         return ret;
-    
     }
-    /* Defaults — accel ±8g / gyro ±2000 dps.
-     * Sensitivities: 4096 LSB/g and 16.384 LSB/dps (32768/2000).
-     * Userspace calibration constants MUST match (see
-     * dr_dead_reckoning_app_ins15_v*.c: cal_set_defaults_from_lsq()
-     * and GYRO_LSB_PER_DPS). */
-    if(!p->odr_hz) p->odr_hz = 200;
-    if(!p->accel_fs) p->accel_fs = ACCEL_8G;
-    if(!p->gyro_fs) p->gyro_fs = GYRO_2000DPS;
     ret = mpu6050_set_odr(p, p->odr_hz);
     if (ret) {
         dev_err(p->dev, "ODR config failed: %d\n", ret);
         return ret;
     }
-    ret = mpu6050_set_ranges(p);
-    if (ret) {
-        dev_err(p->dev, "Range config failed: %d\n", ret);
-        return ret;
-    }
-    /* Verify WHO_AM_I */
-    ret = mpu6050_read(p, MPU6050_REG_WHO_AM_I, &v);
-    if (ret) {
-        dev_err(p->dev, "Failed to read WHO_AM_I: %d\n", ret);
-        return ret;
-    }
-    if ((v & 0x7E) != MPU6050_WHO_AM_I_ID) {
-        dev_err(p->dev, "WHO_AM_I mismatch: 0x%02X\n", v);
-        //return -ENODEV;
-    }
-    dev_info(p->dev, "MPU6050 WHO_AM_I=0x%02X\n", v);
-    ret = mpu6050_write(p, MPU6050_REG_PWR_MGMT_1, MPU6050_PWR1_CLKSEL_PLL_X);
-    if (ret) {
-        dev_err(p->dev, "Failed to wake device: %d\n", ret);
-        return ret;
-    }
 
-    /* Ensure accel axes enabled */
-    regmap_write(p->regmap, MPU6050_REG_PWR_MGMT_2, 0x00);
+    dev_info(p->dev, "ISM330DLC configured: ODR=%u Hz  accel_fs_enum=%u  gyro_fs_enum=%u\n",
+             p->odr_hz, p->accel_fs, p->gyro_fs);
     return 0;
 }
 
@@ -686,6 +784,11 @@ static int mpu6050_remove(struct i2c_client *client)
 // static const struct dev_pm_ops mpu6050_pm_ops = { ... };
 
 static const struct of_device_id mpu6050_of_match[] = {
+    /* Current overlay uses this string — ST ISM330DLC is the actual chip. */
+    { .compatible = "stm,ism330dlctr" },
+    { .compatible = "st,ism330dlc"    },
+    /* Legacy alias kept for older overlays / dtbo files that still identify
+     * the device as an Invensense MPU6050-compatible node. */
     { .compatible = "invensense,mpu6050-custom" },
     { }
 };

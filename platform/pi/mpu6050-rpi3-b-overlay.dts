@@ -15,9 +15,13 @@
                 compatible = "stm,ism330dlctr";
                 reg = <0x6a>;
 
-                /*INT1 wired to Pi GPIO (example GPIO25)*/
+                /* INT1 wired to Pi GPIO 25. Trigger type second cell = 1
+                 * (IRQ_TYPE_EDGE_RISING). Previously encoded as 2 which
+                 * is falling edge — that was inconsistent with the ST
+                 * default INT1 polarity (active-high) so DRDY IRQs were
+                 * never firing. */
                 interrupt-parent = <&gpio>;
-                interrupts = <25 2>;   /*<GPIO rising edge>*/
+                interrupts = <25 1>;   /* IRQ_TYPE_EDGE_RISING */
 
                 // Optional defaults (match your driver's DT parsing)
                 st,accel-fsr-g = <8>;   //2/4/8/16 g
