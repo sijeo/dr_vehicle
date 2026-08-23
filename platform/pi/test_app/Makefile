@@ -35,11 +35,15 @@
 #   sudo apt install gcc-aarch64-linux-gnu     # for aarch64 target
 # ========================================================================
 
-CROSS_COMPILE ?=
-CC       ?= $(CROSS_COMPILE)gcc
-CFLAGS   ?= -O2 -Wall -Wextra -Wpedantic -std=c11 -D_GNU_SOURCE
-LDFLAGS  ?=
-LDLIBS   ?= -lm -pthread
+KDIR := $(HOME)/rpi_work/kernel_rpi/linux
+CROSS_COMPILE ?= arm-linux-gnueabihf-
+SYSROOT ?= $(HOME)/rpi_work/rpi_tools/tools/arm-bcm2708/arm-rpi-4.9.3-linux-gnueabihf/arm-linux-gnueabihf/sysroot
+CC := $(CROSS_COMPILE)gcc
+LD_LIBS := -lm -lpthread
+RM ?= rm -f
+
+CORE_DIR := $(abspath ../../core)
+CORE_SRCS := $(wildcard $(CORE_DIR)/*.c)
 
 # Shared library sources — every program in this directory links against
 # both. Keeping them in one variable means adding a new program only needs
@@ -75,17 +79,6 @@ test: test_imu_core
 # arch build, so the resulting binaries are guaranteed to match the label.
 # (Without the clean, %.o from an aarch64 build would silently link into an
 # armhf binary and produce an ELF the linker refuses.)
-armhf:
-	$(MAKE) clean
-	$(MAKE) CROSS_COMPILE=arm-linux-gnueabihf- all
-
-aarch64:
-	$(MAKE) clean
-	$(MAKE) CROSS_COMPILE=aarch64-linux-gnu- all
-
-native:
-	$(MAKE) clean
-	$(MAKE) CROSS_COMPILE= all
 
 clean:
 	rm -f $(BINS) *.o *.d
