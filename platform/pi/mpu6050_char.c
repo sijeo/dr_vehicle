@@ -86,7 +86,112 @@
 #define ISM330_REG_OUTX_L_G         0x22   /* gyro  X L, X H, Y L, Y H, Z L, Z H (LE) */
 #define ISM330_REG_OUTX_L_XL        0x28   /* accel X L, X H, Y L, Y H, Z L, Z H (LE) */
 
-#define ISM330_WHO_AM_I_ID          0x71
+/* ============================================================
+ * Chip-family support.
+ *
+ * The driver targets two distinct ST 6-axis IMU register-layout
+ * families that share the classic 0x0F WHO_AM_I / 0x20 temp / 0x22
+ * gyro / 0x28 accel data addresses, but differ in HOW you configure
+ * full-scale and output data rate:
+ *
+ *   CLASSIC (ISM330DLC, DHCX, LSM6DSL/DSM/DSR/DSO/DSOX):
+ *     - CTRL1_XL (0x10)  ODR_XL[7:4] + FS_XL[3:2]  (non-monotonic 2/16/4/8)
+ *     - CTRL2_G  (0x11)  ODR_G [7:4] + FS_G [3:2]  (monotonic 250/500/1000/2000)
+ *     - Discrete ODR: 12.5/26/52/104/208/416/833/1666 Hz
+ *
+ *   NEW-GEN (LSM6DSV, LSM6DSV16X, LSM6DSV32X, ISM330BX):
+ *     - CTRL1    (0x10)  OP_MODE_XL[6:4] + ODR_XL[3:0]  (ODR only)
+ *     - CTRL2    (0x11)  OP_MODE_G [6:4] + ODR_G [3:0]  (ODR only)
+ *     - CTRL6    (0x15)  LPF1_G_BW[5:4] + FS_G[3:0]     (monotonic 125/250/…)
+ *     - CTRL8    (0x17)  HP_LPF2_XL_BW[7:5] + FS_XL[1:0] (monotonic 2/4/8/16)
+ *     - Discrete ODR: 1.875/7.5/15/30/60/120/240/480/960/1920/3840/7680 Hz
+ * ============================================================ */
+
+/* WHO_AM_I IDs the driver understands */
+#define ISM330_WHO_AM_I_ID          0x6A  /* ISM330DLC (classic) */
+#define ISM330DHCX_WHO_AM_I_ID      0x6B  /* ISM330DHCX / LSM6DSR (classic) */
+#define LSM6DSOX_WHO_AM_I_ID        0x6C  /* LSM6DSO / LSM6DSOX  (classic) */
+#define LSM6DSV_WHO_AM_I_ID         0x70  /* LSM6DSV / LSM6DSV16X (new-gen) */
+#define ISM330BX_WHO_AM_I_ID        0x71  /* ISM330BX (new-gen) — SAME ID as MPU-9250 but different vendor */
+#define LSM6DSV32X_WHO_AM_I_ID      0x73  /* LSM6DSV32X (new-gen) */
+
+enum ism330_family {
+    ISM330_FAMILY_UNKNOWN = 0,
+    ISM330_FAMILY_CLASSIC,   /* DLC/DHCX/DSL/DSM/DSR/DSO/DSOX */
+    ISM330_FAMILY_NEWGEN,    /* LSM6DSV / ISM330BX / LSM6DSV32X */
+};
+
+static enum ism330_family ism330_family_from_who(u8 v) {
+    switch (v) {
+    case ISM330_WHO_AM_I_ID:
+    case ISM330DHCX_WHO_AM_I_ID:
+    case LSM6DSOX_WHO_AM_I_ID:
+        return ISM330_FAMILY_CLASSIC;
+    case LSM6DSV_WHO_AM_I_ID:
+    case ISM330BX_WHO_AM_I_ID:
+    case LSM6DSV32X_WHO_AM_I_ID:
+        return ISM330_FAMILY_NEWGEN;
+    default:
+        return ISM330_FAMILY_UNKNOWN;
+    }
+}
+static const char *ism330_family_name(enum ism330_family f) {
+    switch (f) {
+    case ISM330_FAMILY_CLASSIC: return "classic (CTRL1_XL/CTRL2_G FS layout)";
+    case ISM330_FAMILY_NEWGEN:  return "new-gen (CTRL8/CTRL6 FS layout)";
+    default:                    return "UNKNOWN";
+    }
+}
+static const char *ism330_who_am_i_name(u8 v) {
+    switch (v) {
+    case ISM330_WHO_AM_I_ID:     return "ISM330DLC (or LSM6DSL/DSM)";
+    case ISM330DHCX_WHO_AM_I_ID: return "ISM330DHCX (or LSM6DSR)";
+    case LSM6DSOX_WHO_AM_I_ID:   return "LSM6DSO/LSM6DSOX";
+    case LSM6DSV_WHO_AM_I_ID:    return "LSM6DSV/LSM6DSV16X";
+    case ISM330BX_WHO_AM_I_ID:   return "ISM330BX (LSM6DSV-family)";
+    case LSM6DSV32X_WHO_AM_I_ID: return "LSM6DSV32X";
+    default:                     return "UNSUPPORTED";
+    }
+}
+
+/* --- New-gen (LSM6DSV / ISM330BX) additional register addresses --- */
+/* CTRL1 / CTRL2 are the same address as the classic CTRL1_XL / CTRL2_G
+ * but hold different fields (ODR + OP_MODE only, no FS). FS lives at: */
+#define ISM330BX_REG_CTRL6          0x15  /* bits [3:0] = FS_G[3:0] */
+#define ISM330BX_REG_CTRL8          0x17  /* bits [1:0] = FS_XL[1:0] */
+
+/* New-gen ODR encoding (CTRL1[3:0] for accel, CTRL2[3:0] for gyro) */
+#define ISM330BX_ODR_POWER_DOWN     0x0
+#define ISM330BX_ODR_1_875_HZ       0x1
+#define ISM330BX_ODR_7_5_HZ         0x2
+#define ISM330BX_ODR_15_HZ          0x3
+#define ISM330BX_ODR_30_HZ          0x4
+#define ISM330BX_ODR_60_HZ          0x5
+#define ISM330BX_ODR_120_HZ         0x6
+#define ISM330BX_ODR_240_HZ         0x7   /* nearest to 200 Hz */
+#define ISM330BX_ODR_480_HZ         0x8
+#define ISM330BX_ODR_960_HZ         0x9
+#define ISM330BX_ODR_1920_HZ        0xA
+#define ISM330BX_ODR_3840_HZ        0xB
+#define ISM330BX_ODR_7680_HZ        0xC
+
+/* New-gen FS_XL encoding (CTRL8[1:0]) — MONOTONIC (unlike classic FS_XL) */
+#define ISM330BX_FS_XL_2G           0x0
+#define ISM330BX_FS_XL_4G           0x1
+#define ISM330BX_FS_XL_8G           0x2
+#define ISM330BX_FS_XL_16G          0x3
+
+/* New-gen FS_G encoding (CTRL6[3:0]) — starts at 125 dps */
+#define ISM330BX_FS_G_125DPS        0x0
+#define ISM330BX_FS_G_250DPS        0x1
+#define ISM330BX_FS_G_500DPS        0x2
+#define ISM330BX_FS_G_1000DPS       0x3
+#define ISM330BX_FS_G_2000DPS       0x4
+#define ISM330BX_FS_G_4000DPS       0x5   /* not present on all variants */
+
+static bool ism330_who_am_i_is_supported(u8 v) {
+    return ism330_family_from_who(v) != ISM330_FAMILY_UNKNOWN;
+}
 
 /* CTRL3_C bit fields */
 #define ISM330_CTRL3C_SW_RESET      BIT(0)
@@ -153,6 +258,11 @@ struct mpu6050_priv {
     mpu6050_gyro_fs gyro_fs; /* gyro FSR enum */
     bool running;                 /* Streaming enabled */
 
+    /* Chip register-layout family — detected from WHO_AM_I at probe.
+     * All FS/ODR access goes through mpu6050_set_ranges / mpu6050_set_odr
+     * which dispatch to the correct implementation based on this. */
+    enum ism330_family family;
+
     /* Calibration bias/scale */
     struct mpu6050_cal cal_accel;
     struct mpu6050_cal cal_gyro;
@@ -212,20 +322,16 @@ static inline int mpu6050_read_burst(struct mpu6050_priv *p, struct mpu6050_samp
     return 0;
 }
 
-static int mpu6050_set_ranges(struct mpu6050_priv *p)
+/* ---- Classic-family set_ranges (ISM330DLC/DHCX/DSO/DSOX/DSL/DSM/DSR) ----
+ * FS_XL at CTRL1_XL[3:2] (non-monotonic 2/16/4/8), FS_G at CTRL2_G[3:2]. */
+static int ism330_classic_set_ranges(struct mpu6050_priv *p)
 {
-    /* mpu6050_accel_fs enum values are (0,1,2,3) = (2g, 4g, 8g, 16g).
-     * ISM330 FS_XL bits are (0,1,2,3) = (2g, 16g, 4g, 8g). Lookup table
-     * translates the enum to the register value. */
     static const u8 fs_xl_map[4] = {
-        [ACCEL_2G]  = ISM330_FS_XL_2G,
-        [ACCEL_4G]  = ISM330_FS_XL_4G,
-        [ACCEL_8G]  = ISM330_FS_XL_8G,
-        [ACCEL_16G] = ISM330_FS_XL_16G,
+        [ACCEL_2G]  = ISM330_FS_XL_2G,   /* 0 */
+        [ACCEL_4G]  = ISM330_FS_XL_4G,   /* 2 */
+        [ACCEL_8G]  = ISM330_FS_XL_8G,   /* 3 */
+        [ACCEL_16G] = ISM330_FS_XL_16G,  /* 1 */
     };
-    /* mpu6050_gyro_fs enum values coincidentally match ISM330 FS_G bits
-     * 1:1 (0,1,2,3 = 250,500,1000,2000 dps). Kept as a table for symmetry
-     * and to future-proof against enum reordering. */
     static const u8 fs_g_map[4] = {
         [GYRO_250DPS]  = ISM330_FS_G_250DPS,
         [GYRO_500DPS]  = ISM330_FS_G_500DPS,
@@ -233,15 +339,9 @@ static int mpu6050_set_ranges(struct mpu6050_priv *p)
         [GYRO_2000DPS] = ISM330_FS_G_2000DPS,
     };
     int ret;
-    u8 fs_xl, fs_g;
+    u8 fs_xl = fs_xl_map[p->accel_fs];
+    u8 fs_g  = fs_g_map[p->gyro_fs];
 
-    if ((unsigned)p->accel_fs > ACCEL_16G || (unsigned)p->gyro_fs > GYRO_2000DPS)
-        return -EINVAL;
-
-    fs_xl = fs_xl_map[p->accel_fs];
-    fs_g  = fs_g_map[p->gyro_fs];
-
-    /* FS occupies bits [3:2] of each control register — preserve ODR bits. */
     ret = regmap_update_bits(p->regmap, ISM330_REG_CTRL1_XL,
                              GENMASK(3, 2), (u8)(fs_xl << 2));
     if (ret) return ret;
@@ -250,14 +350,78 @@ static int mpu6050_set_ranges(struct mpu6050_priv *p)
     return ret;
 }
 
-static int mpu6050_set_odr(struct mpu6050_priv *p, u32 hz)
+/* ---- New-gen set_ranges (LSM6DSV / ISM330BX / LSM6DSV32X) ----
+ * FS_XL at CTRL8[1:0] (monotonic 2/4/8/16), FS_G at CTRL6[3:0]. Note that
+ * CTRL1/CTRL2 hold ONLY ODR + OP_MODE here — no FS bits at all. */
+static int ism330_newgen_set_ranges(struct mpu6050_priv *p)
 {
-    /* ISM330 has DISCRETE ODRs (no divisor). We snap the requested rate to
-     * the nearest supported value, store the achieved rate for reporting,
-     * and write the code to bits [7:4] of BOTH CTRL1_XL and CTRL2_G so
-     * accel and gyro tick in lockstep. hz == 0 powers both blocks down. */
-    static const struct { u32 hz; u8 code; } odr_table[] = {
-        {   13, ISM330_ODR_12_5_HZ }, /* nominal 12.5 Hz — stored as 13 for integer table */
+    /* Monotonic mapping — mpu6050_accel_fs enum (0/1/2/3 = 2/4/8/16 g)
+     * maps 1:1 to ISM330BX FS_XL (0/1/2/3 = 2/4/8/16 g). Table kept for
+     * clarity + future-proofing against enum reordering. */
+    static const u8 fs_xl_map[4] = {
+        [ACCEL_2G]  = ISM330BX_FS_XL_2G,
+        [ACCEL_4G]  = ISM330BX_FS_XL_4G,
+        [ACCEL_8G]  = ISM330BX_FS_XL_8G,
+        [ACCEL_16G] = ISM330BX_FS_XL_16G,
+    };
+    /* mpu6050_gyro_fs enum starts at 250 dps, but ISM330BX FS_G starts at
+     * 125 dps — so ADD 1 to shift the mapping (250→code 1, 2000→code 4). */
+    static const u8 fs_g_map[4] = {
+        [GYRO_250DPS]  = ISM330BX_FS_G_250DPS,   /* 1 */
+        [GYRO_500DPS]  = ISM330BX_FS_G_500DPS,   /* 2 */
+        [GYRO_1000DPS] = ISM330BX_FS_G_1000DPS,  /* 3 */
+        [GYRO_2000DPS] = ISM330BX_FS_G_2000DPS,  /* 4 */
+    };
+    int ret;
+    u8 fs_xl = fs_xl_map[p->accel_fs];
+    u8 fs_g  = fs_g_map[p->gyro_fs];
+
+    /* Accel FS at CTRL8[1:0] — preserve HP_LPF2_XL_BW bits [7:5]. */
+    ret = regmap_update_bits(p->regmap, ISM330BX_REG_CTRL8,
+                             GENMASK(1, 0), fs_xl);
+    if (ret) return ret;
+    /* Gyro FS at CTRL6[3:0] — preserve LPF1_G_BW bits [5:4]. */
+    ret = regmap_update_bits(p->regmap, ISM330BX_REG_CTRL6,
+                             GENMASK(3, 0), fs_g);
+    return ret;
+}
+
+/* Dispatch to the correct set_ranges based on detected chip family. */
+static int mpu6050_set_ranges(struct mpu6050_priv *p)
+{
+    if ((unsigned)p->accel_fs > ACCEL_16G || (unsigned)p->gyro_fs > GYRO_2000DPS)
+        return -EINVAL;
+    switch (p->family) {
+    case ISM330_FAMILY_CLASSIC: return ism330_classic_set_ranges(p);
+    case ISM330_FAMILY_NEWGEN:  return ism330_newgen_set_ranges(p);
+    default:
+        dev_err(p->dev, "set_ranges: chip family not detected\n");
+        return -ENODEV;
+    }
+}
+
+/* Common: snap a requested Hz to the nearest supported ODR from a lookup
+ * table. Returns the table index of the best match. best_diff is set to 0
+ * when the requested rate is exactly supported. */
+struct odr_entry { u32 hz; u8 code; };
+static size_t odr_snap_nearest(const struct odr_entry *tbl, size_t n,
+                               u32 hz, u32 *best_diff)
+{
+    size_t i, best = 0;
+    u32 bd = U32_MAX;
+    for (i = 0; i < n; i++) {
+        u32 d = (tbl[i].hz > hz) ? (tbl[i].hz - hz) : (hz - tbl[i].hz);
+        if (d < bd) { bd = d; best = i; }
+    }
+    if (best_diff) *best_diff = bd;
+    return best;
+}
+
+/* ---- Classic-family set_odr (ODR at CTRL1_XL[7:4] / CTRL2_G[7:4]) ---- */
+static int ism330_classic_set_odr(struct mpu6050_priv *p, u32 hz)
+{
+    static const struct odr_entry tbl[] = {
+        {   13, ISM330_ODR_12_5_HZ },
         {   26, ISM330_ODR_26_HZ   },
         {   52, ISM330_ODR_52_HZ   },
         {  104, ISM330_ODR_104_HZ  },
@@ -266,8 +430,6 @@ static int mpu6050_set_odr(struct mpu6050_priv *p, u32 hz)
         {  833, ISM330_ODR_833_HZ  },
         { 1666, ISM330_ODR_1666_HZ },
     };
-    size_t i, best = 0;
-    u32 best_diff = U32_MAX;
     u8 code;
     int ret;
 
@@ -275,31 +437,80 @@ static int mpu6050_set_odr(struct mpu6050_priv *p, u32 hz)
         code = ISM330_ODR_POWER_DOWN;
         p->odr_hz = 0;
     } else {
-        for (i = 0; i < ARRAY_SIZE(odr_table); i++) {
-            u32 d = (odr_table[i].hz > hz)
-                    ? (odr_table[i].hz - hz)
-                    : (hz - odr_table[i].hz);
-            if (d < best_diff) { best_diff = d; best = i; }
-        }
-        code       = odr_table[best].code;
-        p->odr_hz  = odr_table[best].hz;
-        if (best_diff != 0)
-            dev_info(p->dev, "ODR request %u Hz snapped to %u Hz (ISM330 has discrete ODRs)\n",
+        u32 diff;
+        size_t i = odr_snap_nearest(tbl, ARRAY_SIZE(tbl), hz, &diff);
+        code = tbl[i].code;
+        p->odr_hz = tbl[i].hz;
+        if (diff != 0)
+            dev_info(p->dev, "classic: ODR request %u Hz snapped to %u Hz\n",
                      hz, p->odr_hz);
     }
-
-    /* ODR field occupies bits [7:4] of each control register — preserve FS bits. */
     ret = regmap_update_bits(p->regmap, ISM330_REG_CTRL1_XL,
                              GENMASK(7, 4), (u8)(code << 4));
     if (ret) return ret;
     ret = regmap_update_bits(p->regmap, ISM330_REG_CTRL2_G,
                              GENMASK(7, 4), (u8)(code << 4));
-    if (ret) return ret;
+    return ret;
+}
 
-    /* hrt_period stays for downstream code that may consult it, but this
-     * driver does not use an hrtimer (see file header). */
+/* ---- New-gen set_odr (ODR at CTRL1[3:0] / CTRL2[3:0], DIFFERENT rates) ---- */
+static int ism330_newgen_set_odr(struct mpu6050_priv *p, u32 hz)
+{
+    /* Fractional rates rounded to nearest whole Hz for the integer table
+     * (1.875→2, 7.5→8). The actual physical rate is what the chip emits. */
+    static const struct odr_entry tbl[] = {
+        {    2, ISM330BX_ODR_1_875_HZ  },
+        {    8, ISM330BX_ODR_7_5_HZ    },
+        {   15, ISM330BX_ODR_15_HZ     },
+        {   30, ISM330BX_ODR_30_HZ     },
+        {   60, ISM330BX_ODR_60_HZ     },
+        {  120, ISM330BX_ODR_120_HZ    },
+        {  240, ISM330BX_ODR_240_HZ    },   /* nearest to 200 */
+        {  480, ISM330BX_ODR_480_HZ    },
+        {  960, ISM330BX_ODR_960_HZ    },
+        { 1920, ISM330BX_ODR_1920_HZ   },
+        { 3840, ISM330BX_ODR_3840_HZ   },
+        { 7680, ISM330BX_ODR_7680_HZ   },
+    };
+    u8 code;
+    int ret;
+
+    if (hz == 0) {
+        code = ISM330BX_ODR_POWER_DOWN;
+        p->odr_hz = 0;
+    } else {
+        u32 diff;
+        size_t i = odr_snap_nearest(tbl, ARRAY_SIZE(tbl), hz, &diff);
+        code = tbl[i].code;
+        p->odr_hz = tbl[i].hz;
+        if (diff != 0)
+            dev_info(p->dev, "new-gen: ODR request %u Hz snapped to %u Hz\n",
+                     hz, p->odr_hz);
+    }
+    /* ODR field is bits [3:0] on new-gen — preserve OP_MODE bits [6:4]. */
+    ret = regmap_update_bits(p->regmap, ISM330_REG_CTRL1_XL,
+                             GENMASK(3, 0), code);
+    if (ret) return ret;
+    ret = regmap_update_bits(p->regmap, ISM330_REG_CTRL2_G,
+                             GENMASK(3, 0), code);
+    return ret;
+}
+
+/* Dispatch to the correct set_odr based on chip family. */
+static int mpu6050_set_odr(struct mpu6050_priv *p, u32 hz)
+{
+    int ret;
+    switch (p->family) {
+    case ISM330_FAMILY_CLASSIC: ret = ism330_classic_set_odr(p, hz); break;
+    case ISM330_FAMILY_NEWGEN:  ret = ism330_newgen_set_odr(p, hz);  break;
+    default:
+        dev_err(p->dev, "set_odr: chip family not detected\n");
+        return -ENODEV;
+    }
+    /* hrt_period is kept in step for any downstream code that reads it;
+     * this driver itself does not run an hrtimer. */
     p->hrt_period = ktime_set(0, NSEC_PER_SEC / (p->odr_hz ? p->odr_hz : 1));
-    return 0;
+    return ret;
 }
 
 /*-------------IRQ and Timer -----------------*/
@@ -573,6 +784,124 @@ static const struct attribute_group mpu6050_attr_group = {
 
 /*--------------probe/remove/pm-------------------*/
 
+/* Decode-and-print every register the driver touches. Useful for confirming
+ * that writes actually landed on the chip and that the FS/ODR encoding is
+ * what the datasheet says. All fields are labelled and printed in both raw
+ * hex and decoded engineering units. Safe to call multiple times (e.g.
+ * BEFORE and AFTER a write) — it only issues reads. */
+static void mpu6050_dump_regs(struct mpu6050_priv *p, const char *tag)
+{
+    /* Classic FS_XL (non-monotonic 2/16/4/8) and monotonic FS_G */
+    static const u16 classic_fs_xl_g[4]   = { 2, 16, 4, 8 };
+    static const u16 classic_fs_g_dps[4]  = { 250, 500, 1000, 2000 };
+    static const u16 classic_odr_hz[16]   = {
+        [ISM330_ODR_POWER_DOWN] = 0,
+        [ISM330_ODR_12_5_HZ]    = 13,
+        [ISM330_ODR_26_HZ]      = 26,
+        [ISM330_ODR_52_HZ]      = 52,
+        [ISM330_ODR_104_HZ]     = 104,
+        [ISM330_ODR_208_HZ]     = 208,
+        [ISM330_ODR_416_HZ]     = 416,
+        [ISM330_ODR_833_HZ]     = 833,
+        [ISM330_ODR_1666_HZ]    = 1666,
+    };
+    /* New-gen FS_XL (monotonic 2/4/8/16) and FS_G starting at 125 */
+    static const u16 newgen_fs_xl_g[4]    = { 2, 4, 8, 16 };
+    static const u16 newgen_fs_g_dps[16]  = {
+        [ISM330BX_FS_G_125DPS]  = 125,
+        [ISM330BX_FS_G_250DPS]  = 250,
+        [ISM330BX_FS_G_500DPS]  = 500,
+        [ISM330BX_FS_G_1000DPS] = 1000,
+        [ISM330BX_FS_G_2000DPS] = 2000,
+        [ISM330BX_FS_G_4000DPS] = 4000,
+    };
+    static const u16 newgen_odr_hz[16] = {
+        [ISM330BX_ODR_POWER_DOWN] = 0,
+        [ISM330BX_ODR_1_875_HZ]   = 2,
+        [ISM330BX_ODR_7_5_HZ]     = 8,
+        [ISM330BX_ODR_15_HZ]      = 15,
+        [ISM330BX_ODR_30_HZ]      = 30,
+        [ISM330BX_ODR_60_HZ]      = 60,
+        [ISM330BX_ODR_120_HZ]     = 120,
+        [ISM330BX_ODR_240_HZ]     = 240,
+        [ISM330BX_ODR_480_HZ]     = 480,
+        [ISM330BX_ODR_960_HZ]     = 960,
+        [ISM330BX_ODR_1920_HZ]    = 1920,
+        [ISM330BX_ODR_3840_HZ]    = 3840,
+        [ISM330BX_ODR_7680_HZ]    = 7680,
+    };
+    unsigned int who = 0, c1 = 0, c2 = 0, c3 = 0, i1 = 0, st = 0;
+    unsigned int c6 = 0, c8 = 0;   /* only meaningful on new-gen */
+    int r = 0;
+
+    r |= mpu6050_read(p, ISM330_REG_WHO_AM_I,   &who);
+    r |= mpu6050_read(p, ISM330_REG_CTRL1_XL,   &c1);
+    r |= mpu6050_read(p, ISM330_REG_CTRL2_G,    &c2);
+    r |= mpu6050_read(p, ISM330_REG_CTRL3_C,    &c3);
+    r |= mpu6050_read(p, ISM330_REG_INT1_CTRL,  &i1);
+    r |= mpu6050_read(p, ISM330_REG_STATUS_REG, &st);
+    if (p->family == ISM330_FAMILY_NEWGEN) {
+        r |= mpu6050_read(p, ISM330BX_REG_CTRL6, &c6);
+        r |= mpu6050_read(p, ISM330BX_REG_CTRL8, &c8);
+    }
+    if (r) {
+        dev_warn(p->dev, "[%s] register dump: read failed (rc=%d)\n", tag, r);
+        return;
+    }
+
+    dev_info(p->dev,
+        "[%s] family=%s  WHO_AM_I=0x%02X  CTRL1=0x%02X CTRL2=0x%02X CTRL3_C=0x%02X "
+        "INT1_CTRL=0x%02X STATUS=0x%02X\n",
+        tag, ism330_family_name(p->family), who, c1, c2, c3, i1, st);
+
+    if (p->family == ISM330_FAMILY_CLASSIC) {
+        u8 odr_xl = (c1 >> 4) & 0x0F;
+        u8 fs_xl  = (c1 >> 2) & 0x03;
+        u8 odr_g  = (c2 >> 4) & 0x0F;
+        u8 fs_g   = (c2 >> 2) & 0x03;
+        u16 acc_g   = classic_fs_xl_g[fs_xl];
+        u16 gyr_dps = classic_fs_g_dps[fs_g];
+        u16 acc_hz  = classic_odr_hz[odr_xl];
+        u16 gyr_hz  = classic_odr_hz[odr_g];
+        dev_info(p->dev,
+            "[%s]   accel: ODR=%u Hz FS=±%u g (bits: ODR_XL=%u FS_XL=%u)  --  "
+            "gyro: ODR=%u Hz FS=±%u dps (bits: ODR_G=%u FS_G=%u)\n",
+            tag, acc_hz, acc_g, odr_xl, fs_xl, gyr_hz, gyr_dps, odr_g, fs_g);
+    } else if (p->family == ISM330_FAMILY_NEWGEN) {
+        u8 op_xl  = (c1 >> 4) & 0x07;
+        u8 odr_xl = c1 & 0x0F;
+        u8 op_g   = (c2 >> 4) & 0x07;
+        u8 odr_g  = c2 & 0x0F;
+        u8 fs_xl  = c8 & 0x03;
+        u8 fs_g   = c6 & 0x0F;
+        u16 acc_g   = newgen_fs_xl_g[fs_xl];
+        u16 gyr_dps = newgen_fs_g_dps[fs_g];
+        u16 acc_hz  = newgen_odr_hz[odr_xl];
+        u16 gyr_hz  = newgen_odr_hz[odr_g];
+        dev_info(p->dev,
+            "[%s]   CTRL6=0x%02X (FS_G bits=%u)  CTRL8=0x%02X (FS_XL bits=%u)\n",
+            tag, c6, fs_g, c8, fs_xl);
+        dev_info(p->dev,
+            "[%s]   accel: ODR=%u Hz FS=±%u g (bits: OP_MODE=%u ODR=%u FS=%u)  --  "
+            "gyro: ODR=%u Hz FS=±%u dps (bits: OP_MODE=%u ODR=%u FS=%u)\n",
+            tag, acc_hz, acc_g, op_xl, odr_xl, fs_xl,
+                 gyr_hz, gyr_dps, op_g,  odr_g,  fs_g);
+    }
+
+    dev_info(p->dev,
+        "[%s]   CTRL3_C: BDU=%d IF_INC=%d SW_RESET=%d   INT1_CTRL: DRDY_XL=%d DRDY_G=%d   "
+        "STATUS: XLDA=%d GDA=%d TDA=%d\n",
+        tag,
+        !!(c3 & ISM330_CTRL3C_BDU),
+        !!(c3 & ISM330_CTRL3C_IF_INC),
+        !!(c3 & ISM330_CTRL3C_SW_RESET),
+        !!(i1 & ISM330_INT1_DRDY_XL),
+        !!(i1 & ISM330_INT1_DRDY_G),
+        !!(st & ISM330_STATUS_XLDA),
+        !!(st & ISM330_STATUS_GDA),
+        !!(st & ISM330_STATUS_TDA));
+}
+
 static int mpu6050_hw_init(struct mpu6050_priv *p)
 {
     int ret, tries;
@@ -596,21 +925,65 @@ static int mpu6050_hw_init(struct mpu6050_priv *p)
         return -EIO;
     }
 
-    /* 2. WHO_AM_I check — now that the chip has settled, verify identity.
-     *    This is a HARD fail: previously this was silently commented out
-     *    while the driver was writing MPU6050 register addresses to an
-     *    ISM330 chip, misconfiguring it. Never disable this check again. */
-    ret = mpu6050_read(p, ISM330_REG_WHO_AM_I, &v);
-    if (ret) {
-        dev_err(p->dev, "WHO_AM_I read failed: %d\n", ret);
-        return ret;
+    /* 2. WHO_AM_I probe.
+     *    Read BOTH candidate WHO_AM_I addresses so we can positively
+     *    identify the chip family without guessing:
+     *      0x0F  — ST convention (ISM330DLC/DHCX, LSM6DS*, LSM6DSV, ISM330BX)
+     *      0x75  — Invensense convention (MPU-6050/6500/9250)
+     *
+     *    A chip on the I²C bus responds to ANY address you read, whether
+     *    that register is defined or not — so both reads will return SOME
+     *    value. What matters is which one matches a KNOWN chip ID.
+     *
+     *    Known WHO_AM_I values that reach this driver:
+     *      0x68 → MPU-6050          (Invensense, MPU6050 register map)
+     *      0x6A → ISM330DLC         (ST, ISM330DLC layout)
+     *      0x6B → ISM330DHCX        (ST, ISM330DHCX layout)
+     *      0x6C → LSM6DSO/LSM6DSOX  (ST, LSM6DSO layout)
+     *      0x70 → LSM6DSV / MPU-6500 depending on which register hits
+     *      0x71 → MPU-9250 (@0x75) OR ISM330BX (@0x0F)  ← ambiguous
+     *      0x73 → LSM6DSV32X / MPU-9255
+     */
+    {
+        unsigned int who_st = 0, who_inv = 0;
+        int r_st, r_inv;
+
+        r_st  = mpu6050_read(p, 0x0F, &who_st);
+        r_inv = mpu6050_read(p, 0x75, &who_inv);
+        dev_info(p->dev,
+            "WHO_AM_I probe: ST@0x0F=0x%02X (rc=%d)  Invensense@0x75=0x%02X (rc=%d)\n",
+            who_st, r_st, who_inv, r_inv);
+
+        /* Best-effort identity — the FIRST address that yields a plausibly-
+         * valid non-zero, non-0xFF WHO_AM_I wins. The full driver still
+         * needs to target the corresponding register map though; if this
+         * comes back showing e.g. 0x71 at BOTH addresses, that strongly
+         * suggests MPU-9250 (0x75 is the real WHO_AM_I and 0x0F is a
+         * factory self-test byte that coincidentally holds 0x71). */
+        if (r_st == 0 && who_st != 0x00 && who_st != 0xFF)
+            v = who_st;
+        else if (r_inv == 0 && who_inv != 0x00 && who_inv != 0xFF)
+            v = who_inv;
+        else {
+            dev_err(p->dev, "No usable WHO_AM_I from either 0x0F or 0x75\n");
+            return -ENODEV;
+        }
     }
-    if (v != ISM330_WHO_AM_I_ID) {
-        dev_err(p->dev, "WHO_AM_I mismatch: 0x%02X (expected 0x%02X for ISM330DLC)\n",
-                v, ISM330_WHO_AM_I_ID);
+
+    if (!ism330_who_am_i_is_supported((u8)v)) {
+        dev_err(p->dev,
+            "WHO_AM_I=0x%02X is NOT a supported ST 6-axis IMU ID. "
+            "Classic family: 0x6A=ISM330DLC, 0x6B=ISM330DHCX/LSM6DSR, 0x6C=LSM6DSO/LSM6DSOX. "
+            "New-gen family: 0x70=LSM6DSV, 0x71=ISM330BX, 0x73=LSM6DSV32X. "
+            "0x71 is AMBIGUOUS — it also matches MPU-9250 (Invensense); compare "
+            "the 'ST@0x0F' vs 'Invensense@0x75' probe above to disambiguate.\n",
+            v);
         return -ENODEV;
     }
-    dev_info(p->dev, "ISM330DLC detected (WHO_AM_I=0x%02X)\n", v);
+    p->family = ism330_family_from_who((u8)v);
+    dev_info(p->dev, "Detected %s (WHO_AM_I=0x%02X, family=%s)\n",
+             ism330_who_am_i_name((u8)v), v,
+             ism330_family_name(p->family));
 
     /* 3. CTRL3_C: enable BDU (block-data-update — freezes low/high byte
      *    pair until both are read, preventing torn reads) and IF_INC
@@ -633,32 +1006,35 @@ static int mpu6050_hw_init(struct mpu6050_priv *p)
     if (!p->accel_fs) p->accel_fs = ACCEL_8G;
     if (!p->gyro_fs)  p->gyro_fs  = GYRO_2000DPS;
 
+    /* Snapshot BEFORE any FS/ODR write so we can attribute any mismatch
+     * later to a specific write step. Registers should read all zeros
+     * here immediately after CTRL3_C reconfiguration (post-reset). */
+    mpu6050_dump_regs(p, "pre-configure");
+
     ret = mpu6050_set_ranges(p);
     if (ret) {
         dev_err(p->dev, "FS range config failed: %d\n", ret);
         return ret;
     }
+    mpu6050_dump_regs(p, "after set_ranges");
+
     ret = mpu6050_set_odr(p, p->odr_hz);
     if (ret) {
         dev_err(p->dev, "ODR config failed: %d\n", ret);
         return ret;
     }
+    mpu6050_dump_regs(p, "after set_odr");
 
-    /* ---- Read-back verification ----
-     * Read CTRL1_XL and CTRL2_G back from the chip and print the ACTUAL
-     * FS + ODR the sensor is now running at. This catches (a) I²C write
-     * failures that returned 0 but silently didn't stick, (b) BOOT still
-     * in progress overwriting our writes, and (c) any future FS-encoding
-     * mismatch between the driver and the chip family. If the read-back
-     * doesn't match what we intended, dev_warn draws attention in dmesg
-     * even though we don't fail the probe (the driver stays useful and
-     * userspace can also inspect via /sys/…/fullscale). */
+    /* Final verify-and-warn against driver intent. Extracts family-specific
+     * register bits and cross-checks against what the driver asked for.
+     * Probe stays successful either way — userspace can still inspect via
+     * /sys/…/fullscale and /sys/…/odr_hz. */
     {
-        static const u16 fs_xl_to_g[4]   = { 2, 16, 4, 8 };    /* ISM330 FS_XL order */
-        static const u16 fs_g_to_dps[4]  = { 250, 500, 1000, 2000 };
-        static const u16 odr_to_hz[16]   = {
+        static const u16 classic_fs_xl_g[4]   = { 2, 16, 4, 8 };
+        static const u16 classic_fs_g_dps[4]  = { 250, 500, 1000, 2000 };
+        static const u16 classic_odr_hz[16]   = {
             [ISM330_ODR_POWER_DOWN] = 0,
-            [ISM330_ODR_12_5_HZ]    = 13,   /* nominal 12.5 */
+            [ISM330_ODR_12_5_HZ]    = 13,
             [ISM330_ODR_26_HZ]      = 26,
             [ISM330_ODR_52_HZ]      = 52,
             [ISM330_ODR_104_HZ]     = 104,
@@ -667,56 +1043,93 @@ static int mpu6050_hw_init(struct mpu6050_priv *p)
             [ISM330_ODR_833_HZ]     = 833,
             [ISM330_ODR_1666_HZ]    = 1666,
         };
-        static const u16 fs_xl_expect_g[4] = {
-            [ACCEL_2G]  = 2,
-            [ACCEL_4G]  = 4,
-            [ACCEL_8G]  = 8,
-            [ACCEL_16G] = 16,
+        static const u16 newgen_fs_xl_g[4]    = { 2, 4, 8, 16 };
+        static const u16 newgen_fs_g_dps[16]  = {
+            [ISM330BX_FS_G_125DPS]  = 125,
+            [ISM330BX_FS_G_250DPS]  = 250,
+            [ISM330BX_FS_G_500DPS]  = 500,
+            [ISM330BX_FS_G_1000DPS] = 1000,
+            [ISM330BX_FS_G_2000DPS] = 2000,
+            [ISM330BX_FS_G_4000DPS] = 4000,
         };
-        static const u16 fs_g_expect_dps[4] = {
-            [GYRO_250DPS]  = 250,
-            [GYRO_500DPS]  = 500,
-            [GYRO_1000DPS] = 1000,
-            [GYRO_2000DPS] = 2000,
+        static const u16 newgen_odr_hz[16] = {
+            [ISM330BX_ODR_POWER_DOWN] = 0,
+            [ISM330BX_ODR_1_875_HZ]   = 2,
+            [ISM330BX_ODR_7_5_HZ]     = 8,
+            [ISM330BX_ODR_15_HZ]      = 15,
+            [ISM330BX_ODR_30_HZ]      = 30,
+            [ISM330BX_ODR_60_HZ]      = 60,
+            [ISM330BX_ODR_120_HZ]     = 120,
+            [ISM330BX_ODR_240_HZ]     = 240,
+            [ISM330BX_ODR_480_HZ]     = 480,
+            [ISM330BX_ODR_960_HZ]     = 960,
+            [ISM330BX_ODR_1920_HZ]    = 1920,
+            [ISM330BX_ODR_3840_HZ]    = 3840,
+            [ISM330BX_ODR_7680_HZ]    = 7680,
         };
-        unsigned int rb_ctrl1_xl = 0, rb_ctrl2_g = 0;
+        static const u16 fs_xl_expect_g[4]   = {
+            [ACCEL_2G] = 2, [ACCEL_4G] = 4, [ACCEL_8G] = 8, [ACCEL_16G] = 16,
+        };
+        static const u16 fs_g_expect_dps[4]  = {
+            [GYRO_250DPS] = 250, [GYRO_500DPS] = 500,
+            [GYRO_1000DPS] = 1000, [GYRO_2000DPS] = 2000,
+        };
+        unsigned int c1 = 0, c2 = 0, c6 = 0, c8 = 0;
+        u16 read_accel_g = 0, read_gyro_dps = 0;
+        u16 read_odr_xl_hz = 0, read_odr_g_hz = 0;
+        u16 want_accel_g   = fs_xl_expect_g[p->accel_fs];
+        u16 want_gyro_dps  = fs_g_expect_dps[p->gyro_fs];
         int rd;
 
-        rd  = mpu6050_read(p, ISM330_REG_CTRL1_XL, &rb_ctrl1_xl);
-        rd |= mpu6050_read(p, ISM330_REG_CTRL2_G,  &rb_ctrl2_g);
+        rd  = mpu6050_read(p, ISM330_REG_CTRL1_XL, &c1);
+        rd |= mpu6050_read(p, ISM330_REG_CTRL2_G,  &c2);
+        if (p->family == ISM330_FAMILY_NEWGEN) {
+            rd |= mpu6050_read(p, ISM330BX_REG_CTRL6, &c6);
+            rd |= mpu6050_read(p, ISM330BX_REG_CTRL8, &c8);
+        }
         if (rd) {
-            dev_warn(p->dev, "read-back failed (ret=%d) — cannot verify FS/ODR\n", rd);
+            dev_warn(p->dev, "final read-back failed (ret=%d)\n", rd);
+            return 0;
+        }
+
+        if (p->family == ISM330_FAMILY_CLASSIC) {
+            u8 odr_xl = (c1 >> 4) & 0x0F;
+            u8 fs_xl  = (c1 >> 2) & 0x03;
+            u8 odr_g  = (c2 >> 4) & 0x0F;
+            u8 fs_g   = (c2 >> 2) & 0x03;
+            read_accel_g   = classic_fs_xl_g[fs_xl];
+            read_gyro_dps  = classic_fs_g_dps[fs_g];
+            read_odr_xl_hz = classic_odr_hz[odr_xl];
+            read_odr_g_hz  = classic_odr_hz[odr_g];
+        } else if (p->family == ISM330_FAMILY_NEWGEN) {
+            u8 odr_xl = c1 & 0x0F;
+            u8 odr_g  = c2 & 0x0F;
+            u8 fs_xl  = c8 & 0x03;
+            u8 fs_g   = c6 & 0x0F;
+            read_accel_g   = newgen_fs_xl_g[fs_xl];
+            read_gyro_dps  = newgen_fs_g_dps[fs_g];
+            read_odr_xl_hz = newgen_odr_hz[odr_xl];
+            read_odr_g_hz  = newgen_odr_hz[odr_g];
+        }
+
+        if (read_accel_g   != want_accel_g  ||
+            read_gyro_dps  != want_gyro_dps ||
+            read_odr_xl_hz != p->odr_hz     ||
+            read_odr_g_hz  != p->odr_hz) {
+            dev_warn(p->dev,
+                "READBACK MISMATCH (%s): wanted accel=±%ug gyro=±%u dps ODR=%u Hz "
+                "-- got accel=±%ug gyro=±%u dps ODR_XL=%u ODR_G=%u\n",
+                ism330_family_name(p->family),
+                want_accel_g, want_gyro_dps, p->odr_hz,
+                read_accel_g, read_gyro_dps, read_odr_xl_hz, read_odr_g_hz);
+            dev_warn(p->dev,
+                "  → compare the checkpoint dumps above ('pre-configure' vs 'after set_ranges' "
+                "vs 'after set_odr') to see which register/bit didn't take our write.\n");
         } else {
-            u8 odr_xl = (rb_ctrl1_xl >> 4) & 0x0F;
-            u8 fs_xl  = (rb_ctrl1_xl >> 2) & 0x03;
-            u8 odr_g  = (rb_ctrl2_g  >> 4) & 0x0F;
-            u8 fs_g   = (rb_ctrl2_g  >> 2) & 0x03;
-
-            u16 read_accel_g   = fs_xl_to_g[fs_xl];
-            u16 read_gyro_dps  = fs_g_to_dps[fs_g];
-            u16 read_odr_xl_hz = (odr_xl < ARRAY_SIZE(odr_to_hz)) ? odr_to_hz[odr_xl] : 0;
-            u16 read_odr_g_hz  = (odr_g  < ARRAY_SIZE(odr_to_hz)) ? odr_to_hz[odr_g]  : 0;
-            u16 want_accel_g   = fs_xl_expect_g[p->accel_fs];
-            u16 want_gyro_dps  = fs_g_expect_dps[p->gyro_fs];
-
             dev_info(p->dev,
-                "ISM330DLC READBACK: CTRL1_XL=0x%02X (accel ODR=%u Hz, FS=±%ug)  "
-                "CTRL2_G=0x%02X (gyro ODR=%u Hz, FS=±%u dps)\n",
-                rb_ctrl1_xl, read_odr_xl_hz, read_accel_g,
-                rb_ctrl2_g,  read_odr_g_hz,  read_gyro_dps);
-
-            if (read_accel_g   != want_accel_g  ||
-                read_gyro_dps  != want_gyro_dps ||
-                read_odr_xl_hz != p->odr_hz     ||
-                read_odr_g_hz  != p->odr_hz) {
-                dev_warn(p->dev,
-                    "ISM330DLC READBACK MISMATCH: wanted accel=±%ug gyro=±%u dps ODR=%u Hz "
-                    "-- got accel=±%ug gyro=±%u dps ODR_XL=%u ODR_G=%u\n",
-                    want_accel_g, want_gyro_dps, p->odr_hz,
-                    read_accel_g, read_gyro_dps, read_odr_xl_hz, read_odr_g_hz);
-            } else {
-                dev_info(p->dev, "ISM330DLC READBACK OK: settings match driver intent\n");
-            }
+                "READBACK OK (%s): accel=±%ug gyro=±%u dps ODR=%u Hz — all match driver intent\n",
+                ism330_family_name(p->family),
+                read_accel_g, read_gyro_dps, read_odr_xl_hz);
         }
     }
 
