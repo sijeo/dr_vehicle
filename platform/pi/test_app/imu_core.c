@@ -415,6 +415,7 @@ static int raw_is_saturated( const imu_pipeline_t *p, const imu_raw_sample_t *r 
     const int32_t vals[6] = {r->ax, r->ay, r->az, r->gx, r->gy, r->gz };
     size_t i;
     for(i = 0; i < 6; i++ ) if( fabsf((float)vals[i]) >= lim ) return 1;
+    return 0;
 }
 
 static void update_stats(imu_pipeline_t *p, const float acc[3], const float gyro[3], bool bump, 
@@ -451,7 +452,7 @@ static void update_stats(imu_pipeline_t *p, const float acc[3], const float gyro
             acc_std[axis] = (float)sqrt(var);
         } else {
             gyro_mean[axis - 3u] = (float)mean;
-            gyro_mean[axis - 3u] = (float)sqrt(var);
+            gyro_std[axis - 3u] = (float)sqrt(var);
         }
     }
     *bump_duty = 100.0f * (float)p->bump_sum / (float)p->stats_count;

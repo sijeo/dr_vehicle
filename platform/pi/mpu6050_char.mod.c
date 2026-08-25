@@ -33,15 +33,15 @@ __used __section(__versions) = {
 	{ 0x5f849a69, "_raw_spin_lock_irqsave" },
 	{ 0x5f754e5a, "memset" },
 	{ 0xae353d77, "arm_copy_from_user" },
-	{ 0xf2a4c553, "_dev_warn" },
 	{ 0xa5dda2bb, "devm_request_threaded_irq" },
-	{ 0xb8855baa, "_dev_err" },
 	{ 0x5418143d, "sysfs_create_group" },
 	{ 0xf3725a4c, "device_create" },
 	{ 0x59d82f5, "__class_create" },
 	{ 0xdd0a9799, "cdev_add" },
 	{ 0xc38969c2, "cdev_init" },
 	{ 0xe3ec2f2b, "alloc_chrdev_region" },
+	{ 0xf2a4c553, "_dev_warn" },
+	{ 0xb8855baa, "_dev_err" },
 	{ 0x160a9d89, "regmap_read" },
 	{ 0x12a38747, "usleep_range" },
 	{ 0x3a349840, "device_property_read_u32_array" },
@@ -49,6 +49,7 @@ __used __section(__versions) = {
 	{ 0xe346f67a, "__mutex_init" },
 	{ 0x9f61ee91, "__devm_regmap_init_i2c" },
 	{ 0x46fe63d0, "devm_kmalloc" },
+	{ 0x9bdbf16f, "regmap_write" },
 	{ 0x6091b333, "unregister_chrdev_region" },
 	{ 0xc7885d0b, "cdev_del" },
 	{ 0x26d1dbff, "class_destroy" },
@@ -65,7 +66,6 @@ __used __section(__versions) = {
 	{ 0xa1c76e0a, "_cond_resched" },
 	{ 0x51a910c0, "arm_copy_to_user" },
 	{ 0x3b6c41ea, "kstrtouint" },
-	{ 0x9bdbf16f, "regmap_write" },
 	{ 0xe707d823, "__aeabi_uidiv" },
 	{ 0xdecd0b29, "__stack_chk_fail" },
 	{ 0x67ea780, "mutex_unlock" },
@@ -81,7 +81,11 @@ __used __section(__versions) = {
 MODULE_INFO(depends, "regmap-i2c");
 
 MODULE_ALIAS("i2c:mpu6050");
+MODULE_ALIAS("of:N*T*Cstm,ism330dlctr");
+MODULE_ALIAS("of:N*T*Cstm,ism330dlctrC*");
+MODULE_ALIAS("of:N*T*Cst,ism330dlc");
+MODULE_ALIAS("of:N*T*Cst,ism330dlcC*");
 MODULE_ALIAS("of:N*T*Cinvensense,mpu6050-custom");
 MODULE_ALIAS("of:N*T*Cinvensense,mpu6050-customC*");
 
-MODULE_INFO(srcversion, "6FCFBAD8B7D43848D356CA3");
+MODULE_INFO(srcversion, "06FE0BE2115ECC538848697");

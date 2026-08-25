@@ -141,8 +141,8 @@ int main( int argc, char **argv ) {
         }
 
         imu_raw_sample_t raw = {
-            .ax = s.ax_corr, .ay = s.ay_corr, .az = s.az_corr, 
-            .gx = s.gx_corr, .gy = s.gy_corr, .gz = s.gz_corr
+            .ax = s.ax, .ay = s.ay, .az = s.az, 
+            .gx = s.gx, .gy = s.gy, .gz = s.gz
         };
         imu_output_t out;
         rc = imu_pipeline_process(&pipeline, &raw, monotonic_ns(), &out);

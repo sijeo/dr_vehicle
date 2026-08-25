@@ -461,4 +461,3 @@ Best validated with real outage test data on the ISM330.
 5. **Q inflation tiers** (lines 110–113) — optional, tune empirically
 
 ** 'In the config.txt of the /boot/firmare/ directory of raspberry pi, we need to make sure the dtoverlay=neo6m-serdev, dtoverlay=mpu6050-rpi3-b-overlay, enable-uart=1, dtoverlay=disable-ble is added '
-
