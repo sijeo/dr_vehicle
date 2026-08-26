@@ -58,14 +58,14 @@ int main( int argc, char **argv ) {
     imu_config_set_dr_defaults(&cfg);
 
     static const struct option options[] = {
-        {"host", required_argument, NULL, 'h'},
-        {"port", required_argument, NULL, 'p'}, 
-        {"device", required_argument, NULL, 'd'},
-        {"cal-file", required_argument, NULL, 'c'},
-        {"recalibrate", no_argument, NULL, 'r'},
-        {"rate", required_argument, NULL, 'r'},
-        {"cutoff", required_argument, NULL, 'l'},
-        {"help", no_argument, NULL, '?'},
+        {"host",        required_argument, NULL, 'h'},
+        {"port",        required_argument, NULL, 'p'},
+        {"device",      required_argument, NULL, 'd'},
+        {"cal-file",    required_argument, NULL, 'c'},
+        {"recalibrate", no_argument,       NULL, 'r'},
+        {"rate",        required_argument, NULL, 'f'},   /* was 'r' — collided with --recalibrate */
+        {"cutoff",      required_argument, NULL, 'l'},
+        {"help",        no_argument,       NULL, '?'},
         {NULL, 0, NULL, 0}
     };
 
@@ -127,6 +127,11 @@ int main( int argc, char **argv ) {
 
     uint8_t frame[IMU_WIRE_FRAME_SIZE];
     uint32_t last_state = UINT32_MAX;
+    uint64_t last_status_ns   = 0;
+    uint64_t samples_since    = 0;
+    uint64_t packets_sent     = 0;
+    uint64_t sendto_errs      = 0;
+
     while(!g_stop) {
         struct mpu6050_sample s;
         ssize_t n = read(imu_fd, &s, sizeof(s));
@@ -141,11 +146,12 @@ int main( int argc, char **argv ) {
         }
 
         imu_raw_sample_t raw = {
-            .ax = s.ax, .ay = s.ay, .az = s.az, 
+            .ax = s.ax, .ay = s.ay, .az = s.az,
             .gx = s.gx, .gy = s.gy, .gz = s.gz
         };
         imu_output_t out;
-        rc = imu_pipeline_process(&pipeline, &raw, monotonic_ns(), &out);
+        uint64_t now_ns = monotonic_ns();
+        rc = imu_pipeline_process(&pipeline, &raw, now_ns, &out);
         if( rc != 0 ){
             fprintf(stderr, "pipeline error: %s (%d)\n", strerror(-rc), rc);
             continue;
@@ -158,12 +164,46 @@ int main( int argc, char **argv ) {
             break;
         }
         ssize_t sent = sendto(sock, frame, frame_size, 0, (struct sockaddr *)&peer, sizeof(peer));
-        if( sent != (ssize_t)frame_size && errno != ENOBUFS) perror("sendto");
+        if( sent == (ssize_t)frame_size) {
+            ++packets_sent;
+        } else if (errno != ENOBUFS) {
+            ++sendto_errs;
+            if (sendto_errs <= 5 || (sendto_errs % 100) == 0)
+                fprintf(stderr, "sendto err #%llu: %s\n",
+                        (unsigned long long)sendto_errs, strerror(errno));
+        }
 
+        ++samples_since;
+
+        /* State-change print (once per transition — kept from the original). */
         if( (uint32_t)out.cal_state != last_state ) {
-            fprintf(stderr, "Calibration state: %s, progress %.1f%%, quality %.0f\n", 
-            imu_cal_state_name(out.cal_state), 100.0f*out.calibration_progress, out.quality_score);
+            fprintf(stderr, "[state->] %s, progress %.1f%%, quality %.0f\n",
+                imu_cal_state_name(out.cal_state),
+                100.0f * out.calibration_progress, out.quality_score);
             last_state = (uint32_t)out.cal_state;
+        }
+
+        /* Periodic heartbeat — ALWAYS prints once per second, even when
+         * the state hasn't changed. Prevents the streamer from looking
+         * dead when it's actually spinning in SETTLING or RESTARTING. */
+        if (last_status_ns == 0) last_status_ns = now_ns;
+        if (now_ns - last_status_ns >= 1000000000ull) {
+            double dt = (now_ns - last_status_ns) * 1e-9;
+            double obs_hz = samples_since / dt;
+            fprintf(stderr,
+                "[%.1fs] state=%-11s prog=%5.1f%% qual=%3.0f  obs_rate=%.1f Hz  "
+                "sent=%llu err=%llu  raw|a|~=%.2f g|w|~=%.2f dps\n",
+                (double)now_ns * 1e-9,
+                imu_cal_state_name(out.cal_state),
+                100.0f * out.calibration_progress,
+                out.quality_score,
+                obs_hz,
+                (unsigned long long)packets_sent,
+                (unsigned long long)sendto_errs,
+                (double)out.accel_norm_unfiltered,
+                (double)out.gyro_norm_unfiltered_rps / 0.01745329f);
+            last_status_ns = now_ns;
+            samples_since  = 0;
         }
     }
 

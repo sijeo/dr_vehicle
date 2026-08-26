@@ -605,6 +605,37 @@ uint64_t ns, uint32_t *flags ) {
     }
 
     if( gross_bad || ac_bad ){
+        /* Rate-limited diagnostic — print at most once per ~1s of samples
+         * (assuming ~200-240 Hz that's every 200 restarts). Explains WHICH
+         * axis / which threshold tripped so the user can tell whether it's
+         * genuine motion, LSQ mismatch, or too-tight threshold. */
+        static uint32_t reset_seq = 0;
+        if ((reset_seq++ % 200u) == 0u) {
+            float dgx = gyro_raw_rps[0] - b->gyro_ema_rps[0];
+            float dgy = gyro_raw_rps[1] - b->gyro_ema_rps[1];
+            float dgz = gyro_raw_rps[2] - b->gyro_ema_rps[2];
+            float dan = acc_norm - b->acc_norm_ema;
+            fprintf(stderr,
+                "[CAL restart #%u]  gross=%d ac=%d  "
+                "|a|=%.3f (grav=%.3f dev=%.3f)  "
+                "gyro=(%.2f,%.2f,%.2f) EMA=(%.2f,%.2f,%.2f) AC=(%.2f,%.2f,%.2f) deg/s  "
+                "aEMA=%.3f aAC=%.3f\n",
+                reset_seq,
+                (int)gross_bad, (int)ac_bad,
+                (double)acc_norm, (double)p->cfg.gravity_mps2,
+                (double)fabsf(acc_norm - p->cfg.gravity_mps2),
+                (double)(gyro_raw_rps[0] / 0.01745329f),
+                (double)(gyro_raw_rps[1] / 0.01745329f),
+                (double)(gyro_raw_rps[2] / 0.01745329f),
+                (double)(b->gyro_ema_rps[0] / 0.01745329f),
+                (double)(b->gyro_ema_rps[1] / 0.01745329f),
+                (double)(b->gyro_ema_rps[2] / 0.01745329f),
+                (double)(dgx / 0.01745329f),
+                (double)(dgy / 0.01745329f),
+                (double)(dgz / 0.01745329f),
+                (double)b->acc_norm_ema,
+                (double)dan);
+        }
         p->cal_state = IMU_CAL_RESTARTING;
         reset_boot_accumulator(b, false);
         return;
