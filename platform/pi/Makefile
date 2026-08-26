@@ -45,6 +45,6 @@ deploy_app_2:
 	scp dr_dead_reckoning_app_ins15 sijeo@192.168.68.103:/home/sijeo/dr_vehicle/
 	
 deploy_test:
-	scp test_app/imu_streamer sijeo@192.168.68.103:/home/sijeo/dr_vehicle/
+	scp test_app/imu_streamer sijeo@192.168.68.104:/home/sijeo/dr_vehicle/
 	
 .PHONY: all clean app driver_test deploy deploy_app
