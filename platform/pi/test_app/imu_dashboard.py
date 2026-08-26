@@ -176,6 +176,10 @@ class Receiver(threading.Thread):
 
     def run(self) -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            # Allow rebind immediately after a crash/restart — otherwise
+            # the kernel holds the port in TIME_WAIT for ~60s and bind
+            # returns EADDRINUSE.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind((self.bind, self.port))
             sock.settimeout(0.5)
             while not self.stop_event.is_set():
@@ -192,8 +196,15 @@ class Receiver(threading.Thread):
                         self.out_queue.put_nowait(sample)
                 except socket.timeout:
                     continue
-                except (OSError, ValueError):
+                except (OSError, ValueError) as e:
                     self.bad_frames += 1
+                    # Print the first few bad frames so the operator can
+                    # tell whether it's a corruption issue, a protocol
+                    # version mismatch, or CRC (rate-limited so we don't
+                    # spam if EVERY packet is bad — that itself is signal).
+                    if self.bad_frames <= 5 or self.bad_frames % 500 == 0:
+                        print(f"[dashboard] bad frame #{self.bad_frames}: {e}",
+                              flush=True)
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -217,6 +228,10 @@ class CsvLogger:
         self.file = None
         self.writer = None
         if path:
+            # Auto-create the parent directory so a path like
+            # ~/imu_logs/session1.csv works on a fresh install without
+            # a FileNotFoundError.
+            path.parent.mkdir(parents=True, exist_ok=True)
             self.file = path.open("w", newline="", encoding="utf-8")
             self.writer = csv.writer(self.file)
             self.writer.writerow(self.HEADER)
@@ -257,6 +272,7 @@ def main() -> int:
     receiver = Receiver(args.bind, args.port, q)
     receiver.start()
     logger = CsvLogger(args.csv)
+    startup_monotonic = time.monotonic()   # used by the "WAITING for packets…" status
 
     max_points = max(200, int(args.window * 150))
     t: Deque[float] = deque(maxlen=max_points)
@@ -359,17 +375,31 @@ def main() -> int:
                 ax.relim()
                 ax.autoscale_view(scalex=False, scaley=True)
         if latest:
-            age = time.monotonic_ns() - latest.received_s
+            # Both operands are seconds — the previous code used
+            # time.monotonic_ns() (nanoseconds int) and printed Age in
+            # the billions.
+            age = time.monotonic() - latest.received_s
             loss_pct = 100.0 * lost / max(1, packets + lost)
             status.set_text(
                 f"State={CAL_STATES.get(latest.cal_state, latest.cal_state):<11} "
-                f"Cal={100*latest.cal_progress:5.1f}% Rate={latest.sample_rate:6.1f} Hz"
+                f"Cal={100*latest.cal_progress:5.1f}% Rate={latest.sample_rate:6.1f} Hz "
                 f"Quality={latest.quality_score:5.1f}% Stationary={latest.stationary_score:5.1f}% "
                 f"Loss={loss_pct:5.2f}% BadFrames={receiver.bad_frames} Age={age:4.2f}s\n"
                 f"Flags: {active_flag_names(latest.flags)}\n"
                 f"Gyro bias counts: ({latest.gyro_bias_counts[0]:.2f}, "
                 f"{latest.gyro_bias_counts[1]:.2f}, {latest.gyro_bias_counts[2]:.2f}) "
                 f"LPF={latest.cutoff:.1f} Hz Bump Duty={latest.bump_duty:.1f}%"
+            )
+        else:
+            # No packets have arrived yet — show elapsed idle time so the
+            # operator can distinguish "streamer down" from "streamer up
+            # but network path blocked".
+            idle_s = time.monotonic() - startup_monotonic
+            status.set_text(
+                f"WAITING for packets on {args.bind}:{args.port}  "
+                f"idle={idle_s:5.1f}s  BadFrames={receiver.bad_frames}\n"
+                f"Hint: on the Pi, run  ./imu_streamer --host <dashboard-ip> --port {args.port}\n"
+                f"      verify with:  sudo tcpdump -i any -n udp port {args.port}"
             )
         return [*acc_lines, norm_line, *gyro_lines, *noise_lines, *gyro_noise_lines, 
                 quality_line, stationary_line, status]

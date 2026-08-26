@@ -521,7 +521,13 @@ static int finalize_boot_calibration(imu_pipeline_t *p ){
         candidate.boot_accel_mean[i] = (float)a_mean;
         candidate.boot_accel_var[i] = (float)a_var;
 
-        if( fabsf(candidate.boot_gyro_mean_rps[i]) > p->cfg.cal_gyro_bias_abs_max_rps ) return -ERANGE;
+        if( fabsf(candidate.boot_gyro_mean_rps[i]) > p->cfg.cal_gyro_bias_abs_max_rps ) {
+            fprintf(stderr,
+                "[CAL finalize FAIL] gyro bias axis %zu = %.3f dps exceeds max %.3f dps\n",
+                i, (double)(candidate.boot_gyro_mean_rps[i] / IMU_DEG2RAD),
+                (double)(p->cfg.cal_gyro_bias_abs_max_rps / IMU_DEG2RAD));
+            return -ERANGE;
+        }
         if( candidate.boot_gyro_var[i] > p->cfg.cal_gyro_axis_var_max || candidate.boot_accel_var[i] > p->cfg.cal_acc_axis_var_max ) variance_bad = true;
     }
 
@@ -533,16 +539,52 @@ static int finalize_boot_calibration(imu_pipeline_t *p ){
 
     if( candidate.boot_acc_norm_mean < p->cfg.cal_acc_norm_min_mps2 ||
         candidate.boot_acc_norm_mean > p->cfg.cal_acc_norm_max_mps2) {
-            p->quality_flags_latched |= IMU_QF_ACCEL_SCALE_BAD;
-            return -ERANGE;
-        } 
+        fprintf(stderr,
+            "[CAL finalize FAIL] mean(|a|) = %.3f m/s^2 outside [%.3f, %.3f] "
+            "-- accel LSQ scale is wrong for this chip\n",
+            (double)candidate.boot_acc_norm_mean,
+            (double)p->cfg.cal_acc_norm_min_mps2,
+            (double)p->cfg.cal_acc_norm_max_mps2);
+        p->quality_flags_latched |= IMU_QF_ACCEL_SCALE_BAD;
+        return -ERANGE;
+    }
     if( variance_bad ) {
+        fprintf(stderr,
+            "[CAL finalize FAIL] variance too high on stationary bench -- "
+            "accel_var=(%.4f,%.4f,%.4f) max=%.4f  gyro_var=(%.4f,%.4f,%.4f) max=%.4f (m/s^2)^2 / (rad/s)^2\n",
+            (double)candidate.boot_accel_var[0], (double)candidate.boot_accel_var[1], (double)candidate.boot_accel_var[2],
+            (double)p->cfg.cal_acc_axis_var_max,
+            (double)candidate.boot_gyro_var[0], (double)candidate.boot_gyro_var[1], (double)candidate.boot_gyro_var[2],
+            (double)p->cfg.cal_gyro_axis_var_max);
         p->quality_flags_latched |= IMU_QF_VARIANCE_BAD;
         return -EAGAIN;
     }
-    if( candidate.observed_rate_hz < 0.8f * p->cfg.sample_rate_hz || candidate.observed_rate_hz > 1.2f*p->cfg.sample_rate_hz) {
+    /* Rate check: allow a WIDE range (0.5× .. 5×) so that on-demand
+     * userspace polling in non-IRQ mode (which polls ~2-3× faster than
+     * the chip's actual ODR because reads never block) doesn't wrongly
+     * FAIL an otherwise good calibration. The narrower ±20% band only
+     * makes sense with IRQ-driven strict-rate delivery. If the rate is
+     * merely "off" but within [0.5×, 5×], still complete the calibration
+     * and just latch the quality flag so downstream code can see it.
+     * Outside [0.5×, 5×] means something is fundamentally broken
+     * (chip powered down, or bus starvation) -- fail hard. */
+    if( candidate.observed_rate_hz < 0.5f * p->cfg.sample_rate_hz ||
+        candidate.observed_rate_hz > 5.0f * p->cfg.sample_rate_hz) {
+        fprintf(stderr,
+            "[CAL finalize FAIL] observed_rate=%.1f Hz way outside expected %.1f Hz "
+            "[0.5x .. 5x] band\n",
+            (double)candidate.observed_rate_hz, (double)p->cfg.sample_rate_hz);
         p->quality_flags_latched |= IMU_QF_RATE_BAD;
         return -ERANGE;
+    }
+    if( candidate.observed_rate_hz < 0.8f * p->cfg.sample_rate_hz ||
+        candidate.observed_rate_hz > 1.2f * p->cfg.sample_rate_hz) {
+        fprintf(stderr,
+            "[CAL finalize WARN] observed_rate=%.1f Hz differs from config %.1f Hz -- "
+            "flagging RATE_BAD but ACCEPTING calibration (on-demand read mode?)\n",
+            (double)candidate.observed_rate_hz, (double)p->cfg.sample_rate_hz);
+        p->quality_flags_latched |= IMU_QF_RATE_BAD;
+        /* fall through — do not return */
     }
 
     candidate.valid = 1u;
