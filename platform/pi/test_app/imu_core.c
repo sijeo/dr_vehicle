@@ -108,7 +108,9 @@ void imu_config_set_dr_defaults(imu_config_t *cfg) {
     if( !cfg ) return;
     memset(cfg, 0, sizeof(*cfg));
 
-    cfg->sample_rate_hz = 200.0f;   /* matches mpu6050_char.c default ODR; overridable via imu_streamer --sample-rate */
+    cfg->sample_rate_hz = 240.0f;   /* ISM330BX (LSM6DSV-family) nearest to 200 Hz is 240 Hz.
+                                     * ISM330DLC (classic) would run at 208 Hz — override via
+                                     * imu_streamer --sample-rate if you switch chips. */
     cfg->lpf_cutoff_hz = 6.0f;
     cfg->stats_window_s = 2.0f;
     cfg->gyro_lsb_per_dps = 16.384f;   /* ±2000 dps FS on the ISM330 driver default (was 65.536 @ ±500 dps) */
@@ -570,8 +572,18 @@ uint64_t ns, uint32_t *flags ) {
         p->cal_state = IMU_CAL_SETTLING;
     }
 
-    bool gross_bad = fabsf(acc_norm - p->cfg.gravity_mps2) > p->cfg.boot_acc_norm_ac_threshold_msp2;
-    bool ac_bad = fabsf(acc_norm - b->acc_norm_ema ) > p->cfg.boot_acc_norm_ac_threshold_msp2;
+    /* gross_bad = big absolute deviation from gravity — catches broken
+     *              sensor / wrong FS / wrong LSQ scale. Uses the wide
+     *              gross threshold (~3 m/s²), NOT the tight AC one.
+     *              PREVIOUS BUG: this used boot_acc_norm_ac_threshold_msp2
+     *              (0.30 m/s²) which was 10× too strict — any small per-
+     *              axis scale drift in the LSQ vs. the actual chip family
+     *              (e.g. ISM330BX vs ISM330DLC) sat > 0.30 forever and
+     *              looped SETTLING → RESTARTING → SETTLING with no exit.
+     * ac_bad    = small motion signal — deviation of current sample from
+     *              the slow EMA baseline. This IS the AC threshold. */
+    bool gross_bad = fabsf(acc_norm - p->cfg.gravity_mps2) > p->cfg.boot_acc_norm_gross_threshold_mps2;
+    bool ac_bad   = fabsf(acc_norm - b->acc_norm_ema)      > p->cfg.boot_acc_norm_ac_threshold_msp2;
     size_t i;
     for( i = 0; i < 3; ++i ){
         if( fabsf(gyro_raw_rps[i]) > p->cfg.boot_gyro_gross_threshold_rps ) gross_bad = true;
