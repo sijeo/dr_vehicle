@@ -322,6 +322,40 @@ static inline int mpu6050_read_burst(struct mpu6050_priv *p, struct mpu6050_samp
     return 0;
 }
 
+/* Polling-mode read: block until the chip's STATUS_REG.XLDA bit indicates a
+ * FRESH accel sample is ready, THEN burst-read. Without this, the on-demand
+ * path returns whatever bytes happen to be in the OUT registers — which are
+ * the SAME as the previous read whenever userspace polls faster than the
+ * chip's ODR (very common: I²C burst @ 400 kHz ~1.7 ms/read vs. 4.17 ms per
+ * new 240 Hz sample → ~60 % of reads would be duplicates).
+ *
+ * Polling STATUS_REG here means every returned sample is genuinely new, and
+ * userspace can spin in a tight read() loop and observe exactly the chip's
+ * ODR — no duplicates, no manual rate-limiting required. Reading OUTX_L_XL
+ * during the burst read below deasserts the XLDA flag inside the chip. */
+static int mpu6050_wait_for_new_sample(struct mpu6050_priv *p)
+{
+    unsigned int st;
+    int ret;
+    ktime_t deadline = ktime_add_ms(ktime_get(), 100);   /* generous — 100 ms > 1 tick @ 12.5 Hz */
+
+    for (;;) {
+        ret = regmap_read(p->regmap, ISM330_REG_STATUS_REG, &st);
+        if (ret) return ret;
+        if (st & ISM330_STATUS_XLDA) return 0;
+
+        if (ktime_after(ktime_get(), deadline)) {
+            dev_warn_ratelimited(p->dev,
+                "wait_for_new_sample: STATUS_REG.XLDA never set within 100 ms — "
+                "chip may be powered down (check CTRL1_XL ODR bits)\n");
+            return -ETIMEDOUT;
+        }
+        /* Sleep about a quarter of the fastest expected inter-sample gap
+         * (240 Hz → 4.17 ms; a 500 µs sleep gives ~8 wakeups per period). */
+        usleep_range(500, 1000);
+    }
+}
+
 /* ---- Classic-family set_ranges (ISM330DLC/DHCX/DSO/DSOX/DSL/DSM/DSR) ----
  * FS_XL at CTRL1_XL[3:2] (non-monotonic 2/16/4/8), FS_G at CTRL2_G[3:2]. */
 static int ism330_classic_set_ranges(struct mpu6050_priv *p)
@@ -649,22 +683,35 @@ static ssize_t mpu6050_read_file(struct file *f, char __user *buf, size_t len, l
         done++;
 
         } else {
-            /* On demand snapshot mode */
-            struct mpu6050_sample s; int ret;
+            /* Polling mode — no HW IRQ, no in-kernel FIFO. Wait for
+             * STATUS_REG.XLDA to confirm a new sample is ready, THEN
+             * burst-read. read() therefore returns exactly ODR times
+             * per second (240 Hz on ISM330BX default), which matches
+             * what the userspace pipeline expects. */
+            struct mpu6050_sample s;
+            int ret;
             size_t off;
+
             mutex_lock(&p->io_lock);
-            ret = mpu6050_read_burst(p, &s);
-            
+            ret = mpu6050_wait_for_new_sample(p);
+            if (ret == 0)
+                ret = mpu6050_read_burst(p, &s);
             mutex_unlock(&p->io_lock);
-            if (ret)
-                return done ? (ssize_t)(done * sizeof(s)) : ret;
+
+            if (ret) {
+                /* On timeout / bus error: honour O_NONBLOCK and any
+                 * partial data already delivered, otherwise propagate. */
+                if (done) return (ssize_t)(done * sizeof(s));
+                if (ret == -ETIMEDOUT && (f->f_flags & O_NONBLOCK))
+                    return -EAGAIN;
+                return ret;
+            }
             off = done * sizeof(struct mpu6050_sample);
             if (copy_to_user((void __user *)(buf + off), &s, sizeof(s)))
                 return -EFAULT;
-            dev_info(p->dev, "snapshot read: ax=%d ay=%d az=%d gx=%d gy=%d gz=%d temp=%d\n",
-                s.ax, s.ay, s.az, s.gx, s.gy, s.gz, s.temp);
+            /* dev_info per-sample removed — at 240 Hz it floods dmesg
+             * and steals CPU. Enable dynamic debug if you need it. */
             done++;
-    
         }
         
     }
@@ -1163,16 +1210,38 @@ static int mpu6050_probe(struct i2c_client *client)
 
     // Keep device always active (no pm_runtime)
 
-    /* Parse DT (optional) */
-    device_property_read_u32(dev, "st,odr-hz", &p->odr_hz);
-    device_property_read_u32(dev, "st,accel-fsr-g", &ag);
-    device_property_read_u32(dev, "st,gyro-fsr-dps", &gd);
+    /* Parse DT (optional). C-side defaults set above: ag=8, gd=2000, odr=0.
+     *
+     * device_property_read_u32() returns 0 and OVERWRITES the output var
+     * if the property exists in the loaded overlay, or returns -EINVAL and
+     * LEAVES the output var untouched if the property is missing. So the
+     * three explicit rc lines below tell us exactly what the driver is
+     * seeing at this instant — no more guessing whether the fresh .dtbo
+     * on the Pi is actually loaded. */
+    {
+        u32 raw_odr = p->odr_hz;
+        int rc_odr = device_property_read_u32(dev, "st,odr-hz",       &p->odr_hz);
+        int rc_ag  = device_property_read_u32(dev, "st,accel-fsr-g",  &ag);
+        int rc_gd  = device_property_read_u32(dev, "st,gyro-fsr-dps", &gd);
+        dev_info(dev,
+            "DT parse: st,odr-hz rc=%d val=%u (was %u)  "
+            "st,accel-fsr-g rc=%d val=%u  st,gyro-fsr-dps rc=%d val=%u\n",
+            rc_odr, p->odr_hz, raw_odr,
+            rc_ag,  ag,
+            rc_gd,  gd);
+        dev_info(dev,
+            "DT parse: rc==0 means the property EXISTED and OVERRODE the C "
+            "default; rc==-EINVAL (-22) means the property was ABSENT and "
+            "the C default remains.\n");
+    }
     p->accel_fs = (ag <= 2) ? ACCEL_2G :
                    (ag <= 4) ? ACCEL_4G :
                    (ag <= 8) ? ACCEL_8G : ACCEL_16G;
     p->gyro_fs = (gd <= 250) ? GYRO_250DPS :
                   (gd <= 500) ? GYRO_500DPS :
                   (gd <= 1000) ? GYRO_1000DPS : GYRO_2000DPS;
+    dev_info(dev, "final config: accel_fs enum=%u (want ±8g=2)  gyro_fs enum=%u (want ±2000dps=3)\n",
+             p->accel_fs, p->gyro_fs);
 
     ret = mpu6050_hw_init(p);            // wakes device and sets ranges/ODR
     if (ret) {
@@ -1212,25 +1281,43 @@ static int mpu6050_probe(struct i2c_client *client)
         goto err_dev;
     }
 
-    /* IRQ path (optional) */
+    /* IRQ path — HARDWARE-OPTIONAL.
+     *
+     * The INT1 pin on this board's ISM330 is NOT physically wired to any
+     * GPIO. The DT overlay still declares an `interrupts = <25 …>` line
+     * for future use, and the kernel will happily hand us an IRQ handle
+     * from that — but no edges ever arrive, so if we enabled IRQ mode
+     * userspace read() would block on wait_event forever.
+     *
+     * Default is therefore POLLING: userspace read() goes through
+     * mpu6050_wait_for_new_sample() which polls STATUS_REG.XLDA and
+     * blocks up to 100 ms per sample until the chip signals a fresh
+     * accel reading. read() then returns exactly ODR times per second
+     * (240 Hz on ISM330BX default) with no duplicate samples.
+     *
+     * If the INT1 wire is later added, `echo 1 > /sys/class/mpu6050/
+     * mpu6050-N/irq_mode` at runtime switches to hardware-IRQ delivery
+     * without a driver rebuild. */
     p->irq = client->irq;
     if (p->irq) {
         ret = devm_request_threaded_irq(dev, p->irq, NULL, mpu6050_irq_thread,
                                         IRQF_ONESHOT | IRQF_TRIGGER_RISING,
                                         DRIVER_NAME, p);
         if (ret) {
-            dev_warn(dev, "Failed to request IRQ %d: %d\n", p->irq, ret);
+            dev_warn(dev, "IRQ %d request failed (%d) — polling mode will be used\n",
+                     p->irq, ret);
             p->irq = 0;
+        } else {
+            dev_info(dev, "IRQ %d registered but NOT enabled by default. "
+                          "Run `echo 1 > /sys/class/mpu6050/mpu6050-*/irq_mode` "
+                          "if the INT1 pin is physically wired.\n",
+                     p->irq);
         }
+    } else {
+        dev_info(dev, "no IRQ declared for this node — polling mode (STATUS_REG.XLDA)\n");
     }
-    /* Default mode: enable IRQ mode only if an IRQ exists */
     p->irq_mode = false;
-    if( p->irq ){
-        ret = mpu6050_set_irq_mode(p, true);
-        if (ret) {
-            dev_warn(dev, "Failed to enable IRQ mode: %d\n", ret);
-        }
-    }
+    dev_info(dev, "read() mode: POLLING (chip-paced via STATUS_REG.XLDA)\n");
     
     i2c_set_clientdata(client, p);
 
