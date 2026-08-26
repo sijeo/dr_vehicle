@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import os
 import queue
 import socket
 import struct
+import sys
 import threading
 import time
 import zlib
@@ -166,26 +168,154 @@ def parse_frame(data: bytes) -> Sample:
     )
 
 class Receiver(threading.Thread):
-    def __init__(self, bind: str, port: int, out_queue: queue.Queue[Sample]) -> None:
+    def __init__(self, bind: str, port: int, out_queue: queue.Queue[Sample],
+                 verbose: bool = False, summary_interval_s: float = 1.0) -> None:
         super().__init__(daemon=True)
         self.bind = bind
         self.port = port
         self.out_queue = out_queue
         self.stop_event = threading.Event()
         self.bad_frames = 0
+        self.verbose = verbose                  # per-packet CLI print
+        self.summary_interval_s = summary_interval_s
+        # Counters — reset on each summary tick, accumulate in _total_*
+        self._pkts_since = 0
+        self._bytes_since = 0
+        self._total_pkts = 0
+        self._total_bytes = 0
+        self._last_summary = 0.0
+        self._last_seq = None
+        self._gaps = 0
 
     def run(self) -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            # Allow rebind immediately after a crash/restart — otherwise
-            # the kernel holds the port in TIME_WAIT for ~60s and bind
-            # returns EADDRINUSE.
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind((self.bind, self.port))
+            # -----------------------------------------------------------
+            # Platform-conditional socket options.
+            #
+            # On Linux / macOS: SO_REUSEADDR is safe and useful — it
+            #   lets us rebind immediately after a crash/restart instead
+            #   of waiting ~60s for TIME_WAIT to clear.
+            #
+            # On Windows: SO_REUSEADDR has HIJACK semantics — any other
+            #   process can silently bind to the same port and steal
+            #   packets. If a stale Python or a system service was ever
+            #   bound to 5005 first, this dashboard's bind() succeeds
+            #   but packets are delivered to the SQUATTER, not us.
+            #   SO_EXCLUSIVEADDRUSE prevents this: bind() fails loudly
+            #   if anyone else has (or later tries to) bind the port.
+            # -----------------------------------------------------------
+            if sys.platform == "win32":
+                try:
+                    sock.setsockopt(socket.SOL_SOCKET,
+                                    socket.SO_EXCLUSIVEADDRUSE, 1)
+                except (OSError, AttributeError):
+                    pass  # older Python — fall back to default behaviour
+            else:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+            try:
+                sock.bind((self.bind, self.port))
+            except OSError as e:
+                # This is now noisy on purpose. On Windows this typically
+                # means another process already owns the port (that's
+                # exactly the packet-stealer we're trying to avoid).
+                print(f"[dashboard] BIND FAILED on {self.bind}:{self.port}: {e}",
+                      flush=True)
+                print(f"[dashboard]   likely cause: another process is already bound.",
+                      flush=True)
+                if sys.platform == "win32":
+                    print(f"[dashboard]   run in an ADMIN PowerShell to find it:",
+                          flush=True)
+                    print(f"[dashboard]     netstat -an -o -p UDP | findstr :{self.port}",
+                          flush=True)
+                else:
+                    print(f"[dashboard]   run:  sudo ss -ulnp | grep :{self.port}",
+                          flush=True)
+                raise
+
+            # Confirm the bind succeeded and print WHAT we're actually
+            # listening on. Useful when --bind 0.0.0.0 gets narrowed by
+            # the OS to a specific interface, or when the printed port
+            # differs from --port (unlikely but happens with port 0).
+            got = sock.getsockname()
+            print(f"[dashboard] receiver bound on {got[0]}:{got[1]}  "
+                  f"pid={os.getpid()}  platform={sys.platform}", flush=True)
+
+            # Self-loopback probe. Send a small UDP packet from a temporary
+            # sender socket to our own bind address; if we DON'T get it
+            # back within 500 ms, packets are being intercepted between
+            # the sender and our socket — usually a firewall / AV filter
+            # / interface-mismatch problem. If we DO get it back, our
+            # socket is definitely healthy and any missing external
+            # packets are being dropped upstream (wrong dest IP, WFP
+            # filter, etc.).
+            try:
+                probe = b"IMUSELFTEST"
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tx:
+                    probe_dst = ("127.0.0.1", got[1])
+                    tx.sendto(probe, probe_dst)
+                sock.settimeout(0.5)
+                try:
+                    data, addr = sock.recvfrom(2048)
+                    if data.startswith(probe):
+                        print(f"[dashboard] self-probe OK: received back from {addr}",
+                              flush=True)
+                    else:
+                        # Not our probe — a real packet already arrived first.
+                        # Queue it as a real sample if it parses.
+                        try:
+                            sample = parse_frame(data)
+                            self.out_queue.put_nowait(sample)
+                        except (ValueError, queue.Full):
+                            pass
+                        print(f"[dashboard] self-probe: real traffic already flowing (got {len(data)} B from {addr})",
+                              flush=True)
+                except socket.timeout:
+                    print(f"[dashboard] SELF-PROBE FAILED: no packet returned to {got[0]}:{got[1]}",
+                          flush=True)
+                    print(f"[dashboard]   the socket itself is bound but a filter is dropping packets.",
+                          flush=True)
+                    print(f"[dashboard]   check Windows Firewall for '{got[1]}' + verify no AV product is filtering.",
+                          flush=True)
+            except OSError as e:
+                print(f"[dashboard] self-probe skipped ({e})", flush=True)
+
             sock.settimeout(0.5)
+            first_packet_reported = False
+            self._last_summary = time.monotonic()
             while not self.stop_event.is_set():
                 try:
-                    data, _ = sock.recvfrom(2048)
+                    data, addr = sock.recvfrom(2048)
+                    # Count EVERY received packet — even ones that later
+                    # fail parse. This is the true "arrived at socket"
+                    # counter.
+                    self._pkts_since  += 1
+                    self._bytes_since += len(data)
+                    self._total_pkts  += 1
+                    self._total_bytes += len(data)
+
+                    # Announce the FIRST packet — this proves the socket
+                    # is receiving.
+                    if not first_packet_reported:
+                        print(f"[dashboard] FIRST PACKET received: {len(data)} bytes from {addr}",
+                              flush=True)
+                        first_packet_reported = True
+
+                    # Per-packet dump when --verbose (spammy at 240 Hz).
+                    if self.verbose:
+                        print(f"[rx #{self._total_pkts:>6d}] {len(data)} B  from {addr[0]}:{addr[1]}",
+                              flush=True)
+
                     sample = parse_frame(data)
+
+                    # Track sequence gaps so the summary line can report
+                    # true packet loss vs. what left the Pi.
+                    if self._last_seq is not None:
+                        delta = (sample.seq - self._last_seq) & 0xFFFFFFFF
+                        if 1 < delta < 0x80000000:
+                            self._gaps += delta - 1
+                    self._last_seq = sample.seq
+
                     try:
                         self.out_queue.put_nowait(sample)
                     except queue.Full:
@@ -195,16 +325,29 @@ class Receiver(threading.Thread):
                             pass
                         self.out_queue.put_nowait(sample)
                 except socket.timeout:
-                    continue
+                    # No data this cycle — still emit periodic summary so
+                    # the CLI shows "0 pkts/s" instead of going silent.
+                    pass
                 except (OSError, ValueError) as e:
                     self.bad_frames += 1
-                    # Print the first few bad frames so the operator can
-                    # tell whether it's a corruption issue, a protocol
-                    # version mismatch, or CRC (rate-limited so we don't
-                    # spam if EVERY packet is bad — that itself is signal).
                     if self.bad_frames <= 5 or self.bad_frames % 500 == 0:
                         print(f"[dashboard] bad frame #{self.bad_frames}: {e}",
                               flush=True)
+
+                # ---- Periodic summary (~ every summary_interval_s) ----
+                now = time.monotonic()
+                dt = now - self._last_summary
+                if dt >= self.summary_interval_s:
+                    rate_hz = self._pkts_since / dt if dt > 0 else 0.0
+                    kbps    = (self._bytes_since * 8) / (dt * 1000.0) if dt > 0 else 0.0
+                    print(f"[rx] {self._pkts_since:5d} pkts / {dt:.2f}s "
+                          f"({rate_hz:6.1f} Hz, {kbps:6.1f} kbps)  "
+                          f"total={self._total_pkts}  bad={self.bad_frames}  "
+                          f"gaps={self._gaps}  qsize={self.out_queue.qsize()}",
+                          flush=True)
+                    self._pkts_since  = 0
+                    self._bytes_since = 0
+                    self._last_summary = now
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -266,10 +409,16 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=5005)
     parser.add_argument("--window", type=float, default=15.0, help="visible seconds")
     parser.add_argument("--csv", type=Path, help="optional CSV recording path")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="print every received packet to stdout (spammy at 240 Hz)")
+    parser.add_argument("--summary-interval", type=float, default=1.0,
+                        help="seconds between packet-count summary lines (default 1.0)")
     args = parser.parse_args()
 
     q: queue.Queue[Sample] = queue.Queue(maxsize=2000)
-    receiver = Receiver(args.bind, args.port, q)
+    receiver = Receiver(args.bind, args.port, q,
+                        verbose=args.verbose,
+                        summary_interval_s=args.summary_interval)
     receiver.start()
     logger = CsvLogger(args.csv)
     startup_monotonic = time.monotonic()   # used by the "WAITING for packets…" status
