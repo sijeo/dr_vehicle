@@ -49,6 +49,19 @@ static void usage(const char *prog){
 }
 
 int main( int argc, char **argv ) {
+    /* Guarantee immediate visibility of stderr no matter how the program
+     * is launched (ssh session, systemd, redirection). Prints below become
+     * the ONLY reliable way to tell whether the binary is even running. */
+    setvbuf(stderr, NULL, _IONBF, 0);
+    setvbuf(stdout, NULL, _IONBF, 0);
+    fprintf(stderr, "[imu_streamer] main() entered  pid=%d  argc=%d\n",
+            (int)getpid(), argc);
+    {
+        int i;
+        for (i = 0; i < argc; i++)
+            fprintf(stderr, "[imu_streamer]   argv[%d] = %s\n", i, argv[i]);
+    }
+
     const char *host = NULL;
     const char *device = "/dev/mpu6050-0";
     const char *cal_path = "./imu_calibration.bin";
@@ -56,6 +69,8 @@ int main( int argc, char **argv ) {
     bool recalibrate = false;
     imu_config_t cfg;
     imu_config_set_dr_defaults(&cfg);
+    fprintf(stderr, "[imu_streamer] config defaults loaded: sample_rate=%.1f Hz\n",
+            (double)cfg.sample_rate_hz);
 
     static const struct option options[] = {
         {"host",        required_argument, NULL, 'h'},
@@ -84,32 +99,45 @@ int main( int argc, char **argv ) {
         }
     }
     if( !host || port < 1 || port > 65535 ){
+        fprintf(stderr, "[imu_streamer] REQUIRED --host missing (host=%s port=%d) — exiting rc=2\n",
+                host ? host : "(null)", port);
         usage(argv[0]);
         return 2;
     }
+    fprintf(stderr, "[imu_streamer] parsed args: host=%s port=%d device=%s cal_file=%s recalibrate=%d\n",
+            host, port, device, cal_path, (int)recalibrate);
 
     signal( SIGINT, on_signal );
     signal( SIGTERM, on_signal );
 
+    fprintf(stderr, "[imu_streamer] calling imu_pipeline_init…\n");
     imu_pipeline_t pipeline;
     int rc = imu_pipeline_init(&pipeline, &cfg, cal_path, recalibrate );
     if( rc != 0 ) {
-        fprintf(stderr, "imu_pipeline_init failed: %s (%d)\n", strerror(-rc), rc);
+        fprintf(stderr, "[imu_streamer] imu_pipeline_init failed: %s (%d) — exiting\n",
+                strerror(-rc), rc);
         return 1;
     }
+    fprintf(stderr, "[imu_streamer] pipeline OK, cal_state=%s\n",
+            imu_cal_state_name(pipeline.cal_state));
 
+    fprintf(stderr, "[imu_streamer] opening IMU device %s…\n", device);
     int imu_fd = open(device, O_RDONLY | O_CLOEXEC );
     if( imu_fd < 0 ){
-        perror("open IMU device");
+        fprintf(stderr, "[imu_streamer] open(%s) failed: %s (errno=%d) — exiting\n",
+                device, strerror(errno), errno);
         return 1;
     }
-    
+    fprintf(stderr, "[imu_streamer] IMU fd=%d\n", imu_fd);
+
+    fprintf(stderr, "[imu_streamer] creating UDP socket…\n");
     int sock = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if( sock < 0 ) {
-        perror("socket");
+        fprintf(stderr, "[imu_streamer] socket() failed: %s — exiting\n", strerror(errno));
         close(imu_fd);
         return 1;
     }
+    fprintf(stderr, "[imu_streamer] socket fd=%d\n", sock);
     struct sockaddr_in peer;
     memset(&peer, 0, sizeof(peer));
     peer.sin_family = AF_INET;
