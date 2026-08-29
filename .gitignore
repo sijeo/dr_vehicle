@@ -1,0 +1,125 @@
+# ============================================================================
+#  dr_vehicle — .gitignore
+# ============================================================================
+#  Rules of thumb:
+#    - Track SOURCE (.c, .h, .py, .dts, .md, Makefile, scripts).
+#    - Ignore GENERATED artifacts (build outputs, compiled kernel modules,
+#      device-tree blobs, temp files) and CAPTURED data (test logs, CSV,
+#      pktmon dumps).
+#    - When in doubt, prefer ignoring — a missing file is a small nuisance,
+#      an accidentally committed capture / bin can bloat the repo and leak
+#      device info.
+# ============================================================================
+
+# ---------------------------------------------------------------- capture data
+# CSV test captures / data logs — never source, always regenerable.
+*.csv
+
+# Log files (drivers, boot, debug, dashboards, streamers, calibration).
+*.log
+
+# Common pktmon / Windows-side capture text outputs.
+capture.txt
+packets.txt
+pfirewall.log
+PktMon.etl
+*.etl
+*.pcap
+*.pcapng
+
+# ------------------------------------------------------- IMU / GNSS run outputs
+# Debug + nav log files produced by dr_dead_reckoning_app_ins15_v* at runtime.
+debug_*.log
+navlog_*.csv
+imulog_*.bin
+nav_logs/
+
+# IMU / driver calibration blobs — device-specific, regenerable, sometimes
+# contain per-unit bias data you don't want to share.
+imu_calibration.bin
+imu_cal.bin
+imu_validation_cal.bin
+*_cal.bin
+
+# ------------------------------------------------------------- kernel build out
+# Kernel module build artifacts.
+*.o
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+*.symvers
+Module.symvers
+modules.order
+.tmp_versions/
+.*.cmd
+*.order
+
+# ------------------------------------------------------------- device tree blobs
+# Compiled overlays — always regenerable from the .dts source.
+*.dtbo
+*.dtb
+
+# ------------------------------------------------------- user-space build out
+# GCC dependency files, object files, and Makefile-produced binaries
+# (test_app/).  We track sources & Makefile; anyone can `make` locally.
+*.d
+*.a
+*.so
+*.so.*
+
+# Test-app binaries.  Add more here as new programs get their own targets.
+platform/pi/test_app/imu_streamer
+platform/pi/test_app/imu_simulator
+platform/pi/test_app/test_imu_core
+platform/pi/test_app/mpu6050_lateral_streamer
+platform/pi/test_app/mpu_calib_server
+platform/pi/test_app/mpu6050_cal_test
+platform/pi/test_app/test_neo6m_gnss_serdev
+
+# Tools directory binaries (imulog_to_csv etc.).
+platform/pi/tools/imulog_to_csv
+
+# ------------------------------------------------------ documentation
+# Whole docs/ tree is ignored — it holds Datasheets (large PDFs),
+# literature (reference papers), and generated Doxygen output. None of it
+# is source and none should live in git history. If you want to track a
+# specific README or curated note inside docs/, add an explicit unignore:
+#   !docs/README.md
+docs/
+doxygen_warnings.log
+dr_ins15_full_analysis.html
+
+# ------------------------------------------------------- Python cruft
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# ------------------------------------------------------- editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.claude/
+
+# ------------------------------------------------------- OS-specific junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ------------------------------------------------------- scratchpads / temp
+scratchpad/
+*.tmp
+*.bak
+*.orig

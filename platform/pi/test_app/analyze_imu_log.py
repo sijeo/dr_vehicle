@@ -72,7 +72,7 @@ def main() -> int:
     acc_u = np.column_stack([data[f"unfiltered_a{axis}_mps2"] for axis in "xyz"])[keep]
     acc_f = np.column_stack([data[f"filtered_a{axis}_mps2"] for axis in "xyz"])[keep]
     gyro_u = np.column_stack([data[f"unfiltered_g{axis}_degps"] for axis in "xyz"])[keep]
-    gyro_f = np.column_stack([data[f"filtered_gyro{axis}_degps"] for axis in "xyz"])[keep]
+    gyro_f = np.column_stack([data[f"filtered_g{axis}_degps"] for axis in "xyz"])[keep]
     acc_norm = np.asarray(data["filtered_acc_norm_mps2"], dtype=float)[keep]
 
     summary: dict[str, object] = {
@@ -161,8 +161,8 @@ def main() -> int:
         return 0
 
 
-    if __name__ == "__main__":
-        raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())
 
     
         

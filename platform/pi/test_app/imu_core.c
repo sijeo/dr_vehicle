@@ -711,7 +711,7 @@ uint64_t ns, uint32_t *flags ) {
 static float compute_stationary_score(const imu_pipeline_t *p, float acc_norm, const float gyro[3]) {
     float acc_score = 1.0f - fabsf(acc_norm - p->cfg.gravity_mps2) / fmaxf(p->cfg.stationary_acc_norm_tol_mps2, 1.0e-6f);
     float gyro_peak = fmaxf((fabsf(gyro[0])), fmaxf(fabsf(gyro[1]), fabsf(gyro[2])));
-    float gyro_score = 1.0f - gyro_peak / fmaxf(p->cfg.stationary_acc_norm_tol_mps2, 1.0e-6f);
+    float gyro_score = 1.0f - gyro_peak / fmaxf(p->cfg.stationary_gyro_axis_max_rps, 1.0e-6f);
     return 100.0f * clampf_local(fminf(acc_score, gyro_score), 0.0f, 1.0f);
 }
 
