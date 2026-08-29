@@ -719,11 +719,11 @@ static float compute_quality_score( const imu_pipeline_t *p, uint32_t flags, con
     float score = 100.0f;
     if( !(flags & IMU_QF_CAL_VALID)) score -= 35.0f;
     if( !(flags & IMU_QF_ACCEL_NORM_OK)) score -= 20.0f;
-    if( !(flags & IMU_QF_RAW_SATURATION)) score -= 35.0f;
-    if( !(flags & IMU_QF_SAMPLE_GAP)) score -= 15.0f;
-    if( !(flags & IMU_QF_RATE_BAD)) score -= 15.0f;
-    if( !(flags & IMU_QF_ACCEL_SCALE_BAD )) score -=40.0f;
-    if( !(flags & IMU_QF_VARIANCE_BAD )) score -= 25.0f;
+    if( (flags & IMU_QF_RAW_SATURATION)) score -= 35.0f;
+    if( (flags & IMU_QF_SAMPLE_GAP)) score -= 15.0f;
+    if( (flags & IMU_QF_RATE_BAD)) score -= 15.0f;
+    if( (flags & IMU_QF_ACCEL_SCALE_BAD )) score -=40.0f;
+    if( (flags & IMU_QF_VARIANCE_BAD )) score -= 25.0f;
     if( out->bump_duty_percent > 25.0f ) score -= 20.0f;
 
     float acc_std_peak = fmaxf(out->accel_std[0], fmaxf(out->accel_std[1], out->accel_std[2]));
