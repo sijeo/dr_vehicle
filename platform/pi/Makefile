@@ -36,13 +36,13 @@ driver_test: test_app/imu_streamer.c
 	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o test_app/imu_streamer $< $(CORE_SRCS) -lm
 
 deploy:
-	scp *.ko sijeo@192.168.68.103:/home/sijeo/dr_vehicle/
+	scp *.ko sijeo@192.168.68.104:/home/sijeo/dr_vehicle/
 
 deploy_app:
-	scp dr_dead_reckoning_app sijeo@192.168.68.103:/home/sijeo/dr_vehicle/
+	scp dr_dead_reckoning_app sijeo@192.168.68.104:/home/sijeo/dr_vehicle/
 
 deploy_app_2:
-	scp dr_dead_reckoning_app_ins15 sijeo@192.168.68.103:/home/sijeo/dr_vehicle/
+	scp dr_dead_reckoning_app_ins15 sijeo@192.168.68.104:/home/sijeo/dr_vehicle/
 	
 deploy_test:
 	scp test_app/imu_streamer sijeo@192.168.68.104:/home/sijeo/dr_vehicle/
