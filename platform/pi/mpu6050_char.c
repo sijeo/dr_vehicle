@@ -84,7 +84,12 @@
 #define ISM330_REG_STATUS_REG       0x1E   /* XLDA[0], GDA[1], TDA[2] */
 #define ISM330_REG_OUT_TEMP_L       0x20   /* temp L/H (little-endian pair) */
 #define ISM330_REG_OUTX_L_G         0x22   /* gyro  X L, X H, Y L, Y H, Z L, Z H (LE) */
-#define ISM330_REG_OUTX_L_XL        0x28   /* accel X L, X H, Y L, Y H, Z L, Z H (LE) */
+#define ISM330_REG_OUTZ_L_A         0x28   /* accel X L, X H, Y L, Y H, Z L, Z H (LE) */
+#define ISM330_REG_OUTY_L_A         0x2A
+#define ISM330_REG_OUTX_L_A         0x2C
+
+
+
 
 /* ============================================================
  * Chip-family support.
@@ -315,9 +320,9 @@ static inline int mpu6050_read_burst(struct mpu6050_priv *p, struct mpu6050_samp
     s->gx   = (s16)((buf[3]  << 8) | buf[2]);
     s->gy   = (s16)((buf[5]  << 8) | buf[4]);
     s->gz   = (s16)((buf[7]  << 8) | buf[6]);
-    s->ax   = (s16)((buf[9]  << 8) | buf[8]);
+    s->az   = (s16)((buf[9]  << 8) | buf[8]);
     s->ay   = (s16)((buf[11] << 8) | buf[10]);
-    s->az   = (s16)((buf[13] << 8) | buf[12]);
+    s->ax   = (s16)((buf[13] << 8) | buf[12]);
     s->t_ns = ktime_get_boottime_ns();
     return 0;
 }

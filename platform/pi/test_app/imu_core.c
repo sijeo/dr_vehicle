@@ -160,8 +160,8 @@ void imu_config_set_dr_defaults(imu_config_t *cfg) {
 
     /* Default physical FRD sensor -> internal FLU vehicle frame. */
     cfg->mount_R_bv[0][0] =  1.0f;
-    cfg->mount_R_bv[1][1] = -1.0f;
-    cfg->mount_R_bv[2][2] = -1.0f;
+    cfg->mount_R_bv[1][1] =  1.0f;
+    cfg->mount_R_bv[2][2] =  1.0f;
 
 }
 

@@ -114,7 +114,7 @@ int main(int argc, char **argv ) {
      * physical bias (~0.59, 0.88, -0.25 °/s) unchanged. Update if you
      * change gyro_lsb_per_dps in imu_config_set_dr_defaults(). */
     const float gyro_bias_counts[3] = { -9.685f, 14.410f, -4.062f };
-    const long period_ns = 10000000L;
+    const long period_ns = 4166667L;
     struct timespec sleep_ts = {.tv_sec = 0, .tv_nsec=period_ns };
     uint64_t start = mono_ns();
 
@@ -131,7 +131,7 @@ int main(int argc, char **argv ) {
         }
 
         /* R is diag(1, -1, -1), so inverse equals itself. */
-        float sensor_acc[3] = { vehicle_acc[0], -vehicle_acc[1], -vehicle_acc[2]};
+        float sensor_acc[3] = { vehicle_acc[0], vehicle_acc[1], vehicle_acc[2]};
         int32_t ar[3];
         accel_to_raw(&cfg, sensor_acc, ar);
         imu_raw_sample_t raw = {
@@ -139,8 +139,8 @@ int main(int argc, char **argv ) {
             .ay = ar[1] + (int32_t)lroundf(guassian() * 2.0f),
             .az = ar[2] + (int32_t)lroundf(guassian() * 2.0f),
             .gx = (int32_t)lroundf(gyro_bias_counts[0] + gyro_vehicle[0]/IMU_DEG2RAD*cfg.gyro_lsb_per_dps + guassian()*0.8f),
-            .gy = (int32_t)lroundf(gyro_bias_counts[1] - gyro_vehicle[1]/IMU_DEG2RAD*cfg.gyro_lsb_per_dps + guassian()*0.8f),
-            .gz = (int32_t)lroundf(gyro_bias_counts[2] - gyro_vehicle[2]/IMU_DEG2RAD*cfg.gyro_lsb_per_dps + guassian()*0.8f),
+            .gy = (int32_t)lroundf(gyro_bias_counts[1] + gyro_vehicle[1]/IMU_DEG2RAD*cfg.gyro_lsb_per_dps + guassian()*0.8f),
+            .gz = (int32_t)lroundf(gyro_bias_counts[2] + gyro_vehicle[2]/IMU_DEG2RAD*cfg.gyro_lsb_per_dps + guassian()*0.8f),
         };
         imu_output_t out;
         rc = imu_pipeline_process(&pipe, &raw, mono_ns(), &out);
