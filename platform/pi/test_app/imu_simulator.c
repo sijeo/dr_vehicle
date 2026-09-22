@@ -113,7 +113,18 @@ int main(int argc, char **argv ) {
      * same physical bias in °/s), so divide by 4 to keep the simulated
      * physical bias (~0.59, 0.88, -0.25 °/s) unchanged. Update if you
      * change gyro_lsb_per_dps in imu_config_set_dr_defaults(). */
-    const float gyro_bias_counts[3] = { -9.685f, 14.410f, -4.062f };
+    const float gyro_bias_dps[3] = {
+    -0.59f,
+     0.88f,
+    -0.25f
+        };
+
+float gyro_bias_counts[3] = {
+    gyro_bias_dps[0] * cfg.gyro_lsb_per_dps,
+    gyro_bias_dps[1] * cfg.gyro_lsb_per_dps,
+    gyro_bias_dps[2] * cfg.gyro_lsb_per_dps
+};
+    //const float gyro_bias_counts[3] = { -8.43f, 12.57f, -3.57f };
     const long period_ns = 4166667L;
     struct timespec sleep_ts = {.tv_sec = 0, .tv_nsec=period_ns };
     uint64_t start = mono_ns();

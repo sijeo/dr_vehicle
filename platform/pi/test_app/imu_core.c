@@ -113,7 +113,7 @@ void imu_config_set_dr_defaults(imu_config_t *cfg) {
                                      * imu_streamer --sample-rate if you switch chips. */
     cfg->lpf_cutoff_hz = 6.0f;
     cfg->stats_window_s = 2.0f;
-    cfg->gyro_lsb_per_dps = 16.384f;   /* ±2000 dps FS on the ISM330 driver default (was 65.536 @ ±500 dps) */
+    cfg->gyro_lsb_per_dps = 14.285714f;   /* ±2000 dps FS on the ISM330 driver default (was 65.536 @ ±500 dps) */
     cfg->gravity_mps2 = IMU_GRAVITY_MPS2;
 
     cfg->boot_settle_s = 2.0f;
@@ -144,7 +144,7 @@ void imu_config_set_dr_defaults(imu_config_t *cfg) {
      *     C_new = C_2g · (FS_new / 2g)     (matrix scales by FS ratio)
      *     O_new = O_2g                     (offset is FS-invariant)
      * These values are the original ±2g LSQ × 4 (also = ±4g × 2). */
-    cfg->accel_C[0][0] = -9.1001925252732860e-05f;
+   /* cfg->accel_C[0][0] = -9.1001925252732860e-05f;
     cfg->accel_C[0][1] =  2.3061062783852624e-05f;
     cfg->accel_C[0][2] =  0.0023953399885998272f;
     cfg->accel_C[1][0] = -9.4039426120223252e-05f;
@@ -156,7 +156,24 @@ void imu_config_set_dr_defaults(imu_config_t *cfg) {
 
     cfg->accel_O[0] = -0.04324381676101664f;
     cfg->accel_O[1] =  0.16600572009786152f;
-    cfg->accel_O[2] =  0.5714660018044386f;
+    cfg->accel_O[2] =  0.5714660018044386f;*/
+
+    const float accel_scale_mps2_per_lsb = 0.000244f * IMU_GRAVITY_MPS2;  /* ±8 g FS → 0.000244 g/LSB → 0.00239 m/s²/LSB */
+
+    cfg->accel_C[0][0] = accel_scale_mps2_per_lsb;;
+    cfg->accel_C[0][1] =  0.0f;
+    cfg->accel_C[0][2] =  0.0f;
+    cfg->accel_C[1][0] =  0.0f;
+    cfg->accel_C[1][1] =  accel_scale_mps2_per_lsb;
+    cfg->accel_C[1][2] =  0.0f;
+    cfg->accel_C[2][0] =  0.0f;
+    cfg->accel_C[2][1] =  0.0f;
+    cfg->accel_C[2][2] =  accel_scale_mps2_per_lsb;
+
+    cfg->accel_O[0] = 0.0f;
+    cfg->accel_O[1] = 0.0f;
+    cfg->accel_O[2] =  0.0f;
+
 
     /* Default physical FRD sensor -> internal FLU vehicle frame. */
     cfg->mount_R_bv[0][0] =  1.0f;
