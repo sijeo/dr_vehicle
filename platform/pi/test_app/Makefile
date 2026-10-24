@@ -42,7 +42,7 @@ RM ?= rm -f
 # ----------------------------------------------------------------------
 # Sources / objects
 # ----------------------------------------------------------------------
-LIB_SRCS := imu_core.c imu_wire.c
+LIB_SRCS := imu_core.c imu_wire.c imu_fusion.c
 LIB_OBJS := $(LIB_SRCS:.c=.o)
 
 BINS := imu_streamer imu_simulator test_imu_core

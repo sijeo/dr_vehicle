@@ -175,7 +175,9 @@ void imu_config_set_dr_defaults(imu_config_t *cfg) {
     cfg->accel_O[2] =  0.0f;
 
 
-    /* Default physical FRD sensor -> internal FLU vehicle frame. */
+    /* ISM330BX is mounted FLU (x forward, y left, z up) = the internal FLU
+     * vehicle frame, so the nominal mount is identity. imu_streamer
+     * --mount / --mount-rpy override this (FRD preset, field-cal trim). */
     cfg->mount_R_bv[0][0] =  1.0f;
     cfg->mount_R_bv[1][1] =  1.0f;
     cfg->mount_R_bv[2][2] =  1.0f;

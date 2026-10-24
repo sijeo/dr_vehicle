@@ -46,19 +46,15 @@ uint32_t imu_wire_crc32( const void *data, size_t size) {
     return ~crc;
 }
 
-int imu_wire_encode( const imu_output_t *s,
-const imu_calibration_t *cal,
-uint8_t *dst, 
-size_t dst_size,
-size_t *encoded_size ){
-    if( !s || !cal || !dst || !encoded_size) return -EINVAL;
-    if(dst_size < IMU_WIRE_FRAME_SIZE ) return -ENOSPC;
-    uint8_t *p = dst;
+/* Header + v1 body (everything except the trailing CRC). */
+static void put_v1_body( uint8_t **pp, const imu_output_t *s, const imu_calibration_t *cal,
+                         uint32_t magic, uint16_t version, uint16_t frame_size ){
+    uint8_t *p = *pp;
     size_t g, i;
 
-    put_u32(&p, IMU_WIRE_MAGIC);
-    put_u16(&p, IMU_WIRE_VERSION);
-    put_u16(&p, IMU_WIRE_FRAME_SIZE);
+    put_u32(&p, magic);
+    put_u16(&p, version);
+    put_u16(&p, frame_size);
     put_u32(&p, s->sequence);
     put_u64(&p, s->monotonic_ns);
 
@@ -96,11 +92,65 @@ size_t *encoded_size ){
     put_f32(&p, s->lpf_cutoff_hz);
     put_f32(&p, s->quality_score);
     put_f32(&p, s->stationary_score);
+    *pp = p;
+}
+
+int imu_wire_encode( const imu_output_t *s,
+const imu_calibration_t *cal,
+uint8_t *dst,
+size_t dst_size,
+size_t *encoded_size ){
+    if( !s || !cal || !dst || !encoded_size) return -EINVAL;
+    if(dst_size < IMU_WIRE_FRAME_SIZE ) return -ENOSPC;
+    uint8_t *p = dst;
+
+    put_v1_body(&p, s, cal, IMU_WIRE_MAGIC, IMU_WIRE_VERSION, IMU_WIRE_FRAME_SIZE);
 
     size_t without_crc = (size_t)(p - dst);
     if ( without_crc != IMU_WIRE_FRAME_SIZE - sizeof(uint32_t)) return -EPROTO;
     put_u32(&p, imu_wire_crc32(dst, without_crc));
     *encoded_size = (size_t)(p - dst);
     return (*encoded_size == IMU_WIRE_FRAME_SIZE) ? 0 : -EPROTO;
+}
+
+int imu_wire_encode_v2( const imu_output_t *s,
+                       const imu_calibration_t *cal,
+                       const imu_fusion_output_t *f,
+                       uint8_t *dst,
+                       size_t dst_size,
+                       size_t *encoded_size ){
+    if( !s || !cal || !f || !dst || !encoded_size) return -EINVAL;
+    if(dst_size < IMU_WIRE_V2_FRAME_SIZE ) return -ENOSPC;
+    uint8_t *p = dst;
+    size_t g, i;
+
+    put_v1_body(&p, s, cal, IMU_WIRE_MAGIC_V2, IMU_WIRE_VERSION_V2, IMU_WIRE_V2_FRAME_SIZE);
+
+    put_u32(&p, f->flags);
+    put_u32(&p, f->sflp_seq);
+    put_u32(&p, f->driver_seq);
+    put_u32(&p, f->driver_dropped);
+
+    const struct { const float *v; size_t n; } groups[] = {
+        { f->q_sflp, 4 },
+        { f->euler_sflp_deg, 3 },
+        { f->q_ahrs, 4 },
+        { f->euler_ahrs_deg, 3 },
+        { f->gravity_sflp_vehicle_mps2, 3 },
+        { f->gbias_sflp_dps, 3 },
+        { f->lin_acc_vehicle_mps2, 3 },
+        { f->lin_acc_level_mps2, 3 },
+        { &f->temp_c, 1 },
+        { &f->g_ref_mps2, 1 },
+        { &f->tilt_consistency_deg, 1 },
+    };
+    for( g = 0; g < sizeof(groups)/sizeof(groups[0]); ++g)
+        for( i = 0; i < groups[g].n; ++i ) put_f32(&p, groups[g].v[i]);
+
+    size_t without_crc = (size_t)(p - dst);
+    if ( without_crc != IMU_WIRE_V2_FRAME_SIZE - sizeof(uint32_t)) return -EPROTO;
+    put_u32(&p, imu_wire_crc32(dst, without_crc));
+    *encoded_size = (size_t)(p - dst);
+    return (*encoded_size == IMU_WIRE_V2_FRAME_SIZE) ? 0 : -EPROTO;
 }
 

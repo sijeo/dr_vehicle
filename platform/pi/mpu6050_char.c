@@ -15,9 +15,18 @@
  *    read() performs a **synchronous I2C burst** of the 14 bytes raw data window and returns
  *   exactly one sample. No background timers are used. 
  * 
- * There is **no hrtimer fallback** in this driver. Sampling occurs only via IRQ or when 
+ * There is **no hrtimer fallback** in this driver. Sampling occurs only via IRQ or when
  * userspace explicitly calls read()
- * 
+ *
+ * 3) **HW FIFO stream (ISM330BX / LSM6DSV family, default)**: accel + gyro
+ *    are batched in the chip FIFO together with the SFLP (sensor fusion
+ *    low-power) game rotation vector, gravity vector, gyro bias and
+ *    temperature. read() drains the FIFO, so no sample is lost when
+ *    userspace is late, and sample times are reconstructed on the chip
+ *    clock. On-chip gyro LPF1 and accel LPF2 are configured for vehicle use.
+ *    Readers get struct mpu6050_sample by default; MPU6050_IOC_SET_READ_FMT
+ *    selects struct mpu6050_ext_sample (adds SFLP outputs, seq, flags).
+ *
  * Kernel module floating point is not used anywhere; all data are integers.
  */
 
@@ -31,7 +40,9 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/kfifo.h>
+#include <linux/math64.h>
 #include <linux/mutex.h>
+#include <linux/sched/signal.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/regmap.h>
@@ -52,7 +63,7 @@
 #define DRIVER_NAME "mpu6050-char"
 #define DEVICE_NAME "mpu6050"
 #define MPU6050_MAX_DEVICES 8
-#define MPU6050_FIFO_SAMPLES   2048 /* in-kernel sample FIFO depth */
+#define MPU6050_FIFO_SAMPLES   512  /* in-kernel sample FIFO depth (power of 2; ~2 s @ 240 Hz) */
 
 /* ---------------------------------------------------------------------
  * ISM330DLC register map.
@@ -184,7 +195,7 @@ static const char *ism330_who_am_i_name(u8 v) {
 #define ISM330BX_FS_XL_2G           0x0
 #define ISM330BX_FS_XL_4G           0x1
 #define ISM330BX_FS_XL_8G           0x2
-#define ISM330BX_FS_XL_16G          0x3
+#define ISM330BX_FS_XL_16G          0x3   /* LSM6DSV only — RESERVED on ISM330BX (DS14588 Table 66) */
 
 /* New-gen FS_G encoding (CTRL6[3:0]) — starts at 125 dps */
 #define ISM330BX_FS_G_125DPS        0x0
@@ -192,7 +203,96 @@ static const char *ism330_who_am_i_name(u8 v) {
 #define ISM330BX_FS_G_500DPS        0x2
 #define ISM330BX_FS_G_1000DPS       0x3
 #define ISM330BX_FS_G_2000DPS       0x4
-#define ISM330BX_FS_G_4000DPS       0x5   /* not present on all variants */
+#define ISM330BX_FS_G_4000DPS       0xC   /* 1100b per DS14588 Table 61 */
+
+/* ---------------------------------------------------------------------
+ * ISM330BX filter / FIFO / SFLP registers (DS14588 Rev 2).
+ *
+ * Accel chain: ADC -> LPF1 (ODR/2 in HP mode) -> [LPF2, HP_LPF2_XL_BW]
+ *              -> output regs + FIFO.
+ * Gyro chain:  ADC -> [LPF1, LPF1_G_BW] -> LPF2 (fixed, ODR dependent)
+ *              -> output regs + FIFO.
+ * Gyro LPF1+LPF2 bandwidth @ 240 Hz ODR (Table 62):
+ *   BW 0..3 = 96 Hz, 4 = 78 Hz, 5 = 53 Hz, 6 = 27.3 Hz, 7 = 14.2 Hz.
+ * ------------------------------------------------------------------- */
+#define ISM330BX_REG_FUNC_CFG_ACCESS 0x01
+#define ISM330BX_EMB_FUNC_REG_ACCESS BIT(7)
+#define ISM330BX_REG_FIFO_CTRL1     0x07   /* WTM[7:0] */
+#define ISM330BX_REG_FIFO_CTRL2     0x08
+#define ISM330BX_REG_FIFO_CTRL3     0x09   /* BDR_GY[7:4] BDR_XL[3:0] (same codes as ODR) */
+#define ISM330BX_REG_FIFO_CTRL4     0x0A   /* DEC_TS[7:6] ODR_T_BATCH[5:4] FIFO_MODE[2:0] */
+#define ISM330BX_FIFO_ODR_T_15HZ    (0x2 << 4)
+#define ISM330BX_FIFO_MODE_CONT     0x6
+#define ISM330BX_REG_CTRL4          0x13
+#define ISM330BX_CTRL4_DRDY_MASK    BIT(3) /* mask DRDY until filters settle */
+#define ISM330BX_REG_CTRL7          0x16
+#define ISM330BX_CTRL7_LPF1_G_EN    BIT(0)
+#define ISM330BX_CTRL6_LPF1_G_BW    GENMASK(6, 4)
+#define ISM330BX_CTRL8_HP_LPF2_XL_BW GENMASK(7, 5)
+#define ISM330BX_REG_CTRL9          0x18
+#define ISM330BX_CTRL9_HP_SLOPE_XL_EN BIT(4)
+#define ISM330BX_CTRL9_LPF2_XL_EN   BIT(3)
+#define ISM330BX_REG_FIFO_STATUS1   0x1B   /* DIFF_FIFO[7:0] */
+#define ISM330BX_REG_FIFO_STATUS2   0x1C
+#define ISM330BX_FIFO_OVR_IA        BIT(6)
+#define ISM330BX_FIFO_OVR_LATCHED   BIT(3)
+#define ISM330BX_FIFO_DIFF8         BIT(0)
+#define ISM330BX_REG_FREQ_FINE      0x4F   /* ODR_actual = ODR * (1 + 0.0013 * FREQ_FINE) */
+#define ISM330BX_REG_FIFO_OUT_TAG   0x78   /* TAG + 6 data bytes (0x79..0x7E) */
+#define ISM330BX_FIFO_WORD_LEN      7
+
+/* FIFO tags (Table 179) */
+#define ISM330BX_TAG_GYRO_NC        0x01   /* X, Y, Z */
+#define ISM330BX_TAG_ACCEL_NC       0x02   /* Z, Y, X (!) */
+#define ISM330BX_TAG_TEMP           0x03
+#define ISM330BX_TAG_SFLP_GAME      0x13
+#define ISM330BX_TAG_SFLP_GBIAS     0x16
+#define ISM330BX_TAG_SFLP_GRAVITY   0x17
+
+/* Embedded-function page (FUNC_CFG_ACCESS.EMB_FUNC_REG_ACCESS = 1) */
+#define ISM330BX_EMB_FUNC_EN_A      0x04
+#define ISM330BX_EMB_SFLP_GAME_EN   BIT(1)
+#define ISM330BX_EMB_FUNC_FIFO_EN_A 0x44
+#define ISM330BX_EMB_SFLP_GAME_FIFO BIT(1)
+#define ISM330BX_EMB_SFLP_GRAV_FIFO BIT(4)
+#define ISM330BX_EMB_SFLP_GBIAS_FIFO BIT(5)
+#define ISM330BX_EMB_SFLP_ODR       0x5E   /* SFLP_GAME_ODR[5:3]; bit6, bit1, bit0 must be 1 */
+#define ISM330BX_EMB_SFLP_ODR_FIXED 0x43
+#define ISM330BX_EMB_FUNC_INIT_A    0x66
+#define ISM330BX_EMB_SFLP_GAME_INIT BIT(1)
+
+/* sflp_fifo_mask bits (ABI, see mpu6050_filter_cfg) */
+#define ISM330_SFLP_MASK_QUAT       BIT(0)
+#define ISM330_SFLP_MASK_GRAVITY    BIT(1)
+#define ISM330_SFLP_MASK_GBIAS      BIT(2)
+
+#define ISM330_DRAIN_MAX_WORDS      96     /* FIFO words per drain (bounds latency + buffer) */
+#define ISM330_STAGE_MAX            (ISM330_DRAIN_MAX_WORDS / 2 + 1)
+
+/* Defaults for the on-chip signal chain. Tuned for a road vehicle at 240 Hz:
+ * gyro 27 Hz and accel ODR/20 = 12 Hz keep vehicle dynamics (< 5 Hz) while
+ * rejecting engine / road vibration before it can alias. */
+static int gyro_lpf1_bw_default = 6;
+module_param_named(gyro_lpf1_bw, gyro_lpf1_bw_default, int, 0444);
+MODULE_PARM_DESC(gyro_lpf1_bw, "Gyro LPF1_G_BW 0..7, -1 = off (default 6 = 27 Hz @ 240 Hz ODR)");
+static int accel_lpf2_bw_default = 2;
+module_param_named(accel_lpf2_bw, accel_lpf2_bw_default, int, 0444);
+MODULE_PARM_DESC(accel_lpf2_bw, "Accel HP_LPF2_XL_BW 0..7 (ODR/4,10,20,45,100,200,400,800), -1 = off (default 2)");
+static int sflp_enable_default = 1;
+module_param_named(sflp, sflp_enable_default, int, 0444);
+MODULE_PARM_DESC(sflp, "Enable SFLP game rotation vector (default 1)");
+static int sflp_odr_default = 120;
+module_param_named(sflp_odr, sflp_odr_default, int, 0444);
+MODULE_PARM_DESC(sflp_odr, "SFLP output rate Hz: 15/30/60/120/240/480 (default 120)");
+static int sflp_fifo_mask_default = 0x7;
+module_param_named(sflp_fifo_mask, sflp_fifo_mask_default, int, 0444);
+MODULE_PARM_DESC(sflp_fifo_mask, "SFLP outputs batched: bit0 quat, bit1 gravity, bit2 gyro bias (default 7)");
+static int fifo_stream_default = 1;
+module_param_named(fifo_stream, fifo_stream_default, int, 0444);
+MODULE_PARM_DESC(fifo_stream, "Read accel/gyro through the HW FIFO (default 1; 0 = register polling)");
+static int fifo_burst_words = 1;
+module_param(fifo_burst_words, int, 0644);
+MODULE_PARM_DESC(fifo_burst_words, "FIFO words per I2C transfer, 1..4 (default 1; >1 relies on FIFO_OUT address wrap)");
 
 static bool ism330_who_am_i_is_supported(u8 v) {
     return ism330_family_from_who(v) != ISM330_FAMILY_UNKNOWN;
@@ -279,7 +379,7 @@ struct mpu6050_priv {
     struct device *chardev;
 
     /* sample FIFO and synchronization */
-    DECLARE_KFIFO(sample_fifo, struct mpu6050_sample, MPU6050_FIFO_SAMPLES);
+    DECLARE_KFIFO(sample_fifo, struct mpu6050_ext_sample, MPU6050_FIFO_SAMPLES);
     wait_queue_head_t wq;
     spinlock_t fifo_lock; /* protects sample_fifo */
 
@@ -288,6 +388,52 @@ struct mpu6050_priv {
     bool irq_mode; /* true if using IRQ path */
     ktime_t hrt_period;
     struct mutex io_lock; /* serialize read/write/ioctl */
+
+    /* ---- ISM330BX signal chain (new-gen family only) ----
+     * Plain ints so the sysfs helper can address them by offset. */
+    u8  who;
+    s8  freq_fine;            /* INTERNAL_FREQ_FINE, ODR trim */
+    u8  odr_code;             /* CTRL1/CTRL2 ODR code, reused as FIFO BDR */
+    u32 period_ns;            /* actual sample period incl. FREQ_FINE */
+    int gyro_lpf1_bw;
+    int accel_lpf2_bw;
+    int sflp_enable;
+    int sflp_odr_hz;          /* requested */
+    int sflp_fifo_mask;
+    int fifo_stream;
+    u32 sflp_odr_actual;
+    bool sflp_active;
+
+    /* Latest SFLP outputs, attached to every accel/gyro sample. */
+    u32 sflp_flags;           /* MPU6050_EXT_{QUAT,GRAVITY,GBIAS}_VALID */
+    u16 sflp_quat[3];
+    s16 sflp_gravity[3];
+    s16 sflp_gbias[3];
+    u32 sflp_seq;
+    s16 last_temp;
+
+    /* FIFO accel/gyro pairing + bookkeeping (under io_lock). */
+    u8  asm_have;             /* ISM330_ASM_G | ISM330_ASM_A */
+    u8  asm_cnt;              /* TAG_CNT of the slot being assembled */
+    s16 asm_g[3];
+    s16 asm_a[3];
+    u32 pending_flags;        /* OVERRUN / DROPPED, reported on next sample */
+    u32 seq;
+    u32 dropped;
+    u32 fifo_overruns;
+    s64 last_t_ns;
+    s64 last_drain_ns;
+    u8  fifo_buf[ISM330_DRAIN_MAX_WORDS * ISM330BX_FIFO_WORD_LEN];
+    struct mpu6050_ext_sample stage[ISM330_STAGE_MAX];
+};
+
+#define ISM330_ASM_G  BIT(0)
+#define ISM330_ASM_A  BIT(1)
+
+/* Per-open-file state: the read() format is chosen per reader. */
+struct mpu6050_file {
+    struct mpu6050_priv *p;
+    u32 fmt;                  /* MPU6050_FMT_LEGACY / MPU6050_FMT_EXT */
 };
 
 /* ------------Helpers---------------*/
@@ -412,8 +558,14 @@ static int ism330_newgen_set_ranges(struct mpu6050_priv *p)
         [GYRO_2000DPS] = ISM330BX_FS_G_2000DPS,  /* 4 */
     };
     int ret;
-    u8 fs_xl = fs_xl_map[p->accel_fs];
-    u8 fs_g  = fs_g_map[p->gyro_fs];
+    u8 fs_xl, fs_g;
+
+    if (p->who == ISM330BX_WHO_AM_I_ID && p->accel_fs == ACCEL_16G) {
+        dev_warn(p->dev, "ISM330BX has no ±16 g range (FS_XL=11 reserved) — using ±8 g\n");
+        p->accel_fs = ACCEL_8G;
+    }
+    fs_xl = fs_xl_map[p->accel_fs];
+    fs_g  = fs_g_map[p->gyro_fs];
 
     /* Accel FS at CTRL8[1:0] — preserve HP_LPF2_XL_BW bits [7:5]. */
     ret = regmap_update_bits(p->regmap, ISM330BX_REG_CTRL8,
@@ -509,8 +661,9 @@ static int ism330_newgen_set_odr(struct mpu6050_priv *p, u32 hz)
         {  960, ISM330BX_ODR_960_HZ    },
         { 1920, ISM330BX_ODR_1920_HZ   },
         { 3840, ISM330BX_ODR_3840_HZ   },
-        { 7680, ISM330BX_ODR_7680_HZ   },
+        { 7680, ISM330BX_ODR_7680_HZ   },   /* LSM6DSV only — reserved on ISM330BX */
     };
+    size_t n = ARRAY_SIZE(tbl) - (p->who == ISM330BX_WHO_AM_I_ID ? 1 : 0);
     u8 code;
     int ret;
 
@@ -519,13 +672,14 @@ static int ism330_newgen_set_odr(struct mpu6050_priv *p, u32 hz)
         p->odr_hz = 0;
     } else {
         u32 diff;
-        size_t i = odr_snap_nearest(tbl, ARRAY_SIZE(tbl), hz, &diff);
+        size_t i = odr_snap_nearest(tbl, n, hz, &diff);
         code = tbl[i].code;
         p->odr_hz = tbl[i].hz;
         if (diff != 0)
             dev_info(p->dev, "new-gen: ODR request %u Hz snapped to %u Hz\n",
                      hz, p->odr_hz);
     }
+    p->odr_code = code;
     /* ODR field is bits [3:0] on new-gen — preserve OP_MODE bits [6:4]. */
     ret = regmap_update_bits(p->regmap, ISM330_REG_CTRL1_XL,
                              GENMASK(3, 0), code);
@@ -533,6 +687,456 @@ static int ism330_newgen_set_odr(struct mpu6050_priv *p, u32 hz)
     ret = regmap_update_bits(p->regmap, ISM330_REG_CTRL2_G,
                              GENMASK(3, 0), code);
     return ret;
+}
+
+/* ====================================================================
+ * ISM330BX on-chip filters, SFLP and FIFO streaming (new-gen family).
+ *
+ * Read paths:
+ *   FIFO stream (default): accel + gyro are batched in the 1.5 KB HW FIFO
+ *     at BDR = ODR together with SFLP outputs and temperature. read()
+ *     drains the FIFO, so userspace hiccups of up to ~250 ms lose nothing,
+ *     and sample times are reconstructed on the chip's own clock.
+ *   Register polling: STATUS_REG.XLDA + 14-byte burst (previous behaviour);
+ *     if SFLP is on, the FIFO then carries only SFLP/temperature words.
+ *   IRQ: register path driven by INT1 (pin not wired on this board).
+ * All helpers below expect io_lock held (or probe context).
+ * ==================================================================== */
+
+static bool ism330_stream_active(const struct mpu6050_priv *p)
+{
+    return p->family == ISM330_FAMILY_NEWGEN && p->fifo_stream &&
+           !p->irq_mode && p->odr_code != ISM330BX_ODR_POWER_DOWN;
+}
+
+static void ism330_update_period(struct mpu6050_priv *p)
+{
+    if (!p->odr_hz) {
+        p->period_ns = 0;
+        return;
+    }
+    /* ODR_actual = ODR * (1 + 0.0013 * FREQ_FINE)  (INTERNAL_FREQ_FINE, 4Fh) */
+    p->period_ns = (u32)div_u64(NSEC_PER_SEC * 10000ULL,
+                                p->odr_hz * (u32)(10000 + 13 * p->freq_fine));
+}
+
+static int ism330_apply_filters(struct mpu6050_priv *p)
+{
+    int ret;
+
+    if (p->gyro_lpf1_bw >= 0) {
+        ret = regmap_update_bits(p->regmap, ISM330BX_REG_CTRL6, ISM330BX_CTRL6_LPF1_G_BW,
+                                 FIELD_PREP(ISM330BX_CTRL6_LPF1_G_BW, p->gyro_lpf1_bw));
+        if (ret) return ret;
+    }
+    ret = regmap_update_bits(p->regmap, ISM330BX_REG_CTRL7, ISM330BX_CTRL7_LPF1_G_EN,
+                             p->gyro_lpf1_bw >= 0 ? ISM330BX_CTRL7_LPF1_G_EN : 0);
+    if (ret) return ret;
+
+    if (p->accel_lpf2_bw >= 0) {
+        ret = regmap_update_bits(p->regmap, ISM330BX_REG_CTRL8, ISM330BX_CTRL8_HP_LPF2_XL_BW,
+                                 FIELD_PREP(ISM330BX_CTRL8_HP_LPF2_XL_BW, p->accel_lpf2_bw));
+        if (ret) return ret;
+    }
+    /* Low-pass path only (HP_SLOPE_XL_EN = 0): dead reckoning needs the DC
+     * component (gravity + sustained vehicle acceleration). */
+    ret = regmap_update_bits(p->regmap, ISM330BX_REG_CTRL9,
+                             ISM330BX_CTRL9_HP_SLOPE_XL_EN | ISM330BX_CTRL9_LPF2_XL_EN,
+                             p->accel_lpf2_bw >= 0 ? ISM330BX_CTRL9_LPF2_XL_EN : 0);
+    if (ret) return ret;
+
+    /* Hold off data-ready until the filters have settled after an ODR/FS change. */
+    return regmap_update_bits(p->regmap, ISM330BX_REG_CTRL4,
+                              ISM330BX_CTRL4_DRDY_MASK, ISM330BX_CTRL4_DRDY_MASK);
+}
+
+/* Embedded-function page access. Main-page registers (incl. the FIFO)
+ * are not reachable while it is open, hence io_lock around every user. */
+static int ism330_emb_begin(struct mpu6050_priv *p)
+{
+    return regmap_update_bits(p->regmap, ISM330BX_REG_FUNC_CFG_ACCESS,
+                              ISM330BX_EMB_FUNC_REG_ACCESS, ISM330BX_EMB_FUNC_REG_ACCESS);
+}
+
+static int ism330_emb_end(struct mpu6050_priv *p, int ret)
+{
+    int r = regmap_update_bits(p->regmap, ISM330BX_REG_FUNC_CFG_ACCESS,
+                               ISM330BX_EMB_FUNC_REG_ACCESS, 0);
+    return ret ? ret : r;
+}
+
+static int ism330_apply_sflp(struct mpu6050_priv *p)
+{
+    static const u16 sflp_hz[] = { 15, 30, 60, 120, 240, 480 };
+    u32 want = min_t(u32, (u32)max(p->sflp_odr_hz, 0), p->odr_hz);
+    bool en = p->sflp_enable && p->odr_hz >= sflp_hz[0];
+    unsigned int i, code = 0, fifo_bits = 0;
+    int ret;
+
+    /* SFLP cannot run faster than the sensors feeding it. */
+    for (i = 0; i < ARRAY_SIZE(sflp_hz); i++)
+        if (sflp_hz[i] <= want)
+            code = i;
+    if (en) {
+        if (p->sflp_fifo_mask & ISM330_SFLP_MASK_QUAT)    fifo_bits |= ISM330BX_EMB_SFLP_GAME_FIFO;
+        if (p->sflp_fifo_mask & ISM330_SFLP_MASK_GRAVITY) fifo_bits |= ISM330BX_EMB_SFLP_GRAV_FIFO;
+        if (p->sflp_fifo_mask & ISM330_SFLP_MASK_GBIAS)   fifo_bits |= ISM330BX_EMB_SFLP_GBIAS_FIFO;
+    }
+
+    ret = ism330_emb_begin(p);
+    if (!ret)
+        ret = mpu6050_write(p, ISM330BX_EMB_SFLP_ODR,
+                            ISM330BX_EMB_SFLP_ODR_FIXED | (u8)(code << 3));
+    if (!ret)
+        ret = regmap_update_bits(p->regmap, ISM330BX_EMB_FUNC_FIFO_EN_A,
+                                 ISM330BX_EMB_SFLP_GAME_FIFO | ISM330BX_EMB_SFLP_GRAV_FIFO |
+                                 ISM330BX_EMB_SFLP_GBIAS_FIFO, fifo_bits);
+    if (!ret)
+        ret = regmap_update_bits(p->regmap, ISM330BX_EMB_FUNC_EN_A, ISM330BX_EMB_SFLP_GAME_EN,
+                                 en ? ISM330BX_EMB_SFLP_GAME_EN : 0);
+    if (!ret && en)
+        ret = mpu6050_write(p, ISM330BX_EMB_FUNC_INIT_A, ISM330BX_EMB_SFLP_GAME_INIT);
+    ret = ism330_emb_end(p, ret);
+
+    p->sflp_active = en && !ret;
+    p->sflp_odr_actual = p->sflp_active ? sflp_hz[code] : 0;
+    p->sflp_flags = 0;
+    return ret;
+}
+
+static int ism330_sflp_reinit(struct mpu6050_priv *p)
+{
+    int ret;
+
+    if (!p->sflp_active)
+        return -ENODATA;
+    ret = ism330_emb_begin(p);
+    if (!ret)
+        ret = mpu6050_write(p, ISM330BX_EMB_FUNC_INIT_A, ISM330BX_EMB_SFLP_GAME_INIT);
+    ret = ism330_emb_end(p, ret);
+    p->sflp_flags = 0;
+    return ret;
+}
+
+static int ism330_apply_fifo(struct mpu6050_priv *p)
+{
+    bool stream = ism330_stream_active(p);
+    u8 bdr = stream ? p->odr_code : 0;
+    int ret;
+
+    /* Bypass first: flushes stale words and restarts TAG_CNT. */
+    ret = mpu6050_write(p, ISM330BX_REG_FIFO_CTRL4, 0);
+    if (!ret) ret = mpu6050_write(p, ISM330BX_REG_FIFO_CTRL1, 0);
+    if (!ret) ret = mpu6050_write(p, ISM330BX_REG_FIFO_CTRL2, 0);
+    if (!ret) ret = mpu6050_write(p, ISM330BX_REG_FIFO_CTRL3, (u8)((bdr << 4) | bdr));
+    if (!ret && (stream || p->sflp_active))
+        ret = mpu6050_write(p, ISM330BX_REG_FIFO_CTRL4,
+                            ISM330BX_FIFO_ODR_T_15HZ | ISM330BX_FIFO_MODE_CONT);
+
+    p->asm_have = 0;
+    p->last_t_ns = 0;
+    spin_lock(&p->fifo_lock);
+    kfifo_reset(&p->sample_fifo);
+    spin_unlock(&p->fifo_lock);
+    return ret;
+}
+
+static int ism330_apply_extras(struct mpu6050_priv *p)
+{
+    int ret;
+
+    if (p->family != ISM330_FAMILY_NEWGEN)
+        return 0;
+    ret = ism330_apply_filters(p);
+    if (!ret) ret = ism330_apply_sflp(p);
+    if (!ret) ret = ism330_apply_fifo(p);
+    if (ret) {
+        dev_err(p->dev, "signal-chain config failed: %d\n", ret);
+        return ret;
+    }
+    dev_info(p->dev,
+        "signal chain: gyro LPF1_BW=%d accel LPF2_BW=%d | SFLP %s %u Hz mask=0x%x | "
+        "read path=%s | period=%u ns (FREQ_FINE=%d)\n",
+        p->gyro_lpf1_bw, p->accel_lpf2_bw,
+        p->sflp_active ? "on" : "off", p->sflp_odr_actual, p->sflp_fifo_mask,
+        ism330_stream_active(p) ? "HW FIFO" : (p->irq_mode ? "IRQ" : "register poll"),
+        p->period_ns, p->freq_fine);
+    return 0;
+}
+
+static int ism330_fifo_read_words(struct mpu6050_priv *p, unsigned int nwords)
+{
+    unsigned int burst = (unsigned int)clamp(fifo_burst_words, 1, 4);
+    unsigned int i = 0;
+    int ret;
+
+    while (i < nwords) {
+        unsigned int k = min(nwords - i, burst);
+        unsigned int len = k * ISM330BX_FIFO_WORD_LEN;
+        u8 *dst = &p->fifo_buf[i * ISM330BX_FIFO_WORD_LEN];
+
+        if (k == 1) {
+            ret = regmap_bulk_read(p->regmap, ISM330BX_REG_FIFO_OUT_TAG, dst, len);
+        } else {
+            /* regmap rejects addresses past max_register, so multi-word
+             * bursts go to the adapter directly (same as mainline lsm6dsx). */
+            ret = i2c_smbus_read_i2c_block_data(p->client, ISM330BX_REG_FIFO_OUT_TAG, len, dst);
+            ret = (ret == (int)len) ? 0 : (ret < 0 ? ret : -EIO);
+        }
+        if (ret)
+            return ret;
+        i += k;
+    }
+    return 0;
+}
+
+static void ism330_attach_sflp(const struct mpu6050_priv *p, struct mpu6050_ext_sample *s)
+{
+    memcpy(s->quat_h, p->sflp_quat, sizeof(s->quat_h));
+    memcpy(s->gravity, p->sflp_gravity, sizeof(s->gravity));
+    memcpy(s->gbias, p->sflp_gbias, sizeof(s->gbias));
+    s->sflp_seq = p->sflp_seq;
+    s->flags |= p->sflp_flags;
+}
+
+/* Pair a gyro or accel FIFO word into the current time slot (TAG_CNT).
+ * Returns true once both halves of the slot are present. */
+static bool ism330_asm_add(struct mpu6050_priv *p, u8 kind, u8 cnt, const s16 v[3])
+{
+    if (p->asm_have && (p->asm_cnt != cnt || (p->asm_have & kind))) {
+        /* The partner word of the previous slot never arrived. */
+        p->asm_have = 0;
+        p->dropped++;
+        p->pending_flags |= MPU6050_EXT_SAMPLE_DROPPED;
+    }
+    p->asm_cnt = cnt;
+    p->asm_have |= kind;
+    memcpy(kind == ISM330_ASM_G ? p->asm_g : p->asm_a, v, 3 * sizeof(s16));
+    return p->asm_have == (ISM330_ASM_G | ISM330_ASM_A);
+}
+
+/* Decode nwords FIFO words from fifo_buf. SFLP/temperature words update the
+ * latest-value state; in stream mode accel/gyro pairs become staged samples
+ * carrying the SFLP state current at that point of the stream. */
+static unsigned int ism330_fifo_parse(struct mpu6050_priv *p, unsigned int nwords, bool stream)
+{
+    unsigned int i, n = 0;
+
+    for (i = 0; i < nwords; i++) {
+        const u8 *w = &p->fifo_buf[i * ISM330BX_FIFO_WORD_LEN];
+        u8 tag = w[0] >> 3;
+        u8 cnt = (w[0] >> 1) & 0x3;
+        s16 v[3];
+        int k;
+
+        for (k = 0; k < 3; k++)
+            v[k] = (s16)((w[2 + 2 * k] << 8) | w[1 + 2 * k]);
+
+        switch (tag) {
+        case ISM330BX_TAG_GYRO_NC:
+        case ISM330BX_TAG_ACCEL_NC: {
+            bool gyro = (tag == ISM330BX_TAG_GYRO_NC);
+            struct mpu6050_ext_sample *s;
+            s16 xyz[3];
+
+            if (!stream)
+                break;
+            if (gyro) {
+                memcpy(xyz, v, sizeof(xyz));
+            } else {            /* FIFO accel order is Z, Y, X */
+                xyz[0] = v[2];
+                xyz[1] = v[1];
+                xyz[2] = v[0];
+            }
+            if (!ism330_asm_add(p, gyro ? ISM330_ASM_G : ISM330_ASM_A, cnt, xyz))
+                break;
+            p->asm_have = 0;
+            if (n >= ISM330_STAGE_MAX) {      /* cannot happen; keep the accounting honest */
+                p->dropped++;
+                p->pending_flags |= MPU6050_EXT_SAMPLE_DROPPED;
+                break;
+            }
+            s = &p->stage[n++];
+            memset(s, 0, sizeof(*s));
+            s->gx = p->asm_g[0]; s->gy = p->asm_g[1]; s->gz = p->asm_g[2];
+            s->ax = p->asm_a[0]; s->ay = p->asm_a[1]; s->az = p->asm_a[2];
+            s->temp  = p->last_temp;
+            s->flags = MPU6050_EXT_FIFO_STREAM | p->pending_flags;
+            p->pending_flags = 0;
+            ism330_attach_sflp(p, s);
+            break;
+        }
+        case ISM330BX_TAG_TEMP:
+            p->last_temp = v[0];
+            break;
+        case ISM330BX_TAG_SFLP_GAME:
+            memcpy(p->sflp_quat, v, sizeof(p->sflp_quat));   /* raw half-float bits */
+            p->sflp_flags |= MPU6050_EXT_QUAT_VALID;
+            p->sflp_seq++;
+            break;
+        case ISM330BX_TAG_SFLP_GBIAS:
+            memcpy(p->sflp_gbias, v, sizeof(p->sflp_gbias));
+            p->sflp_flags |= MPU6050_EXT_GBIAS_VALID;
+            break;
+        case ISM330BX_TAG_SFLP_GRAVITY:
+            memcpy(p->sflp_gravity, v, sizeof(p->sflp_gravity));
+            p->sflp_flags |= MPU6050_EXT_GRAVITY_VALID;
+            break;
+        default:
+            break;
+        }
+    }
+    return n;
+}
+
+/* Timestamp staged samples and queue them for read().
+ *
+ * The FIFO carries no time, so the newest sample is anchored to the moment
+ * FIFO_STATUS was read (minus the words still left in the chip) and earlier
+ * ones are back-dated by the trimmed ODR period. Against the previous
+ * sample the result is blended 1/16 towards that anchor, which gives
+ * regular dt for integration while still tracking the chip clock. */
+static void ism330_stage_commit(struct mpu6050_priv *p, unsigned int n, s64 t_status,
+                                unsigned int words_parsed, unsigned int words_left)
+{
+    s64 T = p->period_ns;
+    s64 t_last;
+    unsigned int i, lag = 0;
+
+    if (words_left && words_parsed)
+        lag = words_left * n / words_parsed;
+    t_last = t_status - (s64)lag * T;
+
+    for (i = 0; i < n; i++) {
+        struct mpu6050_ext_sample *s = &p->stage[i];
+        s64 t = t_last - (s64)(n - 1 - i) * T;
+
+        if (p->last_t_ns &&
+            !(s->flags & (MPU6050_EXT_FIFO_OVERRUN | MPU6050_EXT_SAMPLE_DROPPED))) {
+            s64 pred = p->last_t_ns + T;
+            s64 err = t - pred;
+
+            if (err > -4 * T && err < 4 * T)
+                t = pred + (err >> 4);
+        }
+        if (p->last_t_ns && t <= p->last_t_ns)
+            t = p->last_t_ns + 1;
+        p->last_t_ns = t;
+        s->t_ns = t;
+        s->seq = p->seq++;
+        s->dropped = p->dropped;
+
+        spin_lock(&p->fifo_lock);
+        if (kfifo_is_full(&p->sample_fifo)) {
+            p->dropped++;
+            p->pending_flags |= MPU6050_EXT_SAMPLE_DROPPED;
+        } else {
+            kfifo_in(&p->sample_fifo, s, 1);
+        }
+        spin_unlock(&p->fifo_lock);
+    }
+}
+
+/* Read whatever is in the HW FIFO. Returns the number of accel/gyro
+ * samples queued (stream mode), 0 if none, or a negative errno. */
+static int ism330_fifo_drain(struct mpu6050_priv *p, bool stream)
+{
+    u8 st[2];
+    unsigned int avail, todo, n;
+    s64 t_status;
+    int ret;
+
+    ret = regmap_bulk_read(p->regmap, ISM330BX_REG_FIFO_STATUS1, st, sizeof(st));
+    if (ret)
+        return ret;
+    t_status = ktime_get_boottime_ns();
+
+    if (st[1] & (ISM330BX_FIFO_OVR_IA | ISM330BX_FIFO_OVR_LATCHED)) {
+        p->fifo_overruns++;
+        p->pending_flags |= MPU6050_EXT_FIFO_OVERRUN;
+        dev_warn_ratelimited(p->dev,
+            "HW FIFO overrun (#%u): reader too slow or I2C saturated — "
+            "use i2c_arm_baudrate=400000 or reduce sflp_fifo_mask\n", p->fifo_overruns);
+    }
+    avail = st[0] | ((st[1] & ISM330BX_FIFO_DIFF8) << 8);
+    if (!avail)
+        return 0;
+
+    todo = min_t(unsigned int, avail, ISM330_DRAIN_MAX_WORDS);
+    ret = ism330_fifo_read_words(p, todo);
+    if (ret)
+        return ret;
+    n = ism330_fifo_parse(p, todo, stream);
+    if (n)
+        ism330_stage_commit(p, n, t_status, todo, avail - todo);
+    return (int)n;
+}
+
+/* Keep the HW FIFO near empty (drain at most once per sample period, so
+ * the 2 s kernel queue — not the ~250 ms chip FIFO — absorbs reader
+ * stalls) and block until at least one sample is queued. */
+static int ism330_stream_fill(struct mpu6050_priv *p, bool nonblock)
+{
+    ktime_t deadline = ktime_add_ms(ktime_get(), 200);
+    unsigned int nap_us = clamp_t(u32, p->period_ns / 2000, 200, 20000);   /* half a period */
+
+    for (;;) {
+        int ret = 0;
+        s64 now = ktime_get_boottime_ns();
+
+        if (kfifo_is_empty(&p->sample_fifo) || now - p->last_drain_ns >= (s64)p->period_ns) {
+            mutex_lock(&p->io_lock);
+            if (ism330_stream_active(p))
+                ret = ism330_fifo_drain(p, true);
+            p->last_drain_ns = now;
+            mutex_unlock(&p->io_lock);
+        }
+        if (ret < 0)
+            return ret;
+        if (!kfifo_is_empty(&p->sample_fifo) || !ism330_stream_active(p))
+            return 0;      /* data ready, or mode changed under us: caller re-dispatches */
+        if (nonblock)
+            return -EAGAIN;
+        if (signal_pending(current))
+            return -ERESTARTSYS;
+        if (ktime_after(ktime_get(), deadline)) {
+            dev_warn_ratelimited(p->dev, "FIFO stream: no sample within 200 ms\n");
+            return -ETIMEDOUT;
+        }
+        usleep_range(nap_us, nap_us + nap_us / 2);
+    }
+}
+
+/* Register-path sample (polling / IRQ) in extended form. */
+static int mpu6050_acquire_register_sample(struct mpu6050_priv *p, struct mpu6050_ext_sample *s)
+{
+    struct mpu6050_sample raw;
+    int ret = mpu6050_read_burst(p, &raw);
+
+    if (ret)
+        return ret;
+    memset(s, 0, sizeof(*s));
+    s->t_ns = raw.t_ns;
+    s->ax = raw.ax; s->ay = raw.ay; s->az = raw.az;
+    s->gx = raw.gx; s->gy = raw.gy; s->gz = raw.gz;
+    s->temp = raw.temp;
+    if (p->sflp_active && ism330_fifo_drain(p, false) < 0)
+        dev_warn_ratelimited(p->dev, "SFLP FIFO drain failed\n");
+    ism330_attach_sflp(p, s);
+    s->flags |= p->pending_flags;
+    p->pending_flags = 0;
+    s->seq = p->seq++;
+    s->dropped = p->dropped;
+    return 0;
+}
+
+static void mpu6050_ext_to_legacy(const struct mpu6050_ext_sample *e, struct mpu6050_sample *s)
+{
+    memset(s, 0, sizeof(*s));      /* *_corr stay 0 — never copy stack garbage to userspace */
+    s->t_ns = e->t_ns;
+    s->ax = e->ax; s->ay = e->ay; s->az = e->az;
+    s->gx = e->gx; s->gy = e->gy; s->gz = e->gz;
+    s->temp = e->temp;
 }
 
 /* Dispatch to the correct set_odr based on chip family. */
@@ -549,6 +1153,10 @@ static int mpu6050_set_odr(struct mpu6050_priv *p, u32 hz)
     /* hrt_period is kept in step for any downstream code that reads it;
      * this driver itself does not run an hrtimer. */
     p->hrt_period = ktime_set(0, NSEC_PER_SEC / (p->odr_hz ? p->odr_hz : 1));
+    ism330_update_period(p);
+    /* FIFO BDR and SFLP rate follow the sensor ODR. */
+    if (!ret)
+        ret = ism330_apply_extras(p);
     return ret;
 }
 
@@ -557,8 +1165,8 @@ static irqreturn_t mpu6050_irq_thread(int irq, void *data)
 {
     struct mpu6050_priv *p = data;
     unsigned int st;
-    struct mpu6050_sample s;
-    unsigned long flags;
+    struct mpu6050_ext_sample s;
+    int ret;
 
     if (!p->irq_mode) return IRQ_NONE;
 
@@ -567,11 +1175,18 @@ static irqreturn_t mpu6050_irq_thread(int irq, void *data)
     if (regmap_read(p->regmap, ISM330_REG_STATUS_REG, &st)) return IRQ_NONE;
     if (!(st & ISM330_STATUS_XLDA))                       return IRQ_NONE;
 
-    if (mpu6050_read_burst(p, &s) == 0) {
-        spin_lock_irqsave(&p->fifo_lock, flags);
+    /* Threaded handler: may sleep, so share io_lock with the config paths
+     * (the SFLP drain touches FIFO registers). */
+    mutex_lock(&p->io_lock);
+    ret = mpu6050_acquire_register_sample(p, &s);
+    mutex_unlock(&p->io_lock);
+    if (ret == 0) {
+        spin_lock(&p->fifo_lock);
         if (!kfifo_is_full(&p->sample_fifo))
             kfifo_in(&p->sample_fifo, &s, 1);
-        spin_unlock_irqrestore(&p->fifo_lock, flags);
+        else
+            p->dropped++;
+        spin_unlock(&p->fifo_lock);
         wake_up_interruptible(&p->wq);
     }
     return IRQ_HANDLED;
@@ -591,19 +1206,62 @@ static int mpu6050_set_irq_mode(struct mpu6050_priv *p, bool enable)
         ret = regmap_write(p->regmap, ISM330_REG_INT1_CTRL, 0);
         if (!ret) p->irq_mode = false;
     }
+    /* IRQ mode uses the register path; FIFO keeps only SFLP words then. */
+    if (!ret && p->family == ISM330_FAMILY_NEWGEN)
+        ret = ism330_apply_fifo(p);
     return ret;
 }
 
 
 /* ---------------------Character Device --------------------- */
+static void mpu6050_get_filter_cfg(const struct mpu6050_priv *p, struct mpu6050_filter_cfg *fc)
+{
+    memset(fc, 0, sizeof(*fc));
+    fc->gyro_lpf1_bw   = p->gyro_lpf1_bw;
+    fc->accel_lpf2_bw  = p->accel_lpf2_bw;
+    fc->sflp_enable    = p->sflp_active;
+    fc->sflp_odr_hz    = p->sflp_odr_actual;
+    fc->sflp_fifo_mask = p->sflp_fifo_mask;
+    fc->fifo_stream    = ism330_stream_active(p);
+}
+
+static int mpu6050_set_filter_cfg(struct mpu6050_priv *p, const struct mpu6050_filter_cfg *fc)
+{
+    int old[6] = { p->gyro_lpf1_bw, p->accel_lpf2_bw, p->sflp_enable,
+                   p->sflp_odr_hz, p->sflp_fifo_mask, p->fifo_stream };
+    int ret;
+
+    if (p->family != ISM330_FAMILY_NEWGEN)
+        return -EOPNOTSUPP;
+    if (fc->gyro_lpf1_bw < -1 || fc->gyro_lpf1_bw > 7 ||
+        fc->accel_lpf2_bw < -1 || fc->accel_lpf2_bw > 7 ||
+        fc->sflp_odr_hz > 480 || fc->sflp_fifo_mask > 7)
+        return -EINVAL;
+
+    p->gyro_lpf1_bw   = fc->gyro_lpf1_bw;
+    p->accel_lpf2_bw  = fc->accel_lpf2_bw;
+    p->sflp_enable    = !!fc->sflp_enable;
+    p->sflp_odr_hz    = fc->sflp_odr_hz ? (int)fc->sflp_odr_hz : p->sflp_odr_hz;
+    p->sflp_fifo_mask = fc->sflp_fifo_mask;
+    p->fifo_stream    = !!fc->fifo_stream;
+    ret = ism330_apply_extras(p);
+    if (ret) {
+        p->gyro_lpf1_bw = old[0]; p->accel_lpf2_bw = old[1]; p->sflp_enable = old[2];
+        p->sflp_odr_hz = old[3]; p->sflp_fifo_mask = old[4]; p->fifo_stream = old[5];
+        ism330_apply_extras(p);
+    }
+    return ret;
+}
+
 static long mpu6050_unlocked_ioctl( struct file *filp, unsigned int cmd, unsigned long arg)
 {
-    struct mpu6050_priv *p = filp->private_data;
+    struct mpu6050_file *ctx = filp->private_data;
+    struct mpu6050_priv *p = ctx->p;
     int ret = 0;
     unsigned int v;
     struct mpu6050_fs fs ;
-    struct mpu6050_cal_pair cp;
-    
+    struct mpu6050_filter_cfg fc;
+
     switch(cmd) {
         case MPU6050_IOC_GET_WHOAMI: {
             v = 0;
@@ -636,6 +1294,10 @@ static long mpu6050_unlocked_ioctl( struct file *filp, unsigned int cmd, unsigne
             p->accel_fs = fs.accel;
             p->gyro_fs = fs.gyro;
             ret = mpu6050_set_ranges(p);
+            /* New FS: restart FIFO so no word mixes old and new scale,
+             * and let SFLP re-converge. */
+            if (!ret)
+                ret = ism330_apply_extras(p);
             mutex_unlock(&p->io_lock);
             if (ret)
                 return ret;
@@ -649,103 +1311,152 @@ static long mpu6050_unlocked_ioctl( struct file *filp, unsigned int cmd, unsigne
                 return -EFAULT;
             break;
         }
-       
+        case MPU6050_IOC_SET_READ_FMT: {
+            if (copy_from_user(&v, (void __user *)arg, sizeof(v)))
+                return -EFAULT;
+            if (v != MPU6050_FMT_LEGACY && v != MPU6050_FMT_EXT)
+                return -EINVAL;
+            ctx->fmt = v;
+            break;
+        }
+        case MPU6050_IOC_GET_FILTER: {
+            mutex_lock(&p->io_lock);
+            mpu6050_get_filter_cfg(p, &fc);
+            mutex_unlock(&p->io_lock);
+            if (copy_to_user((void __user *)arg, &fc, sizeof(fc)))
+                return -EFAULT;
+            break;
+        }
+        case MPU6050_IOC_SET_FILTER: {
+            if (copy_from_user(&fc, (void __user *)arg, sizeof(fc)))
+                return -EFAULT;
+            mutex_lock(&p->io_lock);
+            ret = mpu6050_set_filter_cfg(p, &fc);
+            mutex_unlock(&p->io_lock);
+            if (ret)
+                return ret;
+            break;
+        }
+        case MPU6050_IOC_SFLP_RESET: {
+            mutex_lock(&p->io_lock);
+            ret = ism330_sflp_reinit(p);
+            mutex_unlock(&p->io_lock);
+            if (ret)
+                return ret;
+            break;
+        }
+
         default:
             return -ENOTTY;
     }
     return 0;
 }
 
+static int mpu6050_copy_out(const struct mpu6050_file *ctx, char __user *buf, size_t idx,
+                            const struct mpu6050_ext_sample *s)
+{
+    if (ctx->fmt == MPU6050_FMT_EXT)
+        return copy_to_user(buf + idx * sizeof(*s), s, sizeof(*s)) ? -EFAULT : 0;
+    {
+        struct mpu6050_sample l;
+
+        mpu6050_ext_to_legacy(s, &l);
+        return copy_to_user(buf + idx * sizeof(l), &l, sizeof(l)) ? -EFAULT : 0;
+    }
+}
+
 static ssize_t mpu6050_read_file(struct file *f, char __user *buf, size_t len, loff_t *off)
 {
-    struct mpu6050_priv *p = f->private_data;
-    size_t count = len/sizeof(struct mpu6050_sample);
+    struct mpu6050_file *ctx = f->private_data;
+    struct mpu6050_priv *p = ctx->p;
+    size_t ssz = (ctx->fmt == MPU6050_FMT_EXT) ? sizeof(struct mpu6050_ext_sample)
+                                               : sizeof(struct mpu6050_sample);
+    size_t count = len / ssz;
     size_t done = 0;
+    bool nonblock = f->f_flags & O_NONBLOCK;
+    int ret;
 
     if( count == 0 ) return -EINVAL;
-    dev_info(p->dev, "read request for %zu samples\n", count);
+    /* No per-call dev_info here: at 240 Hz it floods dmesg and steals the
+     * CPU time that caused dropped samples in the polling path. */
 
     while( done < count ){
-        if (p->irq_mode) {
-            struct mpu6050_sample s;
-            if (kfifo_is_empty(&p->sample_fifo)) {
-                if (f->f_flags & O_NONBLOCK) {
-                    return done ? (ssize_t)(done * sizeof(s)) : -EAGAIN;
-                }
-                if (wait_event_interruptible(p->wq, !kfifo_is_empty(&p->sample_fifo))) {
-                return done ? (ssize_t)(done*sizeof(s)) : -ERESTARTSYS;
+        struct mpu6050_ext_sample s;
+
+        if (p->irq_mode || ism330_stream_active(p)) {
+            unsigned int got;
+
+            if (!p->irq_mode) {
+                ret = ism330_stream_fill(p, nonblock);
+                if (ret)
+                    return done ? (ssize_t)(done * ssz) : ret;
+            } else if (kfifo_is_empty(&p->sample_fifo)) {
+                if (nonblock)
+                    return done ? (ssize_t)(done * ssz) : -EAGAIN;
+                if (wait_event_interruptible(p->wq, !kfifo_is_empty(&p->sample_fifo)))
+                    return done ? (ssize_t)(done * ssz) : -ERESTARTSYS;
             }
-        }
-        spin_lock(&p->fifo_lock);
-        if(!kfifo_out(&p->sample_fifo, &s, 1))
-        {
+            spin_lock(&p->fifo_lock);
+            got = kfifo_out(&p->sample_fifo, &s, 1);
             spin_unlock(&p->fifo_lock);
-            continue;
-        }
-        spin_unlock(&p->fifo_lock);
-        if( copy_to_user(buf+done*sizeof(s), &s, sizeof(s)))
-        return -EFAULT;
-        done++;
-
+            if (!got)
+                continue;
         } else {
-            /* Polling mode — no HW IRQ, no in-kernel FIFO. Wait for
-             * STATUS_REG.XLDA to confirm a new sample is ready, THEN
-             * burst-read. read() therefore returns exactly ODR times
-             * per second (240 Hz on ISM330BX default), which matches
-             * what the userspace pipeline expects. */
-            struct mpu6050_sample s;
-            int ret;
-            size_t off;
-
+            /* Polling mode — wait for STATUS_REG.XLDA so every sample is
+             * new, then burst-read. Returns at the chip's ODR. */
             mutex_lock(&p->io_lock);
             ret = mpu6050_wait_for_new_sample(p);
             if (ret == 0)
-                ret = mpu6050_read_burst(p, &s);
+                ret = mpu6050_acquire_register_sample(p, &s);
             mutex_unlock(&p->io_lock);
 
             if (ret) {
                 /* On timeout / bus error: honour O_NONBLOCK and any
                  * partial data already delivered, otherwise propagate. */
-                if (done) return (ssize_t)(done * sizeof(s));
-                if (ret == -ETIMEDOUT && (f->f_flags & O_NONBLOCK))
+                if (done) return (ssize_t)(done * ssz);
+                if (ret == -ETIMEDOUT && nonblock)
                     return -EAGAIN;
                 return ret;
             }
-            off = done * sizeof(struct mpu6050_sample);
-            if (copy_to_user((void __user *)(buf + off), &s, sizeof(s)))
-                return -EFAULT;
-            /* dev_info per-sample removed — at 240 Hz it floods dmesg
-             * and steals CPU. Enable dynamic debug if you need it. */
-            done++;
         }
-        
+        ret = mpu6050_copy_out(ctx, buf, done, &s);
+        if (ret)
+            return ret;
+        done++;
     }
-    return (ssize_t)(done * sizeof(struct mpu6050_sample));
+    return (ssize_t)(done * ssz);
 }
 
 static __poll_t mpu6050_poll(struct file *f, struct poll_table_struct *pt)
 {
-    struct mpu6050_priv *p = f->private_data;
-    __poll_t mask = 0;
-    dev_info(p->dev, "poll\n");
-    if( !p->irq_mode ){
+    struct mpu6050_file *ctx = f->private_data;
+    struct mpu6050_priv *p = ctx->p;
+
+    /* IRQ mode: readable when the in-kernel queue has data. The polling
+     * and FIFO paths pace themselves on the chip inside read(), so they
+     * always report readable. */
+    if (p->irq_mode) {
         poll_wait(f, &p->wq, pt);
-        if( !kfifo_is_empty(&p->sample_fifo)) mask |= POLLIN | POLLRDNORM;
-    } else {
-        mask |= POLLIN | POLLRDNORM;
+        return kfifo_is_empty(&p->sample_fifo) ? 0 : (POLLIN | POLLRDNORM);
     }
-    return mask;
+    return POLLIN | POLLRDNORM;
 }
 
 static int mpu6050_open(struct inode *ino, struct file *f)
 {
-    struct mpu6050_priv *p = container_of(ino->i_cdev, struct mpu6050_priv, cdev);
-    f->private_data = p;
+    struct mpu6050_file *ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+
+    if (!ctx)
+        return -ENOMEM;
+    ctx->p = container_of(ino->i_cdev, struct mpu6050_priv, cdev);
+    ctx->fmt = MPU6050_FMT_LEGACY;
+    f->private_data = ctx;
     return 0;
 }
 
 static int mpu6050_release( struct inode *ino, struct file *f)
 {
+    kfree(f->private_data);
     return 0;
 }
 
@@ -797,7 +1508,8 @@ static ssize_t store_fs( struct device *dev, struct device_attribute *a, const c
     mutex_lock(&p->io_lock);
     p->accel_fs = af;
     p->gyro_fs = gf;
-    mpu6050_set_ranges(p);
+    if (!mpu6050_set_ranges(p))
+        ism330_apply_extras(p);
     mutex_unlock(&p->io_lock);
     return c;
 }
@@ -823,10 +1535,86 @@ static ssize_t store_irq_mode(struct device *dev, struct device_attribute *a, co
 }
 static DEVICE_ATTR(irq_mode, 0644, show_irq_mode, store_irq_mode);
 
+/* ISM330BX signal-chain knobs. Each write re-applies the whole chain
+ * (filters -> SFLP -> FIFO restart) and rolls back on failure. */
+static ssize_t ism330_store_cfg(struct device *dev, const char *b, size_t c,
+                                size_t field_off, int min, int max)
+{
+    struct mpu6050_priv *p = dev_get_drvdata(dev);
+    int *field = (int *)((char *)p + field_off);
+    int v, old, ret;
+
+    if (kstrtoint(b, 0, &v) || v < min || v > max)
+        return -EINVAL;
+    if (p->family != ISM330_FAMILY_NEWGEN)
+        return -EOPNOTSUPP;
+    mutex_lock(&p->io_lock);
+    old = *field;
+    *field = v;
+    ret = ism330_apply_extras(p);
+    if (ret) {
+        *field = old;
+        ism330_apply_extras(p);
+    }
+    mutex_unlock(&p->io_lock);
+    return ret ? ret : (ssize_t)c;
+}
+
+#define ISM330_CFG_ATTR(_name, _shown, _min, _max)                                  \
+static ssize_t _name##_show(struct device *dev, struct device_attribute *a, char *buf) \
+{                                                                                   \
+    struct mpu6050_priv *p = dev_get_drvdata(dev);                                  \
+    return sysfs_emit(buf, "%d\n", (int)(_shown));                                  \
+}                                                                                   \
+static ssize_t _name##_store(struct device *dev, struct device_attribute *a,         \
+                             const char *b, size_t c)                               \
+{                                                                                   \
+    return ism330_store_cfg(dev, b, c, offsetof(struct mpu6050_priv, _name), _min, _max); \
+}                                                                                   \
+static DEVICE_ATTR_RW(_name)
+
+ISM330_CFG_ATTR(gyro_lpf1_bw,   p->gyro_lpf1_bw,   -1, 7);
+ISM330_CFG_ATTR(accel_lpf2_bw,  p->accel_lpf2_bw,  -1, 7);
+ISM330_CFG_ATTR(sflp_enable,    p->sflp_active,     0, 1);
+ISM330_CFG_ATTR(sflp_odr_hz,    p->sflp_odr_actual, 15, 480);  /* shows the rate actually running */
+ISM330_CFG_ATTR(sflp_fifo_mask, p->sflp_fifo_mask,  0, 7);
+ISM330_CFG_ATTR(fifo_stream,    ism330_stream_active(p), 0, 1);
+
+static ssize_t sflp_reset_store(struct device *dev, struct device_attribute *a,
+                                const char *b, size_t c)
+{
+    struct mpu6050_priv *p = dev_get_drvdata(dev);
+    int ret;
+
+    mutex_lock(&p->io_lock);
+    ret = ism330_sflp_reinit(p);
+    mutex_unlock(&p->io_lock);
+    return ret ? ret : (ssize_t)c;
+}
+static DEVICE_ATTR_WO(sflp_reset);
+
+static ssize_t stream_stats_show(struct device *dev, struct device_attribute *a, char *buf)
+{
+    struct mpu6050_priv *p = dev_get_drvdata(dev);
+
+    return sysfs_emit(buf, "seq=%u dropped=%u fifo_overruns=%u sflp_seq=%u queued=%u period_ns=%u\n",
+                      p->seq, p->dropped, p->fifo_overruns, p->sflp_seq,
+                      kfifo_len(&p->sample_fifo), p->period_ns);
+}
+static DEVICE_ATTR_RO(stream_stats);
+
 static struct attribute *mpu6050_attrs[] = {
     &dev_attr_odr_hz.attr,
     &dev_attr_fullscale.attr,
     &dev_attr_irq_mode.attr,
+    &dev_attr_gyro_lpf1_bw.attr,
+    &dev_attr_accel_lpf2_bw.attr,
+    &dev_attr_sflp_enable.attr,
+    &dev_attr_sflp_odr_hz.attr,
+    &dev_attr_sflp_fifo_mask.attr,
+    &dev_attr_fifo_stream.attr,
+    &dev_attr_sflp_reset.attr,
+    &dev_attr_stream_stats.attr,
     NULL,
 };
 
@@ -938,6 +1726,23 @@ static void mpu6050_dump_regs(struct mpu6050_priv *p, const char *tag)
             "gyro: ODR=%u Hz FS=±%u dps (bits: OP_MODE=%u ODR=%u FS=%u)\n",
             tag, acc_hz, acc_g, op_xl, odr_xl, fs_xl,
                  gyr_hz, gyr_dps, op_g,  odr_g,  fs_g);
+        {
+            unsigned int c4 = 0, c7 = 0, c9 = 0, f3 = 0, f4 = 0;
+
+            mpu6050_read(p, ISM330BX_REG_CTRL4, &c4);
+            mpu6050_read(p, ISM330BX_REG_CTRL7, &c7);
+            mpu6050_read(p, ISM330BX_REG_CTRL9, &c9);
+            mpu6050_read(p, ISM330BX_REG_FIFO_CTRL3, &f3);
+            mpu6050_read(p, ISM330BX_REG_FIFO_CTRL4, &f4);
+            dev_info(p->dev,
+                "[%s]   filters: LPF1_G_EN=%d LPF1_G_BW=%lu  LPF2_XL_EN=%d HP_LPF2_XL_BW=%lu  "
+                "DRDY_MASK=%d | FIFO_CTRL3=0x%02X FIFO_CTRL4=0x%02X\n",
+                tag, !!(c7 & ISM330BX_CTRL7_LPF1_G_EN),
+                (unsigned long)FIELD_GET(ISM330BX_CTRL6_LPF1_G_BW, c6),
+                !!(c9 & ISM330BX_CTRL9_LPF2_XL_EN),
+                (unsigned long)FIELD_GET(ISM330BX_CTRL8_HP_LPF2_XL_BW, c8),
+                !!(c4 & ISM330BX_CTRL4_DRDY_MASK), f3, f4);
+        }
     }
 
     dev_info(p->dev,
@@ -958,6 +1763,12 @@ static int mpu6050_hw_init(struct mpu6050_priv *p)
 {
     int ret, tries;
     unsigned int v = 0;
+
+    /* 0. Back to the main register page in case a previous instance died
+     *    with the embedded-function page open (0x12/0x0F would then hit
+     *    embedded registers, not CTRL3/WHO_AM_I). 0x01 is FUNC_CFG_ACCESS
+     *    on every supported ST part; 0 = main page. */
+    mpu6050_write(p, ISM330BX_REG_FUNC_CFG_ACCESS, 0);
 
     /* 1. Software reset via CTRL3_C SW_RESET. Datasheet says the bit
      *    self-clears within ~50 µs — we poll with a generous timeout. */
@@ -1033,9 +1844,23 @@ static int mpu6050_hw_init(struct mpu6050_priv *p)
         return -ENODEV;
     }
     p->family = ism330_family_from_who((u8)v);
+    p->who = (u8)v;
     dev_info(p->dev, "Detected %s (WHO_AM_I=0x%02X, family=%s)\n",
              ism330_who_am_i_name((u8)v), v,
              ism330_family_name(p->family));
+
+    if (p->family == ISM330_FAMILY_NEWGEN) {
+        unsigned int ff = 0;
+
+        if (mpu6050_read(p, ISM330BX_REG_FREQ_FINE, &ff) == 0)
+            p->freq_fine = (s8)ff;
+        dev_info(p->dev, "INTERNAL_FREQ_FINE=%d -> ODR trim %+d x 1e-4\n",
+                 p->freq_fine, 13 * p->freq_fine);
+    } else {
+        /* Tagged FIFO / SFLP only exist on the new-gen register map. */
+        p->fifo_stream = 0;
+        p->sflp_enable = 0;
+    }
 
     /* 3. CTRL3_C: enable BDU (block-data-update — freezes low/high byte
      *    pair until both are read, preventing torn reads) and IF_INC
@@ -1213,6 +2038,15 @@ static int mpu6050_probe(struct i2c_client *client)
     spin_lock_init(&p->fifo_lock);
     INIT_KFIFO(p->sample_fifo);
 
+    /* Signal-chain defaults (module parameters); applied by set_odr()
+     * inside hw_init and adjustable later via sysfs / ioctl. */
+    p->gyro_lpf1_bw   = clamp(gyro_lpf1_bw_default, -1, 7);
+    p->accel_lpf2_bw  = clamp(accel_lpf2_bw_default, -1, 7);
+    p->sflp_enable    = !!sflp_enable_default;
+    p->sflp_odr_hz    = clamp(sflp_odr_default, 15, 480);
+    p->sflp_fifo_mask = sflp_fifo_mask_default & 0x7;
+    p->fifo_stream    = !!fifo_stream_default;
+
     // Keep device always active (no pm_runtime)
 
     /* Parse DT (optional). C-side defaults set above: ag=8, gd=2000, odr=0.
@@ -1322,7 +2156,9 @@ static int mpu6050_probe(struct i2c_client *client)
         dev_info(dev, "no IRQ declared for this node — polling mode (STATUS_REG.XLDA)\n");
     }
     p->irq_mode = false;
-    dev_info(dev, "read() mode: POLLING (chip-paced via STATUS_REG.XLDA)\n");
+    dev_info(dev, "read() mode: %s\n", ism330_stream_active(p)
+             ? "HW FIFO stream (accel+gyro+SFLP, no lost samples)"
+             : "POLLING (chip-paced via STATUS_REG.XLDA)");
     
     i2c_set_clientdata(client, p);
 
@@ -1345,6 +2181,13 @@ err_unreg:
 static int mpu6050_remove(struct i2c_client *client)
 {
     struct mpu6050_priv *p = i2c_get_clientdata(client);
+
+    /* Leave the chip idle: SFLP off, FIFO bypass, sensors powered down. */
+    mutex_lock(&p->io_lock);
+    p->sflp_enable = 0;
+    mpu6050_set_odr(p, 0);
+    mutex_unlock(&p->io_lock);
+
     sysfs_remove_group(&p->chardev->kobj, &mpu6050_attr_group);
     device_destroy(p->cls, p->devt);
     class_destroy(p->cls);
@@ -1366,6 +2209,7 @@ static const struct of_device_id mpu6050_of_match[] = {
     /* Current overlay uses this string — ST ISM330DLC is the actual chip. */
     { .compatible = "stm,ism330dlctr" },
     { .compatible = "st,ism330dlc"    },
+    { .compatible = "st,ism330bx"     },
     /* Legacy alias kept for older overlays / dtbo files that still identify
      * the device as an Invensense MPU6050-compatible node. */
     { .compatible = "invensense,mpu6050-custom" },
@@ -1392,6 +2236,6 @@ static struct i2c_driver mpu6050_driver = {
 module_i2c_driver(mpu6050_driver);
 
 MODULE_AUTHOR("Sijeo Philip <sijeo80@gmail.com>");
-MODULE_DESCRIPTION("Invensense MPU6050 Character Device Driver");
+MODULE_DESCRIPTION("ST ISM330BX/ISM330 6-axis IMU char driver (MPU6050-compatible ABI, FIFO + SFLP)");
 MODULE_LICENSE("GPL v2");
 

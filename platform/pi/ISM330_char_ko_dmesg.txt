@@ -1,0 +1,22 @@
+DT parse: st,odr-hz rc=0 val=200 (was 0)  st,accel-fsr-g rc=0 val=8  st,gyro-fsr-dps rc=0 val=2000
+[ 1448.948820] mpu6050-char 1-006a: DT parse: rc==0 means the property EXISTED and OVERRODE the C default; rc==-EINVAL (-22) means the property was ABSENT and the C default remains.
+[ 1448.948828] mpu6050-char 1-006a: final config: accel_fs enum=2 (want ±8g=2)  gyro_fs enum=3 (want ±2000dps=3)
+[ 1448.952569] mpu6050-char 1-006a: WHO_AM_I probe: ST@0x0F=0x71 (rc=0)  Invensense@0x75=0x00 (rc=0)
+[ 1448.952583] mpu6050-char 1-006a: Detected ISM330BX (LSM6DSV-family) (WHO_AM_I=0x71, family=new-gen (CTRL8/CTRL6 FS layout))
+[ 1448.956407] mpu6050-char 1-006a: [pre-configure] family=new-gen (CTRL8/CTRL6 FS layout)  WHO_AM_I=0x71  CTRL1=0x00 CTRL2=0x00 CTRL3_C=0x44 INT1_CTRL=0x00 STATUS=0x00
+[ 1448.956419] mpu6050-char 1-006a: [pre-configure]   CTRL6=0x00 (FS_G bits=0)  CTRL8=0x00 (FS_XL bits=0)
+[ 1448.956430] mpu6050-char 1-006a: [pre-configure]   accel: ODR=0 Hz FS=±2 g (bits: OP_MODE=0 ODR=0 FS=0)  --  gyro: ODR=0 Hz FS=±125 dps (bits: OP_MODE=0 ODR=0 FS=0)
+[ 1448.956440] mpu6050-char 1-006a: [pre-configure]   CTRL3_C: BDU=1 IF_INC=1 SW_RESET=0   INT1_CTRL: DRDY_XL=0 DRDY_G=0   STATUS: XLDA=0 GDA=0 TDA=0
+[ 1448.990104] mpu6050-char 1-006a: [after set_ranges] family=new-gen (CTRL8/CTRL6 FS layout)  WHO_AM_I=0x71  CTRL1=0x00 CTRL2=0x00 CTRL3_C=0x44 INT1_CTRL=0x00 STATUS=0x00
+[ 1448.990118] mpu6050-char 1-006a: [after set_ranges]   CTRL6=0x04 (FS_G bits=4)  CTRL8=0x02 (FS_XL bits=2)
+[ 1448.990128] mpu6050-char 1-006a: [after set_ranges]   accel: ODR=0 Hz FS=±8 g (bits: OP_MODE=0 ODR=0 FS=2)  --  gyro: ODR=0 Hz FS=±2000 dps (bits: OP_MODE=0 ODR=0 FS=4)
+[ 1448.990137] mpu6050-char 1-006a: [after set_ranges]   CTRL3_C: BDU=1 IF_INC=1 SW_RESET=0   INT1_CTRL: DRDY_XL=0 DRDY_G=0   STATUS: XLDA=0 GDA=0 TDA=0
+[ 1448.990146] mpu6050-char 1-006a: new-gen: ODR request 200 Hz snapped to 240 Hz
+[ 1448.995061] mpu6050-char 1-006a: [after set_odr] family=new-gen (CTRL8/CTRL6 FS layout)  WHO_AM_I=0x71  CTRL1=0x07 CTRL2=0x07 CTRL3_C=0x44 INT1_CTRL=0x00 STATUS=0x04
+[ 1448.995071] mpu6050-char 1-006a: [after set_odr]   CTRL6=0x04 (FS_G bits=4)  CTRL8=0x02 (FS_XL bits=2)
+[ 1448.995081] mpu6050-char 1-006a: [after set_odr]   accel: ODR=240 Hz FS=±8 g (bits: OP_MODE=0 ODR=7 FS=2)  --  gyro: ODR=240 Hz FS=±2000 dps (bits: OP_MODE=0 ODR=7 FS=4)
+[ 1448.995091] mpu6050-char 1-006a: [after set_odr]   CTRL3_C: BDU=1 IF_INC=1 SW_RESET=0   INT1_CTRL: DRDY_XL=0 DRDY_G=0   STATUS: XLDA=0 GDA=0 TDA=1
+[ 1448.996803] mpu6050-char 1-006a: READBACK OK (new-gen (CTRL8/CTRL6 FS layout)): accel=±8g gyro=±2000 dps ODR=240 Hz — all match driver intent
+[ 1449.008092] mpu6050-char 1-006a: IRQ 166 registered but NOT enabled by default. Run `echo 1 > /sys/class/mpu6050/mpu6050-*/irq_mode` if the INT1 pin is physically wired.
+[ 1449.008103] mpu6050-char 1-006a: read() mode: POLLING (chip-paced via STATUS_REG.XLDA)
+[ 1449.008111] mpu6050-char 1-006a: MPU6050 char driver ready (odr=240Hz, af=2, gf=3, irq=166)

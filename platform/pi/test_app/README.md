@@ -15,6 +15,36 @@ It uses the exact ±8 g LSQ accelerometer matrix and offset from the uploaded ap
 - `tests/test_imu_core.c` — deterministic synthetic calibration and protocol test.
 - `docs/ORIGINAL_IMU_AUDIT_EXCERPT.txt` — exact IMU-related excerpts with original line numbers.
 
+## ISM330BX on-chip fusion (SFLP) + rotation dashboard
+
+The IMU is an ST **ISM330BX** (WHO_AM_I 0x71) mounted **FLU**. `mpu6050_char.ko` now:
+
+- reads accel + gyro through the **hardware FIFO** (no lost samples; times reconstructed on the
+  chip clock, trimmed by `INTERNAL_FREQ_FINE`), default `fifo_stream=1`;
+- enables the on-chip **gyro LPF1** (`gyro_lpf1_bw=6` ≈ 27 Hz @ 240 Hz) and **accel LPF2**
+  (`accel_lpf2_bw=2` = ODR/20 ≈ 12 Hz) to stop vibration aliasing;
+- runs the **SFLP** game rotation vector, gravity vector and gyro-bias estimate (`sflp_odr=120`)
+  and attaches the latest values to every sample;
+- keeps `struct mpu6050_sample` as the default `read()` format (DR app unchanged);
+  `MPU6050_IOC_SET_READ_FMT(MPU6050_FMT_EXT)` gives `struct mpu6050_ext_sample`.
+
+Runtime knobs: `/sys/class/mpu6050/mpu6050-0/{gyro_lpf1_bw,accel_lpf2_bw,sflp_enable,sflp_odr_hz,
+sflp_fifo_mask,fifo_stream,sflp_reset,stream_stats}`. Needs `dtparam=i2c_arm_baudrate=400000`.
+
+```bash
+# Pi
+sudo insmod mpu6050_char.ko            # optional: gyro_lpf1_bw=7 sflp_odr=240 ...
+./imu_streamer --host <PC IP> --gyro-fs 500     # v2 frames (SFLP + host Mahony + gravity-free accel)
+# PC
+python imu_rotation_dashboard.py --csv drive1.csv   # r: record, z: zero yaw, t: tare, c: clear, q: quit
+python imu_rotation_dashboard.py --replay drive1.csv --speed 2
+```
+
+**Frame / FLU check.** The streamer maps sensor to vehicle FLU with `--mount flu` (default, identity) or `--mount frd`, plus `--mount-rpy R,P,Y` trim from the field calibration (`../IMU_FIELD_CALIBRATION.md`). After 2 s at rest it prints `[FLU check]`: gravity must be on +z; the residual roll/pitch it reports is what `--mount-rpy` takes. It also warns if |g| is off by more than 1 %.
+
+`--wire v1` keeps the old 236-byte frame for `imu_dashboard.py`. `--gyro-fs` changes the
+driver-wide scale: update the DR app's gyro LSB/dps if you keep it.
+
 ## Build on the Raspberry Pi
 
 The existing project’s `mpu6050_ioctl.h` is required because it defines the actual driver ABI.
