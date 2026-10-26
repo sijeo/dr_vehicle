@@ -920,6 +920,39 @@ deps_/home/sijeophilip/dr_vehicle/platform/pi/mpu6050_char.o := \
   include/linux/logic_pio.h \
     $(wildcard include/config/indirect/pio.h) \
   include/linux/vmalloc.h \
+  include/linux/sched/signal.h \
+    $(wildcard include/config/sched/autogroup.h) \
+    $(wildcard include/config/bsd/process/acct.h) \
+    $(wildcard include/config/taskstats.h) \
+  include/linux/signal.h \
+  include/linux/sched/jobctl.h \
+  include/linux/sched/task.h \
+    $(wildcard include/config/have/copy/thread/tls.h) \
+    $(wildcard include/config/have/exit/thread.h) \
+    $(wildcard include/config/arch/wants/dynamic/task/struct.h) \
+    $(wildcard include/config/have/arch/thread/struct/whitelist.h) \
+  include/linux/uaccess.h \
+  arch/arm/include/asm/uaccess.h \
+    $(wildcard include/config/cpu/sw/domain/pan.h) \
+    $(wildcard include/config/cpu/use/domains.h) \
+    $(wildcard include/config/uaccess/with/memcpy.h) \
+  arch/arm/include/asm/domain.h \
+    $(wildcard include/config/io/36.h) \
+    $(wildcard include/config/cpu/cp15/mmu.h) \
+  arch/arm/include/generated/asm/extable.h \
+  include/asm-generic/extable.h \
+  include/linux/cred.h \
+    $(wildcard include/config/debug/credentials.h) \
+  include/linux/key.h \
+    $(wildcard include/config/net.h) \
+  include/linux/sysctl.h \
+  include/uapi/linux/sysctl.h \
+  include/linux/assoc_array.h \
+    $(wildcard include/config/associative/array.h) \
+  include/linux/sched/user.h \
+    $(wildcard include/config/fanotify.h) \
+    $(wildcard include/config/posix/mqueue.h) \
+    $(wildcard include/config/bpf/syscall.h) \
   include/linux/of_device.h \
   include/linux/cpu.h \
     $(wildcard include/config/pm/sleep/smp.h) \
@@ -936,16 +969,6 @@ deps_/home/sijeophilip/dr_vehicle/platform/pi/mpu6050_char.o := \
     $(wildcard include/config/of/address.h) \
   include/linux/regmap.h \
     $(wildcard include/config/regmap.h) \
-  include/linux/uaccess.h \
-  arch/arm/include/asm/uaccess.h \
-    $(wildcard include/config/cpu/sw/domain/pan.h) \
-    $(wildcard include/config/cpu/use/domains.h) \
-    $(wildcard include/config/uaccess/with/memcpy.h) \
-  arch/arm/include/asm/domain.h \
-    $(wildcard include/config/io/36.h) \
-    $(wildcard include/config/cpu/cp15/mmu.h) \
-  arch/arm/include/generated/asm/extable.h \
-  include/asm-generic/extable.h \
   include/linux/module.h \
     $(wildcard include/config/modules/tree/lookup.h) \
     $(wildcard include/config/module/sig.h) \
@@ -958,8 +981,6 @@ deps_/home/sijeophilip/dr_vehicle/platform/pi/mpu6050_char.o := \
     $(wildcard include/config/function/error/injection.h) \
   include/linux/kmod.h \
   include/linux/umh.h \
-  include/linux/sysctl.h \
-  include/uapi/linux/sysctl.h \
   include/linux/elf.h \
   arch/arm/include/asm/elf.h \
   arch/arm/include/asm/vdso_datapage.h \

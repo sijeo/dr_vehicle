@@ -1,5 +1,7 @@
-test_imu_core.o: test_imu_core.c imu_core.h imu_wire.h
+test_imu_core.o: test_imu_core.c imu_core.h imu_wire.h imu_fusion.h
 
 imu_core.h:
 
 imu_wire.h:
+
+imu_fusion.h:
