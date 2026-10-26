@@ -1,3 +1,133 @@
+/*
+ * imu_streamer.c — ISM330BX test streamer (Raspberry Pi -> PC over UDP)
+ * =====================================================================
+ *
+ * Reads /dev/mpu6050-0 (ISM330BX behind mpu6050_char.ko), runs the IMU
+ * pipeline, and sends one UDP frame per sample to a PC dashboard. It exists
+ * to prove that the IMU readings are right before the algorithm moves into
+ * the DR app.
+ *
+ * Data path
+ * ---------
+ *   chip (on-chip filters + SFLP) -> HW FIFO -> driver (extended read format)
+ *     -> imu_core   : accel scale (accel_C/O), sensor->vehicle FLU mount,
+ *                     boot gyro-bias calibration, median + LPF, quality flags
+ *     -> imu_fusion : SFLP quaternion decode, host Mahony AHRS (reference),
+ *                     gravity removal (vehicle frame + level frame)
+ *     -> UDP frame v2 (or v1 for the old dashboard)
+ *
+ *   SFLP = the ISM330BX "sensor fusion low power" block. The chip itself fuses
+ *   accel + gyro into a game rotation vector (quaternion, yaw origin arbitrary,
+ *   no magnetometer), a gravity vector and a gyro-bias estimate. The driver
+ *   batches them into the HW FIFO and attaches the latest values to every
+ *   accel/gyro sample. The streamer converts them to the vehicle FLU frame;
+ *   the host Mahony AHRS runs in parallel so the two attitudes can be compared.
+ *
+ *   Frames: vehicle FLU (x forward, y left, z up). Angles follow REP-103:
+ *   roll + = right side down, pitch + = nose down, yaw + = left turn.
+ *   After 2 s at rest the streamer prints "[FLU check]": gravity must be on
+ *   +z, and the reported residual roll/pitch can be fed back via --mount-rpy.
+ *
+ * Which dashboard
+ * ---------------
+ *   imu_rotation_dashboard.py  needs --wire v2 (the default). Shows SFLP and
+ *                              AHRS cubes, attitude, bias-corrected gyro,
+ *                              gravity-free level-frame accel, FIFO health;
+ *                              records every sample to CSV and can --replay it.
+ *   imu_dashboard.py           (older) needs --wire v1. Calibration progress,
+ *                              raw/filtered accel+gyro, noise statistics; it
+ *                              cannot show SFLP or fusion output.
+ *   Both listen on UDP 5005 by default; run only one per port, and allow
+ *   inbound UDP 5005 through the PC firewall.
+ *
+ * Options (default -> recommended)
+ * --------------------------------
+ *   --host IP          PC address (required).
+ *   --port N           5005. Must match the dashboard's --port.
+ *   --device PATH      /dev/mpu6050-0.
+ *   --cal-file PATH    ./imu_calibration.bin (boot gyro-bias calibration).
+ *                      Reused only if the config CRC matches; changing FS,
+ *                      rate, mount or cutoff forces a fresh calibration.
+ *   --recalibrate      ignore the saved calibration. Keep the IMU completely
+ *                      still until the state reaches VALID (about 22 s).
+ *   --rate HZ          default = driver ODR (240). Only override for a
+ *                      non-standard ODR; it must match the chip.
+ *   --cutoff HZ        6. Software LPF after the median filter. Keep 5-10 Hz
+ *                      for vehicle dynamics; must be < 0.45 x rate.
+ *   --gyro-fs DPS      unchanged (DT gives 2000). Recommended: 500. At 2000
+ *                      one LSB is 70 mdps, coarser than the gyro noise; 500
+ *                      gives 17.5 mdps and still covers vehicle rates.
+ *                      DRIVER-WIDE: any other reader (DR app) must use the
+ *                      same LSB/dps while this is set.
+ *   --gyro-lpf N       driver default 6. On-chip gyro LPF1 BW code, -1 = off.
+ *                      @240 Hz ODR: 0..3 = 96 Hz, 4 = 78, 5 = 53, 6 = 27.3,
+ *                      7 = 14.2 Hz. Recommended 6; 7 on rough roads.
+ *   --accel-lpf N      driver default 2. On-chip accel LPF2, -1 = off.
+ *                      0..7 = ODR/4, /10, /20, /45, /100, /200, /400, /800.
+ *                      Recommended 2 (12 Hz @240 Hz); 3 (5.3 Hz) when engine
+ *                      vibration is strong. Lower = more delay.
+ *   --sflp-odr HZ      driver default 120. One of 15/30/60/120/240/480,
+ *                      clamped to <= ODR. Recommended 120; 240 for a smoother
+ *                      cube (more I2C traffic).
+ *   --sflp-mask M      driver default 7. bit0 quaternion, bit1 gravity,
+ *                      bit2 gyro bias. Recommended 7 at 400 kHz I2C; 1 if
+ *                      the bus runs at 100 kHz or FIFO overruns appear.
+ *   --no-sflp          turn SFLP off (host AHRS only). For A/B comparison.
+ *   --no-fifo          register polling instead of the HW FIFO. Debug only:
+ *                      polling can lose samples when the reader is late.
+ *   --mount flu|frd    flu (identity). The ISM330BX here is mounted FLU.
+ *                      Use frd only for a board installed z-down / y-right.
+ *   --mount-rpy R,P,Y  0,0,0. Mount trim in degrees from the FLU check or the
+ *                      field calibration (../IMU_FIELD_CALIBRATION.md).
+ *   --ahrs-kp K        0.5. Mahony accel-correction gain. 0.2-0.5 in a moving
+ *                      vehicle (less pulled by acceleration), up to 1.0 on
+ *                      a bench.
+ *   --ahrs-ki K        0.01. Mahony integral (residual gyro bias); 0 = off.
+ *   --wire v1|v2       v2. v2 for imu_rotation_dashboard.py, v1 for
+ *                      imu_dashboard.py.
+ *
+ *   On-chip settings (--gyro-lpf, --accel-lpf, --sflp-*, --no-sflp,
+ *   --no-fifo, --gyro-fs) change the driver and persist after the streamer
+ *   exits, until changed again or the module is reloaded. They can also be
+ *   set in /sys/class/mpu6050/mpu6050-0/ or as insmod parameters.
+ *
+ * Examples
+ * --------
+ *   # 1) Recommended: SFLP + rotation dashboard (PC 192.168.68.100)
+ *   PC : python imu_rotation_dashboard.py --csv bench_still.csv
+ *   Pi : ./imu_streamer --host 192.168.68.100 --gyro-fs 500
+ *
+ *   # 2) Fresh calibration after moving the board or changing FS
+ *   Pi : ./imu_streamer --host 192.168.68.100 --gyro-fs 500 --recalibrate
+ *
+ *   # 3) Rough road / engine running: narrower on-chip filters, softer AHRS
+ *   Pi : ./imu_streamer --host 192.168.68.100 --gyro-fs 500 \
+ *            --gyro-lpf 7 --accel-lpf 3 --ahrs-kp 0.3
+ *
+ *   # 4) Smoother cube for visual rotation checks (400 kHz I2C)
+ *   Pi : ./imu_streamer --host 192.168.68.100 --gyro-fs 500 --sflp-odr 240
+ *
+ *   # 5) Apply the mount trim reported by "[FLU check]" / field calibration
+ *   Pi : ./imu_streamer --host 192.168.68.100 --gyro-fs 500 --mount-rpy 1.20,-0.85,0.40
+ *
+ *   # 6) A/B: host AHRS only (SFLP cube greys out)
+ *   Pi : ./imu_streamer --host 192.168.68.100 --no-sflp
+ *
+ *   # 7) Legacy dashboard (noise / calibration view, no SFLP)
+ *   PC : python imu_dashboard.py --port 5005 --csv noise.csv
+ *   Pi : ./imu_streamer --host 192.168.68.100 --wire v1
+ *
+ *   # 8) Offline review of a recording (no Pi needed)
+ *   PC : python imu_rotation_dashboard.py --replay bench_still.csv --speed 2
+ *
+ * What "correct" looks like
+ * -------------------------
+ *   [FLU check] OK, |g| within 1 %; SFLP and AHRS cubes agree; nose down ->
+ *   pitch +, right side down -> roll +, left turn -> yaw +; at rest the
+ *   level-frame accel stays within about ±0.03 m/s², SFLP yaw drifts about
+ *   0.5 deg in 5 min, and "drv_drop" / driver dropped stays 0
+ *   (see also /sys/class/mpu6050/mpu6050-0/stream_stats).
+ */
 
 #include "imu_core.h"
 #include "imu_fusion.h"
