@@ -42,6 +42,8 @@ static void quat_normalize(float q[4]) {
     if (q[0] < 0.0f) for (i = 0; i < 4; i++) q[i] = -q[i];   /* canonical hemisphere */
 }
 
+/* 3x3 matrix parameters are non-const on purpose: C does not convert
+ * float (*)[3] to const float (*)[3] implicitly, and GCC warns. */
 static void quat_to_mat(const float q[4], float R[3][3]) {
     float w = q[0], x = q[1], y = q[2], z = q[3];
     R[0][0] = 1.0f - 2.0f * (y * y + z * z);
@@ -55,7 +57,7 @@ static void quat_to_mat(const float q[4], float R[3][3]) {
     R[2][2] = 1.0f - 2.0f * (x * x + y * y);
 }
 
-static void mat_to_quat(const float R[3][3], float q[4]) {
+static void mat_to_quat(float R[3][3], float q[4]) {
     float tr = R[0][0] + R[1][1] + R[2][2], s;
     if (tr > 0.0f) {
         s = sqrtf(tr + 1.0f) * 2.0f;
@@ -85,7 +87,7 @@ static void mat_to_quat(const float R[3][3], float q[4]) {
     quat_normalize(q);
 }
 
-static void mat_mul(const float A[3][3], const float B[3][3], float C[3][3]) {
+static void mat_mul(float A[3][3], float B[3][3], float C[3][3]) {
     int r, c, k;
     for (r = 0; r < 3; r++)
         for (c = 0; c < 3; c++) {
@@ -94,7 +96,7 @@ static void mat_mul(const float A[3][3], const float B[3][3], float C[3][3]) {
         }
 }
 
-static void mat_mul_vec(const float A[3][3], const float v[3], float o[3]) {
+static void mat_mul_vec(float A[3][3], const float v[3], float o[3]) {
     int r;
     for (r = 0; r < 3; r++) o[r] = A[r][0] * v[0] + A[r][1] * v[1] + A[r][2] * v[2];
 }
@@ -191,7 +193,7 @@ static void mahony_update(imu_mahony_t *m, const float gyro[3], const float acc[
 
 /* ---------------- public API ---------------- */
 
-void imu_fusion_init(imu_fusion_t *f, const float mount_R_bv[3][3], float kp, float ki) {
+void imu_fusion_init(imu_fusion_t *f, float mount_R_bv[3][3], float kp, float ki) {
     memset(f, 0, sizeof(*f));
     memcpy(f->mount_R_bv, mount_R_bv, sizeof(f->mount_R_bv));
     f->ahrs.kp = kp;

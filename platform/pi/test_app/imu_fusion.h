@@ -106,7 +106,9 @@ typedef struct {
 float imu_half_to_float(uint16_t h);
 void  imu_quat_to_euler_deg(const float q[4], float euler_deg[3]);
 
-void imu_fusion_init(imu_fusion_t *f, const float mount_R_bv[3][3], float kp, float ki);
+/* mount_R_bv is only copied. It is not declared const because C will not
+ * convert float (*)[3] to const float (*)[3] implicitly (GCC warns). */
+void imu_fusion_init(imu_fusion_t *f, float mount_R_bv[3][3], float kp, float ki);
 
 void imu_fusion_update(imu_fusion_t *f,
                        const imu_sflp_input_t *in,
