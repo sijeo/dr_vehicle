@@ -12,42 +12,67 @@
  *   chip (on-chip filters + SFLP) -> HW FIFO -> driver (extended read format)
  *     -> imu_core   : accel scale (accel_C/O), sensor->vehicle FLU mount,
  *                     boot gyro-bias calibration, median + LPF, quality flags
- *     -> imu_fusion : SFLP quaternion decode, host Mahony AHRS (reference),
- *                     gravity removal (vehicle frame + level frame)
- *     -> UDP frame v2 (or v1 for the old dashboard)
+ *     -> imu_fusion : host Mahony AHRS (primary attitude), SFLP decode and
+ *                     consistency check, gravity removal (vehicle + level frame)
+ *     -> UDP frame v2 (format version 3) or v1 for the old dashboard
+ *   The same UDP socket also receives control commands from the dashboard
+ *   (mount calibration, see below).
  *
- *   SFLP = the ISM330BX "sensor fusion low power" block. The chip itself fuses
- *   accel + gyro into a game rotation vector (quaternion, yaw origin arbitrary,
- *   no magnetometer), a gravity vector and a gyro-bias estimate. The driver
- *   batches them into the HW FIFO and attaches the latest values to every
- *   accel/gyro sample. The streamer converts them to the vehicle FLU frame;
- *   the host Mahony AHRS runs in parallel so the two attitudes can be compared.
+ *   SFLP = the ISM330BX "sensor fusion low power" block. The chip fuses accel
+ *   + gyro into a game rotation vector (quaternion, yaw origin arbitrary, no
+ *   magnetometer), a gravity vector and a gyro-bias estimate; the driver
+ *   attaches the latest values to every accel/gyro sample.
+ *   Status from the 2026-10-27 recordings:
+ *     - SFLP gyro bias: correct (matches the boot calibration to 0.004 dps).
+ *     - SFLP gravity: correct once read in Z,Y,X order and negated (done in
+ *       imu_fusion.c).
+ *     - SFLP quaternion: follows the gyro but its gravity reference was ~90 deg
+ *       off. imu_fusion therefore checks it continuously ("SFLP vs gravity" on
+ *       the dashboard); above 10 deg it is flagged INCONSISTENT and the host
+ *       AHRS is used for gravity removal instead.
  *
  *   Frames: vehicle FLU (x forward, y left, z up). Angles follow REP-103:
  *   roll + = right side down, pitch + = nose down, yaw + = left turn.
- *   After 2 s at rest the streamer prints "[FLU check]": gravity must be on
- *   +z, and the reported residual roll/pitch can be fed back via --mount-rpy.
+ *   After 2 s at rest the streamer prints "[FLU check]": gravity must be on +z.
+ *
+ * Mount (sensor -> vehicle) — order of precedence
+ * ------------------------------------------------
+ *   1. --mount / --mount-rpy on the command line (the mount file is ignored).
+ *   2. ./imu_mount.txt (or --mount-file), written by the dashboard's mount
+ *      calibration wizard.
+ *   3. FLU identity (the board is mounted FLU).
+ *   Guided calibration: imu_rotation_dashboard.py starts a wizard at launch
+ *   (or press 'm') that prompts LEVEL -> TURN 180 -> FORWARD (tip nose down, or
+ *   drive forward). It sends the correction here as
+ *       IMUCTL MOUNT_DELTA r00 r01 r02 r10 r11 r12 r20 r21 r22
+ *   The streamer applies R_bv <- delta * R_bv live, saves it to the mount file,
+ *   re-stamps the boot-calibration file so it stays valid, and replies
+ *   "IMUACK MOUNT_DELTA OK ...". Other commands: MOUNT_RESET (back to the
+ *   --mount preset), GET_MOUNT, SFLP_RESET. Only packets from --host are
+ *   accepted. Re-run the wizard whenever the board is moved or remounted.
  *
  * Which dashboard
  * ---------------
- *   imu_rotation_dashboard.py  needs --wire v2 (the default). Shows SFLP and
- *                              AHRS cubes, attitude, bias-corrected gyro,
+ *   imu_rotation_dashboard.py  needs --wire v2 (the default). Mount wizard,
+ *                              AHRS + SFLP cubes, attitude, bias-corrected gyro,
  *                              gravity-free level-frame accel, FIFO health;
  *                              records every sample to CSV and can --replay it.
  *   imu_dashboard.py           (older) needs --wire v1. Calibration progress,
  *                              raw/filtered accel+gyro, noise statistics; it
- *                              cannot show SFLP or fusion output.
+ *                              cannot show SFLP/fusion output or calibrate the mount.
  *   Both listen on UDP 5005 by default; run only one per port, and allow
  *   inbound UDP 5005 through the PC firewall.
  *
  * Options (default -> recommended)
  * --------------------------------
- *   --host IP          PC address (required).
+ *   --host IP          PC address (required). Control packets are accepted
+ *                      only from this address.
  *   --port N           5005. Must match the dashboard's --port.
  *   --device PATH      /dev/mpu6050-0.
  *   --cal-file PATH    ./imu_calibration.bin (boot gyro-bias calibration).
  *                      Reused only if the config CRC matches; changing FS,
- *                      rate, mount or cutoff forces a fresh calibration.
+ *                      rate, mount (from the command line) or cutoff forces
+ *                      a fresh calibration.
  *   --recalibrate      ignore the saved calibration. Keep the IMU completely
  *                      still until the state reaches VALID (about 22 s).
  *   --rate HZ          default = driver ODR (240). Only override for a
@@ -67,18 +92,20 @@
  *                      Recommended 2 (12 Hz @240 Hz); 3 (5.3 Hz) when engine
  *                      vibration is strong. Lower = more delay.
  *   --sflp-odr HZ      driver default 120. One of 15/30/60/120/240/480,
- *                      clamped to <= ODR. Recommended 120; 240 for a smoother
- *                      cube (more I2C traffic).
+ *                      clamped to <= ODR. Recommended 120.
  *   --sflp-mask M      driver default 7. bit0 quaternion, bit1 gravity,
- *                      bit2 gyro bias. Recommended 7 at 400 kHz I2C; 1 if
- *                      the bus runs at 100 kHz or FIFO overruns appear.
+ *                      bit2 gyro bias. Recommended 7 at 400 kHz I2C. If the
+ *                      dashboard still shows FIFO OVERRUN, use 6 (drop the
+ *                      quaternion, the least reliable output) or 4.
  *   --no-sflp          turn SFLP off (host AHRS only). For A/B comparison.
  *   --no-fifo          register polling instead of the HW FIFO. Debug only:
  *                      polling can lose samples when the reader is late.
  *   --mount flu|frd    flu (identity). The ISM330BX here is mounted FLU.
  *                      Use frd only for a board installed z-down / y-right.
- *   --mount-rpy R,P,Y  0,0,0. Mount trim in degrees from the FLU check or the
- *                      field calibration (../IMU_FIELD_CALIBRATION.md).
+ *                      The wizard corrects a wrong preset anyway.
+ *   --mount-rpy R,P,Y  0,0,0. Fixed mount trim in degrees (overrides the
+ *                      mount file). Prefer the dashboard wizard.
+ *   --mount-file PATH  ./imu_mount.txt. Where the wizard result is kept.
  *   --ahrs-kp K        0.5. Mahony accel-correction gain. 0.2-0.5 in a moving
  *                      vehicle (less pulled by acceleration), up to 1.0 on
  *                      a bench.
@@ -90,24 +117,28 @@
  *   --no-fifo, --gyro-fs) change the driver and persist after the streamer
  *   exits, until changed again or the module is reloaded. They can also be
  *   set in /sys/class/mpu6050/mpu6050-0/ or as insmod parameters.
+ *   FIFO throughput: the driver reads 4 FIFO words per I2C transfer
+ *   (fifo_burst_words=4) and needs dtparam=i2c_arm_baudrate=400000. If
+ *   overruns persist, check the bus speed (README).
  *
  * Examples
  * --------
- *   # 1) Recommended: SFLP + rotation dashboard (PC 192.168.68.100)
- *   PC : python imu_rotation_dashboard.py --csv bench_still.csv
+ *   # 1) Recommended: start the dashboard, then the streamer; follow the
+ *   #    on-screen mount calibration (LEVEL -> TURN 180 -> FORWARD, ENTER)
+ *   PC : python imu_rotation_dashboard.py --csv bench.csv
  *   Pi : ./imu_streamer --host 192.168.68.100 --gyro-fs 500
  *
- *   # 2) Fresh calibration after moving the board or changing FS
+ *   # 2) Fresh gyro-bias calibration after a temperature change or new FS
  *   Pi : ./imu_streamer --host 192.168.68.100 --gyro-fs 500 --recalibrate
  *
  *   # 3) Rough road / engine running: narrower on-chip filters, softer AHRS
  *   Pi : ./imu_streamer --host 192.168.68.100 --gyro-fs 500 \
  *            --gyro-lpf 7 --accel-lpf 3 --ahrs-kp 0.3
  *
- *   # 4) Smoother cube for visual rotation checks (400 kHz I2C)
- *   Pi : ./imu_streamer --host 192.168.68.100 --gyro-fs 500 --sflp-odr 240
+ *   # 4) Dashboard without the start-up wizard (mount already calibrated)
+ *   PC : python imu_rotation_dashboard.py --no-wizard
  *
- *   # 5) Apply the mount trim reported by "[FLU check]" / field calibration
+ *   # 5) Fixed trim from the command line instead of the wizard
  *   Pi : ./imu_streamer --host 192.168.68.100 --gyro-fs 500 --mount-rpy 1.20,-0.85,0.40
  *
  *   # 6) A/B: host AHRS only (SFLP cube greys out)
@@ -118,15 +149,15 @@
  *   Pi : ./imu_streamer --host 192.168.68.100 --wire v1
  *
  *   # 8) Offline review of a recording (no Pi needed)
- *   PC : python imu_rotation_dashboard.py --replay bench_still.csv --speed 2
+ *   PC : python imu_rotation_dashboard.py --replay bench.csv --speed 2
  *
  * What "correct" looks like
  * -------------------------
- *   [FLU check] OK, |g| within 1 %; SFLP and AHRS cubes agree; nose down ->
- *   pitch +, right side down -> roll +, left turn -> yaw +; at rest the
- *   level-frame accel stays within about ±0.03 m/s², SFLP yaw drifts about
- *   0.5 deg in 5 min, and "drv_drop" / driver dropped stays 0
- *   (see also /sys/class/mpu6050/mpu6050-0/stream_stats).
+ *   [FLU check] OK, |g| within 1 %; after the wizard: level -> roll/pitch ~0,
+ *   nose down -> pitch +, right side down -> roll +, left turn -> yaw +;
+ *   rate ~240 Hz with "driver dropped" not increasing and no FIFO OVERRUN;
+ *   at rest the level-frame accel stays within about ±0.03 m/s² (see also
+ *   /sys/class/mpu6050/mpu6050-0/stream_stats).
  */
 
 #include "imu_core.h"
@@ -187,6 +218,7 @@ static void usage(const char *prog){
     " --no-fifo         register polling instead of the HW FIFO stream\n"
     " --mount flu|frd   sensor axes vs vehicle FLU frame, default flu (identity)\n"
     " --mount-rpy R,P,Y mount trim in degrees from field calibration (ZYX, REP-103)\n"
+    " --mount-file PATH mount from the dashboard calibration, default ./imu_mount.txt\n"
     " --ahrs-kp K       host Mahony proportional gain, default 0.5\n"
     " --ahrs-ki K       host Mahony integral gain, default 0.01\n"
     " --wire v1|v2      UDP frame format, default v2 (v1 = legacy imu_dashboard.py)\n",
@@ -267,6 +299,119 @@ static void flu_check_update(flu_check_t *c, const imu_output_t *o, float rate_h
                         "(see IMU_FIELD_CALIBRATION.md §2)\n", 100.0 * (g - IMU_GRAVITY_MPS2) / IMU_GRAVITY_MPS2);
 }
 
+/* ---- Mount persistence + runtime mount calibration ------------------------
+ *
+ * The dashboard's guided calibration computes a corrective rotation in the
+ * current vehicle frame and sends it here ("IMUCTL MOUNT_DELTA <9 floats>").
+ * The streamer pre-multiplies it into mount_R_bv, applies it live, saves it
+ * to the mount file, and re-stamps the boot-calibration file so the next
+ * start reuses both. The file holds the full 3x3 sensor->vehicle matrix. */
+#define MOUNT_FILE_TAG "imu_mount_R_bv_v1"
+
+static bool rot_valid(float R[3][3]) {
+    int r, c, k;
+    for (r = 0; r < 3; r++)
+        for (c = 0; c < 3; c++) {
+            float dot = 0.0f;
+            for (k = 0; k < 3; k++) dot += R[r][k] * R[c][k];
+            if (!isfinite(dot) || fabsf(dot - (r == c ? 1.0f : 0.0f)) > 2e-3f) return false;
+        }
+    return fabsf(R[0][0] * (R[1][1] * R[2][2] - R[1][2] * R[2][1])
+               - R[0][1] * (R[1][0] * R[2][2] - R[1][2] * R[2][0])
+               + R[0][2] * (R[1][0] * R[2][1] - R[1][1] * R[2][0]) - 1.0f) < 2e-3f;
+}
+
+static int mount_load(const char *path, float R[3][3]) {
+    char tag[32] = "";
+    float m[3][3];
+    FILE *fp = fopen(path, "r");
+    if (!fp) return -errno;
+    int n = fscanf(fp, "%31s %f %f %f %f %f %f %f %f %f", tag,
+                   &m[0][0], &m[0][1], &m[0][2], &m[1][0], &m[1][1], &m[1][2], &m[2][0], &m[2][1], &m[2][2]);
+    fclose(fp);
+    if (n != 10 || strcmp(tag, MOUNT_FILE_TAG) != 0 || !rot_valid(m)) return -EINVAL;
+    memcpy(R, m, sizeof(m));
+    return 0;
+}
+
+static int mount_save(const char *path, float R[3][3]) {
+    FILE *fp = fopen(path, "w");
+    if (!fp) return -errno;
+    fprintf(fp, "%s\n%.7f %.7f %.7f\n%.7f %.7f %.7f\n%.7f %.7f %.7f\n", MOUNT_FILE_TAG,
+            (double)R[0][0], (double)R[0][1], (double)R[0][2], (double)R[1][0], (double)R[1][1],
+            (double)R[1][2], (double)R[2][0], (double)R[2][1], (double)R[2][2]);
+    return fclose(fp) == 0 ? 0 : -EIO;
+}
+
+static int fmt_mount(char *buf, size_t n, const char *head, float R[3][3]) {
+    return snprintf(buf, n, "%s %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f", head,
+                    (double)R[0][0], (double)R[0][1], (double)R[0][2], (double)R[1][0], (double)R[1][1],
+                    (double)R[1][2], (double)R[2][0], (double)R[2][1], (double)R[2][2]);
+}
+
+static void apply_mount(imu_pipeline_t *pl, imu_fusion_t *fu, float R[3][3], const char *mount_path) {
+    memcpy(pl->cfg.mount_R_bv, R, sizeof(pl->cfg.mount_R_bv));
+    pl->lpf_initialized = false;          /* filter state was in the old frame */
+    pl->median_count = 0u;
+    imu_fusion_set_mount(fu, R);
+    if (pl->cal.valid) {                  /* keep the boot calibration valid for the new config */
+        pl->cal.config_crc32 = imu_config_crc32(&pl->cfg);
+        if (imu_pipeline_save_calibration(pl) != 0)
+            fprintf(stderr, "[mount] warning: could not re-save the calibration file\n");
+    }
+    if (mount_save(mount_path, R) != 0)
+        fprintf(stderr, "[mount] warning: could not write %s\n", mount_path);
+}
+
+/* Non-blocking: handle at most one control datagram from the dashboard host.
+ *   IMUCTL MOUNT_DELTA r00 .. r22   R_bv <- delta * R_bv (rotation, vehicle frame)
+ *   IMUCTL MOUNT_RESET              R_bv <- --mount preset without trim
+ *   IMUCTL GET_MOUNT                report R_bv
+ *   IMUCTL SFLP_RESET               restart the on-chip SFLP
+ * Replies "IMUACK <cmd> OK|ERR ..." to the sender. Packets from any address
+ * other than --host are ignored. */
+static void poll_control(int sock, const struct sockaddr_in *peer, int imu_fd, imu_pipeline_t *pl,
+                         imu_fusion_t *fu, float preset[3][3], const char *mount_path) {
+    char buf[512], reply[512];
+    struct sockaddr_in from;
+    socklen_t fl = sizeof(from);
+    ssize_t n = recvfrom(sock, buf, sizeof(buf) - 1, MSG_DONTWAIT, (struct sockaddr *)&from, &fl);
+    if (n <= 0 || from.sin_addr.s_addr != peer->sin_addr.s_addr) return;
+    buf[n] = '\0';
+    if (strncmp(buf, "IMUCTL ", 7) != 0) return;
+    const char *cmd = buf + 7;
+
+    if (strncmp(cmd, "MOUNT_DELTA", 11) == 0) {
+        float D[3][3], Rn[3][3];
+        int r, c, k;
+        if (sscanf(cmd + 11, "%f %f %f %f %f %f %f %f %f", &D[0][0], &D[0][1], &D[0][2], &D[1][0],
+                   &D[1][1], &D[1][2], &D[2][0], &D[2][1], &D[2][2]) != 9 || !rot_valid(D)) {
+            snprintf(reply, sizeof(reply), "IMUACK MOUNT_DELTA ERR not a rotation matrix");
+        } else {
+            for (r = 0; r < 3; r++)
+                for (c = 0; c < 3; c++) {
+                    Rn[r][c] = 0.0f;
+                    for (k = 0; k < 3; k++) Rn[r][c] += D[r][k] * pl->cfg.mount_R_bv[k][c];
+                }
+            apply_mount(pl, fu, Rn, mount_path);
+            fmt_mount(reply, sizeof(reply), "IMUACK MOUNT_DELTA OK", Rn);
+            fprintf(stderr, "[mount] calibration applied and saved to %s\n", mount_path);
+        }
+    } else if (strncmp(cmd, "MOUNT_RESET", 11) == 0) {
+        apply_mount(pl, fu, preset, mount_path);
+        fmt_mount(reply, sizeof(reply), "IMUACK MOUNT_RESET OK", preset);
+        fprintf(stderr, "[mount] reset to the --mount preset\n");
+    } else if (strncmp(cmd, "GET_MOUNT", 9) == 0) {
+        fmt_mount(reply, sizeof(reply), "IMUACK GET_MOUNT OK", pl->cfg.mount_R_bv);
+    } else if (strncmp(cmd, "SFLP_RESET", 10) == 0) {
+        int rc = ioctl(imu_fd, MPU6050_IOC_SFLP_RESET);
+        snprintf(reply, sizeof(reply), "IMUACK SFLP_RESET %s", rc == 0 ? "OK" : strerror(errno));
+    } else {
+        snprintf(reply, sizeof(reply), "IMUACK ERR unknown command");
+    }
+    sendto(sock, reply, strlen(reply), 0, (struct sockaddr *)&from, fl);
+}
+
 static int parse_gyro_fs(const char *s, unsigned *out) {
     int v = atoi(s);
     switch (v) {
@@ -306,6 +451,8 @@ int main( int argc, char **argv ) {
     int want_fifo = INT32_MIN;
     bool want_gyro_fs = false;
     bool mount_frd = false;
+    bool mount_cli = false;           /* --mount / --mount-rpy given: ignore the mount file */
+    const char *mount_path = "./imu_mount.txt";
     float mount_rpy[3] = { 0.0f, 0.0f, 0.0f };
     unsigned gyro_fs_enum = 0;
     imu_config_t cfg;
@@ -330,6 +477,7 @@ int main( int argc, char **argv ) {
         {"no-fifo",     no_argument,       NULL, 'N'},
         {"mount",       required_argument, NULL, 'M'},
         {"mount-rpy",   required_argument, NULL, 'R'},
+        {"mount-file",  required_argument, NULL, 'F'},
         {"ahrs-kp",     required_argument, NULL, 'k'},
         {"ahrs-ki",     required_argument, NULL, 'i'},
         {"wire",        required_argument, NULL, 'w'},
@@ -338,7 +486,7 @@ int main( int argc, char **argv ) {
     };
 
     for(;;) {
-        int opt = getopt_long(argc, argv, "h:p:d:c:rf:l:G:g:a:s:m:nNM:R:k:i:w:?", options, NULL);
+        int opt = getopt_long(argc, argv, "h:p:d:c:rf:l:G:g:a:s:m:nNM:R:F:k:i:w:?", options, NULL);
         if( opt == -1 ) break;
         switch(opt) {
             case 'h' : host = optarg; break;
@@ -365,13 +513,16 @@ int main( int argc, char **argv ) {
                 if (strcmp(optarg, "flu") == 0) mount_frd = false;
                 else if (strcmp(optarg, "frd") == 0) mount_frd = true;
                 else { fprintf(stderr, "--mount must be flu or frd\n"); return 2; }
+                mount_cli = true;
                 break;
             case 'R' :
                 if (sscanf(optarg, "%f,%f,%f", &mount_rpy[0], &mount_rpy[1], &mount_rpy[2]) != 3) {
                     fprintf(stderr, "--mount-rpy expects roll,pitch,yaw in degrees\n");
                     return 2;
                 }
+                mount_cli = true;
                 break;
+            case 'F' : mount_path = optarg; break;
             case 'k' : ahrs_kp = strtof(optarg, NULL); break;
             case 'i' : ahrs_ki = strtof(optarg, NULL); break;
             case 'w' : wire_v2 = (strcmp(optarg, "v1") != 0); break;
@@ -467,7 +618,16 @@ int main( int argc, char **argv ) {
 
     /* Sensor -> vehicle FLU. The config CRC covers the mount, so changing it
      * forces a fresh boot calibration instead of reusing a stale one. */
+    float mount_preset[3][3];
+    build_mount(mount_frd, 0.0f, 0.0f, 0.0f, mount_preset);
     build_mount(mount_frd, mount_rpy[0], mount_rpy[1], mount_rpy[2], cfg.mount_R_bv);
+    if (!mount_cli) {
+        int mrc = mount_load(mount_path, cfg.mount_R_bv);
+        if (mrc == 0)
+            fprintf(stderr, "[imu_streamer] mount loaded from %s (dashboard calibration)\n", mount_path);
+        else if (mrc != -ENOENT)
+            fprintf(stderr, "[imu_streamer] ignoring %s: %s\n", mount_path, strerror(-mrc));
+    }
     fprintf(stderr, "[imu_streamer] mount %s, trim rpy=(%.2f, %.2f, %.2f) deg, R_bv=\n"
                     "    [%+.4f %+.4f %+.4f]\n    [%+.4f %+.4f %+.4f]\n    [%+.4f %+.4f %+.4f]\n",
             mount_frd ? "FRD" : "FLU", (double)mount_rpy[0], (double)mount_rpy[1], (double)mount_rpy[2],
@@ -530,6 +690,8 @@ int main( int argc, char **argv ) {
 
     while(!g_stop) {
         struct mpu6050_ext_sample es;
+
+        poll_control(sock, &peer, imu_fd, &pipeline, &fusion, mount_preset, mount_path);
         struct mpu6050_sample ls;
         imu_sflp_input_t sin;
         imu_raw_sample_t raw = { 0 };

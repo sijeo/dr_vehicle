@@ -15,7 +15,8 @@
 #define CONV_MIN_TILT_DEG        10.0f
 #define CONV_MIN_SAMPLES         100u
 #define CONV_MAX_SAMPLES         2000u
-#define GSIGN_MIN_SAMPLES        50u
+#define SFLP_MAX_INCONSISTENCY_DEG 10.0f  /* above this the SFLP attitude is not used */
+#define SFLP_MIN_CHECKS          50u
 
 /* AHRS accepts the accelerometer as a gravity reference only within this band. */
 #define AHRS_ACC_TOL             0.10f
@@ -199,7 +200,10 @@ void imu_fusion_init(imu_fusion_t *f, float mount_R_bv[3][3], float kp, float ki
     f->ahrs.kp = kp;
     f->ahrs.ki = ki;
     f->ahrs.q[0] = 1.0f;
-    f->gravity_sign = 1.0f;
+}
+
+void imu_fusion_set_mount(imu_fusion_t *f, float mount_R_bv[3][3]) {
+    imu_fusion_init(f, mount_R_bv, f->ahrs.kp, f->ahrs.ki);
 }
 
 /* Learn whether the SFLP quaternion maps sensor->world (direct) or the
@@ -280,16 +284,16 @@ void imu_fusion_update(imu_fusion_t *f, const imu_sflp_input_t *in, const imu_ou
     }
 
     /* ---- SFLP ---- */
+    bool have_g = false, sflp_ok = false;
     if (in->have_ext && (in->flags & IMU_FF_GRAVITY_VALID)) {
-        float g_s[3], g_raw[3];
-        for (i = 0; i < 3; i++) g_raw[i] = (float)in->gravity[i];
-        if (f->gsign_n < GSIGN_MIN_SAMPLES && quasi_static) {
-            f->gsign_acc += (g_raw[0] * core->accel_sensor_mps2[0] + g_raw[1] * core->accel_sensor_mps2[1] +
-                             g_raw[2] * core->accel_sensor_mps2[2]) / (vnorm(g_raw) * vnorm(core->accel_sensor_mps2) + 1e-6f);
-            if (++f->gsign_n == GSIGN_MIN_SAMPLES) f->gravity_sign = f->gsign_acc >= 0.0 ? 1.0f : -1.0f;
-        }
-        for (i = 0; i < 3; i++) g_s[i] = f->gravity_sign * g_raw[i] * SFLP_GRAVITY_G_PER_LSB * IMU_GRAVITY_MPS2;
+        /* The gravity word comes in Z, Y, X order (like the accel FIFO words)
+         * and is gravity itself (pointing down); negate it to the
+         * accelerometer's convention (+g up at rest). Established from the
+         * 2026-10-27 logs: matches the accelerometer, the X,Y,Z reading did not. */
+        const float k = SFLP_GRAVITY_G_PER_LSB * IMU_GRAVITY_MPS2;
+        float g_s[3] = { -(float)in->gravity[2] * k, -(float)in->gravity[1] * k, -(float)in->gravity[0] * k };
         mat_mul_vec(f->mount_R_bv, g_s, out->gravity_sflp_vehicle_mps2);
+        have_g = true;
     }
     if (in->have_ext && (in->flags & IMU_FF_GBIAS_VALID)) {
         float b_s[3];
@@ -313,6 +317,26 @@ void imu_fusion_update(imu_fusion_t *f, const imu_sflp_input_t *in, const imu_ou
         mat_mul(R_ws, R_vb, R_wv);
         mat_to_quat(R_wv, out->q_sflp);
         imu_quat_to_euler_deg(out->q_sflp, out->euler_sflp_deg);
+
+        /* SFLP health. On the 2026-10-27 logs the quaternion followed the
+         * gyro but its gravity reference was ~90 deg off, so it must earn its
+         * place: compare the gravity it implies (R^T e_z) with the SFLP
+         * gravity output, or with the accelerometer when at rest. */
+        {
+            const float *ref = have_g ? out->gravity_sflp_vehicle_mps2 : (quasi_static ? acc_v : NULL);
+            if (ref) {
+                float pred[3] = { R_wv[2][0], R_wv[2][1], R_wv[2][2] };
+                float e = angle_deg(pred, ref);
+                f->sflp_err_ema_deg = f->sflp_err_n++ ? 0.98f * f->sflp_err_ema_deg + 0.02f * e : e;
+            }
+        }
+        out->sflp_consistency_deg = f->sflp_err_ema_deg;
+        sflp_ok = f->sflp_err_n >= SFLP_MIN_CHECKS && f->sflp_err_ema_deg < SFLP_MAX_INCONSISTENCY_DEG;
+        if (!sflp_ok) out->flags |= IMU_FF_SFLP_SUSPECT;
+    }
+
+    /* Attitude for gravity removal: SFLP only while it is consistent. */
+    if (sflp_ok) {
         have_att = true;
         out->flags |= IMU_FF_LIN_FROM_SFLP;
     } else if (f->ahrs.initialized) {

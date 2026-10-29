@@ -16,9 +16,10 @@ extern "C" {
 #define IMU_WIRE_FRAME_SIZE     236u
 
 /* v2 = v1 body + fusion block (4 x u32, IMU_FUSION_FLOAT_COUNT floats) + CRC.
- * Network byte order; Python: struct "!IHHIQ6i4I43f4I29fI". */
+ * Network byte order; Python: struct "!IHHIQ6i4I43f4I30fI" (372 bytes).
+ * Version 3 added sflp_consistency_deg (version 2 had 29 floats). */
 #define IMU_WIRE_MAGIC_V2       0x494D5532u     /*IMU2*/
-#define IMU_WIRE_VERSION_V2     2u
+#define IMU_WIRE_VERSION_V2     3u
 #define IMU_WIRE_V2_FRAME_SIZE  (IMU_WIRE_FRAME_SIZE + 16u + 4u * IMU_FUSION_FLOAT_COUNT)
 
 int imu_wire_encode( const imu_output_t *sample,

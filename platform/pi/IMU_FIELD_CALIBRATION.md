@@ -9,6 +9,13 @@ Applies to: the ISM330BX mounted FLU (x forward, y left, z up), driver `mpu6050_
 `test_app/imu_streamer` + `imu_rotation_dashboard.py` for capture, and
 `dr_dead_reckoning_app_ins15_v3.c` as the consumer.
 
+> **Implemented for the test bench:** the mount part of §3–§4 (two-heading leveling and forward
+> direction) runs as a guided wizard in `test_app/imu_rotation_dashboard.py`. It starts at launch
+> or with key `m`, and its result is stored on the Pi in `imu_mount.txt`, which `imu_streamer`
+> loads at start. For the forward step it uses a nose-down tilt on the bench or a straight
+> acceleration in a vehicle. See `test_app/README.md`, "Step by step". The gyro-scale circle
+> test (§5) and the online items (§6) are not implemented yet.
+
 ---
 
 ## 1. What actually needs calibrating

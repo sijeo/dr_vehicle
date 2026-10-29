@@ -143,6 +143,7 @@ int imu_wire_encode_v2( const imu_output_t *s,
         { &f->temp_c, 1 },
         { &f->g_ref_mps2, 1 },
         { &f->tilt_consistency_deg, 1 },
+        { &f->sflp_consistency_deg, 1 },
     };
     for( g = 0; g < sizeof(groups)/sizeof(groups[0]); ++g)
         for( i = 0; i < groups[g].n; ++i ) put_f32(&p, groups[g].v[i]);

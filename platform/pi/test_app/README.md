@@ -19,8 +19,9 @@ It uses the exact ±8 g LSQ accelerometer matrix and offset from the uploaded ap
 
 The IMU is an ST **ISM330BX** (WHO_AM_I 0x71) mounted **FLU**. `mpu6050_char.ko` now:
 
-- reads accel + gyro through the **hardware FIFO** (no lost samples; times reconstructed on the
-  chip clock, trimmed by `INTERNAL_FREQ_FINE`), default `fifo_stream=1`;
+- reads accel + gyro through the **hardware FIFO**, 4 words per I²C transfer
+  (`fifo_burst_words=4`), with sample times reconstructed on the chip clock (trimmed by
+  `INTERNAL_FREQ_FINE`, spacing never compressed); default `fifo_stream=1`;
 - enables the on-chip **gyro LPF1** (`gyro_lpf1_bw=6` ≈ 27 Hz @ 240 Hz) and **accel LPF2**
   (`accel_lpf2_bw=2` = ODR/20 ≈ 12 Hz) to stop vibration aliasing;
 - runs the **SFLP** game rotation vector, gravity vector and gyro-bias estimate (`sflp_odr=120`)
@@ -29,18 +30,66 @@ The IMU is an ST **ISM330BX** (WHO_AM_I 0x71) mounted **FLU**. `mpu6050_char.ko`
   `MPU6050_IOC_SET_READ_FMT(MPU6050_FMT_EXT)` gives `struct mpu6050_ext_sample`.
 
 Runtime knobs: `/sys/class/mpu6050/mpu6050-0/{gyro_lpf1_bw,accel_lpf2_bw,sflp_enable,sflp_odr_hz,
-sflp_fifo_mask,fifo_stream,sflp_reset,stream_stats}`. Needs `dtparam=i2c_arm_baudrate=400000`.
+sflp_fifo_mask,fifo_stream,sflp_reset,stream_stats}`.
 
-```bash
-# Pi
-sudo insmod mpu6050_char.ko            # optional: gyro_lpf1_bw=7 sflp_odr=240 ...
-./imu_streamer --host <PC IP> --gyro-fs 500     # v2 frames (SFLP + host Mahony + gravity-free accel)
-# PC
-python imu_rotation_dashboard.py --csv drive1.csv   # r: record, z: zero yaw, t: tare, c: clear, q: quit
-python imu_rotation_dashboard.py --replay drive1.csv --speed 2
-```
+### Step by step
 
-**Frame / FLU check.** The streamer maps sensor to vehicle FLU with `--mount flu` (default, identity) or `--mount frd`, plus `--mount-rpy R,P,Y` trim from the field calibration (`../IMU_FIELD_CALIBRATION.md`). After 2 s at rest it prints `[FLU check]`: gravity must be on +z; the residual roll/pitch it reports is what `--mount-rpy` takes. It also warns if |g| is off by more than 1 %.
+1. **I²C at 400 kHz** (once). In `/boot/config.txt` (or `/boot/firmware/config.txt`):
+   `dtparam=i2c_arm_baudrate=400000`, then reboot. Check it:
+   `xxd /sys/class/i2c-adapter/i2c-1/of_node/clock-frequency` must show `0006 1a80` (400000).
+   At 100 kHz the FIFO cannot be emptied fast enough and the dashboard shows FIFO OVERRUN.
+2. **Load the driver** (rebuild it after pulling these changes):
+   `sudo insmod mpu6050_char.ko` and confirm in `dmesg` that the line `signal chain: ... read path=HW FIFO`
+   is printed.
+3. **Start the dashboard on the PC**: `python imu_rotation_dashboard.py --csv bench.csv`
+   (allow inbound UDP 5005 through the firewall).
+4. **Start the streamer on the Pi**: `./imu_streamer --host <PC IP> --gyro-fs 500`.
+   Leave the IMU still for ~22 s on first start (boot gyro-bias calibration).
+5. **Mount calibration wizard** (starts on the dashboard as soon as data arrives; `m` reruns it).
+   Follow the yellow prompt in the lower-left panel:
+
+   | Step | Bench (board in hand / on a table) | Vehicle | Key |
+   |---|---|---|---|
+   | 1 LEVEL | lay it flat, forward end away from you, hands off | park on level ground, engine off | SPACE |
+   | 2 TURN 180 | rotate it half a turn on the same spot | turn around, park on the same marks | SPACE (S = skip) |
+   | 3 FORWARD | without turning it, tip the front end down 20–40° and hold | press A, then accelerate firmly straight ahead for ~3 s | SPACE / A |
+   | review | check roll/pitch/yaw of the correction and the surface slope | same | ENTER = apply, ESC = discard |
+
+   Each still capture needs 3 s without movement; if you move, it restarts and says so.
+   ENTER sends the result to the streamer, which applies it immediately, saves it to
+   `imu_mount.txt` next to the binary, and keeps the gyro-bias calibration valid. Yaw is zeroed
+   automatically afterwards. Skipping step 2 leaves the surface slope inside roll/pitch (the
+   review says so). The wizard also fixes a wrong `--mount` preset (e.g. board upside down).
+6. **Check** (keys: `z` zero yaw, `t` tare, `c` clear, `r` record): nose down → pitch +, right side
+   down → roll +, left turn → yaw +; rate ≈ 240 Hz, "driver dropped" not increasing, no FIFO OVERRUN;
+   at rest the level-frame accel stays within about ±0.03 m/s².
+7. **Review offline**: `python imu_rotation_dashboard.py --replay bench.csv --speed 2`.
+
+The mount is now persistent: the next `./imu_streamer` run loads `imu_mount.txt` automatically
+(command-line `--mount` / `--mount-rpy` override it; `--mount-file` changes the path). Rerun the
+wizard whenever the board is moved or remounted. `--no-wizard` skips it on the dashboard.
+
+### Reading the two cubes
+
+- **Host Mahony AHRS (primary)** — fuses the calibrated gyro and accelerometer on the Pi; this is
+  the attitude used for gravity removal.
+- **On-chip SFLP (diagnostic)** — the ISM330BX's own fusion. Its gyro-bias and gravity outputs are
+  correct, but on the 2026-10-27 recordings its quaternion's gravity reference was ~90° off. The
+  dashboard shows "SFLP vs gravity" continuously; above 10° the SFLP cube is greyed and marked
+  INCONSISTENT and is not used for gravity removal.
+
+### What the 2026-10-27 recordings showed (and what changed)
+
+| Observation | Cause | Fix |
+|---|---|---|
+| ~140 of 240 samples/s, `driver dropped` 95k, FIFO OVERRUN every ~150 ms | one I²C transfer per FIFO word plus a status poll per half period | 4-word bursts, fewer status polls; check 400 kHz I²C |
+| dt down to 1 ns, sample_rate_hz ≈ 10⁶, cube lag/jumps | time reconstruction collapsed while the FIFO was backlogged | spacing clamped ≥ 15/16 T, re-sync only on real gaps |
+| SFLP gravity 90° from the accelerometer | gravity word is Z,Y,X ordered and points down | decoded accordingly |
+| SFLP cube wrong when tilted | SFLP quaternion's gravity reference off | consistency check + AHRS fallback |
+| board orientation uncertain | no install calibration | guided mount wizard + persistent `imu_mount.txt` |
+
+**Frame / FLU check.** After 2 s at rest the streamer prints `[FLU check]`: gravity must be on +z
+in the vehicle frame (true after the wizard). It also warns if |g| is off by more than 1 %.
 
 `--wire v1` keeps the old 236-byte frame for `imu_dashboard.py`. `--gyro-fs` changes the
 driver-wide scale: update the DR app's gyro LSB/dps if you keep it.

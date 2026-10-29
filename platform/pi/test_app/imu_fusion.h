@@ -41,7 +41,8 @@ enum {
     IMU_FF_CONV_CONJUGATE  = 1U << 10,  /* ... and it needed conjugating */
     IMU_FF_ACCEL_TRUSTED   = 1U << 11,  /* AHRS applied accel correction */
     IMU_FF_LEGACY_DRIVER   = 1U << 12,  /* driver has no extended format */
-    IMU_FF_LIN_FROM_SFLP   = 1U << 13   /* linear accel used the SFLP attitude */
+    IMU_FF_LIN_FROM_SFLP   = 1U << 13,  /* linear accel used the SFLP attitude */
+    IMU_FF_SFLP_SUSPECT    = 1U << 14   /* SFLP attitude disagrees with gravity; AHRS used */
 };
 
 /* Driver-side extras for one sample (copied from mpu6050_ext_sample). */
@@ -76,10 +77,10 @@ typedef struct {
     double   conv_err_conj;
     int      conv;           /* 0 = undecided (direct used), 1 = direct, 2 = conjugate */
 
-    /* Sign of the SFLP gravity vector relative to the accelerometer. */
-    uint32_t gsign_n;
-    double   gsign_acc;
-    float    gravity_sign;
+    /* SFLP health: running angle between the quaternion's gravity and the
+     * SFLP gravity output (or the accelerometer at rest). */
+    uint32_t sflp_err_n;
+    float    sflp_err_ema_deg;
 } imu_fusion_t;
 
 typedef struct {
@@ -99,9 +100,10 @@ typedef struct {
     float temp_c;
     float g_ref_mps2;
     float tilt_consistency_deg;      /* angle(accel, attitude-predicted gravity) */
+    float sflp_consistency_deg;      /* SFLP quaternion vs gravity, smoothed; > 10 = suspect */
 } imu_fusion_output_t;
 
-#define IMU_FUSION_FLOAT_COUNT 29u
+#define IMU_FUSION_FLOAT_COUNT 30u
 
 float imu_half_to_float(uint16_t h);
 void  imu_quat_to_euler_deg(const float q[4], float euler_deg[3]);
@@ -109,6 +111,10 @@ void  imu_quat_to_euler_deg(const float q[4], float euler_deg[3]);
 /* mount_R_bv is only copied. It is not declared const because C will not
  * convert float (*)[3] to const float (*)[3] implicitly (GCC warns). */
 void imu_fusion_init(imu_fusion_t *f, float mount_R_bv[3][3], float kp, float ki);
+
+/* Replace the sensor->vehicle rotation at runtime (mount calibration).
+ * Restarts the AHRS and the SFLP checks, which depend on the frame. */
+void imu_fusion_set_mount(imu_fusion_t *f, float mount_R_bv[3][3]);
 
 void imu_fusion_update(imu_fusion_t *f,
                        const imu_sflp_input_t *in,
