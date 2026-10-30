@@ -71,6 +71,7 @@ CORE_FLAGS = {1: "STATIONARY", 4: "BUMP", 5: "SATURATION", 6: "SAMPLE_GAP",
               9: "RATE_BAD", 11: "WARMUP", 12: "GOOD", 13: "MARGINAL", 14: "BAD"}
 FF_SFLP, FF_FIFO_STREAM, FF_FIFO_OVR, FF_DROPPED = 1 << 0, 1 << 3, 1 << 4, 1 << 5
 FF_AHRS, FF_LEGACY, FF_LIN_SFLP, FF_SFLP_SUSPECT = 1 << 8, 1 << 12, 1 << 13, 1 << 14
+FF_GBIAS, FF_AHRS_SFLP_BIAS = 1 << 2, 1 << 15
 
 XYZ = ("x", "y", "z")
 FUSION_NAMES = (["q_sflp_w", "q_sflp_x", "q_sflp_y", "q_sflp_z", "roll_sflp_deg", "pitch_sflp_deg", "yaw_sflp_deg",
@@ -252,7 +253,7 @@ class Receiver(threading.Thread):
         super().__init__(daemon=True)
         self.bind, self.port, self.out, self.rec = bind, port, out, rec
         self.stop_event = threading.Event()
-        self.packets = self.bad = self.seq_gaps = 0
+        self.packets = self.bad = self.seq_gaps = self.dups = 0
         self._last_seq: Optional[int] = None
         self.sock: Optional[socket.socket] = None
         self.peer = None                      # streamer address, learned from its frames
@@ -294,6 +295,9 @@ class Receiver(threading.Thread):
                     self.bad += 1
                     continue
                 self.peer = addr
+                if d["seq"] == self._last_seq:    # the network delivered the datagram twice (seen on Wi-Fi)
+                    self.dups += 1
+                    continue
                 self.packets += 1
                 if self._last_seq is not None and d["seq"] != (self._last_seq + 1) & 0xFFFFFFFF:
                     self.seq_gaps += (d["seq"] - self._last_seq - 1) & 0xFFFFFFFF
@@ -308,7 +312,7 @@ class Replayer(threading.Thread):
         super().__init__(daemon=True)
         self.path, self.out, self.speed = path, out, speed
         self.stop_event = threading.Event()
-        self.packets = self.bad = self.seq_gaps = 0
+        self.packets = self.bad = self.seq_gaps = self.dups = 0
         self.acks: "queue.Queue[str]" = queue.Queue()
 
     def send_ctl(self, text: str) -> bool:
@@ -788,8 +792,13 @@ class Dashboard:
         self.cube_a.update(qa, q_to_euler_deg(qa), bool(ff & FF_AHRS))
         self.cube_s.update(qs, q_to_euler_deg(qs), bool(ff & FF_SFLP), dim=suspect)
         cons = d.get("sflp_consistency_deg", math.nan)
-        self.cube_s.title.set_text("On-chip SFLP (diagnostic)" + (
-            f"  - INCONSISTENT {cons:.0f}° vs gravity" if suspect and not math.isnan(cons) else ""))
+        if not ff & FF_SFLP:
+            sflp_title = "On-chip SFLP: quaternion not batched (sflp_fifo_mask)"
+        elif suspect and not math.isnan(cons):
+            sflp_title = f"On-chip SFLP (diagnostic) - INCONSISTENT {cons:.0f}° vs gravity"
+        else:
+            sflp_title = "On-chip SFLP (diagnostic)"
+        self.cube_s.title.set_text(sflp_title)
         self.cube_s.title.set_color(WARN_INK if suspect else INK)
 
         if self.frame % self.PLOT_EVERY == 0 and self.hist["t"]:
@@ -833,13 +842,15 @@ class Dashboard:
             f"cal {CAL_STATES.get(int(d['cal_state']), '?'):<11} {100 * d['cal_progress']:5.1f}%   "
             f"quality {d['quality_score']:5.1f}   stationary {d['stationary_score']:5.1f}   flags {core}",
             f"rate {d['sample_rate_hz']:6.1f} Hz (rx {self.rx_rate:6.1f}/s)   read path {path}   "
-            f"driver dropped {int(d['driver_dropped'])}   UDP gaps {self.src.seq_gaps}   bad {self.src.bad}   "
+            f"driver dropped {int(d['driver_dropped'])}   UDP gaps {self.src.seq_gaps}   dup {self.src.dups}   "
+            f"bad {self.src.bad}   "
             f"{' '.join(health)}",
             f"|a| {d['acc_norm_filt_mps2']:6.3f} m/s²   g_ref {d['g_ref_mps2']:6.3f}   "
             f"tilt consistency {d['tilt_consistency_deg']:5.2f}°   SFLP vs gravity {cons:5.1f}°   "
             f"gravity removal: {att}",
             f"SFLP gyro bias [dps] {d['gbias_sflp_x_dps']:+7.3f} {d['gbias_sflp_y_dps']:+7.3f} "
-            f"{d['gbias_sflp_z_dps']:+7.3f}   temp {d['temp_c']:5.1f} °C   tare {tare}",
+            f"{d['gbias_sflp_z_dps']:+7.3f}   AHRS bias: {'SFLP (live)' if ff & FF_AHRS_SFLP_BIAS else 'boot cal'}   "
+            f"temp {d['temp_c']:5.1f} °C   tare {tare}",
             f"recording {'ON  -> ' + self.rec.path.name + f' ({self.rec.rows} rows)' if self.rec.active else 'off'}"
             f"      keys: m mount-cal  r record  z zero-yaw  t tare  c clear  q quit",
         ]

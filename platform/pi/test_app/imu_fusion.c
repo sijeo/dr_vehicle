@@ -270,11 +270,29 @@ void imu_fusion_update(imu_fusion_t *f, const imu_sflp_input_t *in, const imu_ou
         out->flags |= IMU_FF_LEGACY_DRIVER;
     }
 
+    /* ---- SFLP gyro bias ----
+     * The SFLP bias estimate is accurate and follows temperature: on the
+     * 2026-10-30 bench logs it stayed within ~0.02 dps of the true bias while
+     * the boot calibration fell 0.09 dps behind over a 4 degC warm-up. */
+    bool have_gbias = false;
+    float gyro_ahrs[3];
+    if (in->have_ext && (in->flags & IMU_FF_GBIAS_VALID)) {
+        float b_s[3], g_s[3];
+        for (i = 0; i < 3; i++) b_s[i] = (float)in->gbias[i] * SFLP_GBIAS_DPS_PER_LSB;
+        mat_mul_vec(f->mount_R_bv, b_s, out->gbias_sflp_dps);
+        for (i = 0; i < 3; i++) g_s[i] = core->gyro_sensor_raw_rps[i] - b_s[i] * IMU_DEG2RAD;
+        mat_mul_vec(f->mount_R_bv, g_s, gyro_ahrs);
+        have_gbias = true;
+        out->flags |= IMU_FF_AHRS_SFLP_BIAS;
+    }
+    if (!have_gbias)
+        memcpy(gyro_ahrs, core->gyro_vehicle_unfiltered_rps, sizeof(gyro_ahrs));
+
     /* ---- host AHRS ---- */
     if (!f->ahrs.initialized) {
         if (acc_ok) mahony_init_from_accel(&f->ahrs, acc_v);
     } else if (dt > 0.0f) {
-        mahony_update(&f->ahrs, core->gyro_vehicle_unfiltered_rps, acc_v, dt, acc_ok);
+        mahony_update(&f->ahrs, gyro_ahrs, acc_v, dt, acc_ok);
         if (acc_ok) out->flags |= IMU_FF_ACCEL_TRUSTED;
     }
     if (f->ahrs.initialized) {
@@ -284,21 +302,15 @@ void imu_fusion_update(imu_fusion_t *f, const imu_sflp_input_t *in, const imu_ou
     }
 
     /* ---- SFLP ---- */
-    bool have_g = false, sflp_ok = false;
+    bool sflp_ok = false;
     if (in->have_ext && (in->flags & IMU_FF_GRAVITY_VALID)) {
         /* The gravity word comes in Z, Y, X order (like the accel FIFO words)
-         * and is gravity itself (pointing down); negate it to the
-         * accelerometer's convention (+g up at rest). Established from the
-         * 2026-10-27 logs: matches the accelerometer, the X,Y,Z reading did not. */
+         * and uses the accelerometer's sign (+1 g up at rest): on the
+         * 2026-10-30 bench logs, word 0 averaged +16084 LSB (+0.98 g) with the
+         * board flat, and the reordered vector matched the accelerometer to 0.2 deg. */
         const float k = SFLP_GRAVITY_G_PER_LSB * IMU_GRAVITY_MPS2;
-        float g_s[3] = { -(float)in->gravity[2] * k, -(float)in->gravity[1] * k, -(float)in->gravity[0] * k };
+        float g_s[3] = { (float)in->gravity[2] * k, (float)in->gravity[1] * k, (float)in->gravity[0] * k };
         mat_mul_vec(f->mount_R_bv, g_s, out->gravity_sflp_vehicle_mps2);
-        have_g = true;
-    }
-    if (in->have_ext && (in->flags & IMU_FF_GBIAS_VALID)) {
-        float b_s[3];
-        for (i = 0; i < 3; i++) b_s[i] = (float)in->gbias[i] * SFLP_GBIAS_DPS_PER_LSB;
-        mat_mul_vec(f->mount_R_bv, b_s, out->gbias_sflp_dps);
     }
     if (in->have_ext && (in->flags & IMU_FF_SFLP_VALID)) {
         float q_s[4], R_ws[3][3], R_vb[3][3];
@@ -318,12 +330,15 @@ void imu_fusion_update(imu_fusion_t *f, const imu_sflp_input_t *in, const imu_ou
         mat_to_quat(R_wv, out->q_sflp);
         imu_quat_to_euler_deg(out->q_sflp, out->euler_sflp_deg);
 
-        /* SFLP health. On the 2026-10-27 logs the quaternion followed the
-         * gyro but its gravity reference was ~90 deg off, so it must earn its
-         * place: compare the gravity it implies (R^T e_z) with the SFLP
-         * gravity output, or with the accelerometer when at rest. */
+        /* SFLP health: compare the gravity the quaternion implies (R^T e_z)
+         * with the accelerometer while at rest. Not with the SFLP gravity
+         * output, which always agrees with the quaternion (it is derived from
+         * it). On the 2026-10-27/30 logs the quaternion's rotation follows the
+         * gyro, but its gravity reference is the accelerometer with X and Z
+         * exchanged (the chip's Z,Y,X accel order), so it sits ~90 deg off
+         * whenever the board is level. */
         {
-            const float *ref = have_g ? out->gravity_sflp_vehicle_mps2 : (quasi_static ? acc_v : NULL);
+            const float *ref = quasi_static ? acc_v : NULL;
             if (ref) {
                 float pred[3] = { R_wv[2][0], R_wv[2][1], R_wv[2][2] };
                 float e = angle_deg(pred, ref);

@@ -284,9 +284,14 @@ MODULE_PARM_DESC(sflp, "Enable SFLP game rotation vector (default 1)");
 static int sflp_odr_default = 120;
 module_param_named(sflp_odr, sflp_odr_default, int, 0444);
 MODULE_PARM_DESC(sflp_odr, "SFLP output rate Hz: 15/30/60/120/240/480 (default 120)");
-static int sflp_fifo_mask_default = 0x7;
+/* Default: gyro bias only. On this ISM330BX the SFLP quaternion (and the
+ * gravity vector derived from it) use the accelerometer with X and Z
+ * exchanged relative to the gyro (bench logs 2026-10-27/30), so they are
+ * not a valid attitude; the SFLP gyro-bias estimate is accurate and tracks
+ * temperature. Set 7 to batch all three for diagnostics. */
+static int sflp_fifo_mask_default = 0x4;
 module_param_named(sflp_fifo_mask, sflp_fifo_mask_default, int, 0444);
-MODULE_PARM_DESC(sflp_fifo_mask, "SFLP outputs batched: bit0 quat, bit1 gravity, bit2 gyro bias (default 7)");
+MODULE_PARM_DESC(sflp_fifo_mask, "SFLP outputs batched: bit0 quat, bit1 gravity, bit2 gyro bias (default 4)");
 static int fifo_stream_default = 1;
 module_param_named(fifo_stream, fifo_stream_default, int, 0444);
 MODULE_PARM_DESC(fifo_stream, "Read accel/gyro through the HW FIFO (default 1; 0 = register polling)");

@@ -12,8 +12,9 @@
  *   chip (on-chip filters + SFLP) -> HW FIFO -> driver (extended read format)
  *     -> imu_core   : accel scale (accel_C/O), sensor->vehicle FLU mount,
  *                     boot gyro-bias calibration, median + LPF, quality flags
- *     -> imu_fusion : host Mahony AHRS (primary attitude), SFLP decode and
- *                     consistency check, gravity removal (vehicle + level frame)
+ *     -> imu_fusion : host Mahony AHRS (primary attitude, gyro bias from SFLP),
+ *                     SFLP decode and consistency check, gravity removal
+ *                     (vehicle + level frame)
  *     -> UDP frame v2 (format version 3) or v1 for the old dashboard
  *   The same UDP socket also receives control commands from the dashboard
  *   (mount calibration, see below).
@@ -22,14 +23,20 @@
  *   + gyro into a game rotation vector (quaternion, yaw origin arbitrary, no
  *   magnetometer), a gravity vector and a gyro-bias estimate; the driver
  *   attaches the latest values to every accel/gyro sample.
- *   Status from the 2026-10-27 recordings:
- *     - SFLP gyro bias: correct (matches the boot calibration to 0.004 dps).
- *     - SFLP gravity: correct once read in Z,Y,X order and negated (done in
- *       imu_fusion.c).
- *     - SFLP quaternion: follows the gyro but its gravity reference was ~90 deg
- *       off. imu_fusion therefore checks it continuously ("SFLP vs gravity" on
- *       the dashboard); above 10 deg it is flagged INCONSISTENT and the host
- *       AHRS is used for gravity removal instead.
+ *   Status from the 2026-10-27 and 2026-10-30 recordings:
+ *     - SFLP gyro bias: accurate and temperature-tracking (within ~0.02 dps
+ *       of the true bias while the boot calibration drifted 0.09 dps over a
+ *       4 degC warm-up). The host AHRS uses it live, which cut the bench yaw
+ *       drift from ~12 deg to an estimated ~3 deg over 213 s.
+ *     - SFLP quaternion: NOT usable on this part. Its rotation follows the
+ *       gyro, but its gravity reference is the accelerometer with X and Z
+ *       exchanged (the chip delivers accel as Z,Y,X), so it is ~90 deg off
+ *       whenever the board is level. The SFLP gravity output is derived from
+ *       the same quaternion (Z,Y,X order, +g up). No remap register exists in
+ *       DS14588, so the driver now batches only the gyro bias by default
+ *       (sflp_fifo_mask=4); --sflp-mask 7 brings the quaternion back for
+ *       diagnostics, and imu_fusion keeps it out of gravity removal
+ *       ("SFLP vs gravity" > 10 deg -> INCONSISTENT).
  *
  *   Frames: vehicle FLU (x forward, y left, z up). Angles follow REP-103:
  *   roll + = right side down, pitch + = nose down, yaw + = left turn.
@@ -92,12 +99,15 @@
  *                      Recommended 2 (12 Hz @240 Hz); 3 (5.3 Hz) when engine
  *                      vibration is strong. Lower = more delay.
  *   --sflp-odr HZ      driver default 120. One of 15/30/60/120/240/480,
- *                      clamped to <= ODR. Recommended 120.
- *   --sflp-mask M      driver default 7. bit0 quaternion, bit1 gravity,
- *                      bit2 gyro bias. Recommended 7 at 400 kHz I2C. If the
- *                      dashboard still shows FIFO OVERRUN, use 6 (drop the
- *                      quaternion, the least reliable output) or 4.
- *   --no-sflp          turn SFLP off (host AHRS only). For A/B comparison.
+ *                      clamped to <= ODR. Recommended 120: 240 doubles the
+ *                      SFLP FIFO traffic and brought back drops/overruns on
+ *                      the 2026-10-30 bench run.
+ *   --sflp-mask M      driver default 4. bit0 quaternion, bit1 gravity,
+ *                      bit2 gyro bias. Recommended 4 (gyro bias only: the one
+ *                      SFLP output that is correct on this part, and the least
+ *                      I2C traffic). 7 only to diagnose the SFLP attitude.
+ *   --no-sflp          turn SFLP off: no SFLP gyro bias, the AHRS falls back
+ *                      to the boot calibration. For A/B comparison.
  *   --no-fifo          register polling instead of the HW FIFO. Debug only:
  *                      polling can lose samples when the reader is late.
  *   --mount flu|frd    flu (identity). The ISM330BX here is mounted FLU.
@@ -141,8 +151,11 @@
  *   # 5) Fixed trim from the command line instead of the wizard
  *   Pi : ./imu_streamer --host 192.168.68.100 --gyro-fs 500 --mount-rpy 1.20,-0.85,0.40
  *
- *   # 6) A/B: host AHRS only (SFLP cube greys out)
+ *   # 6) A/B: no SFLP at all (AHRS falls back to the boot gyro bias)
  *   Pi : ./imu_streamer --host 192.168.68.100 --no-sflp
+ *
+ *   # 6b) Diagnose the SFLP attitude again (quaternion + gravity batched)
+ *   Pi : ./imu_streamer --host 192.168.68.100 --gyro-fs 500 --sflp-mask 7
  *
  *   # 7) Legacy dashboard (noise / calibration view, no SFLP)
  *   PC : python imu_dashboard.py --port 5005 --csv noise.csv

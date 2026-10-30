@@ -42,7 +42,8 @@ enum {
     IMU_FF_ACCEL_TRUSTED   = 1U << 11,  /* AHRS applied accel correction */
     IMU_FF_LEGACY_DRIVER   = 1U << 12,  /* driver has no extended format */
     IMU_FF_LIN_FROM_SFLP   = 1U << 13,  /* linear accel used the SFLP attitude */
-    IMU_FF_SFLP_SUSPECT    = 1U << 14   /* SFLP attitude disagrees with gravity; AHRS used */
+    IMU_FF_SFLP_SUSPECT    = 1U << 14,  /* SFLP attitude disagrees with gravity; AHRS used */
+    IMU_FF_AHRS_SFLP_BIAS  = 1U << 15   /* AHRS gyro used the SFLP bias (tracks temperature) */
 };
 
 /* Driver-side extras for one sample (copied from mpu6050_ext_sample). */
@@ -100,7 +101,7 @@ typedef struct {
     float temp_c;
     float g_ref_mps2;
     float tilt_consistency_deg;      /* angle(accel, attitude-predicted gravity) */
-    float sflp_consistency_deg;      /* SFLP quaternion vs gravity, smoothed; > 10 = suspect */
+    float sflp_consistency_deg;      /* SFLP quaternion vs accelerometer at rest, smoothed; > 10 = suspect */
 } imu_fusion_output_t;
 
 #define IMU_FUSION_FLOAT_COUNT 30u

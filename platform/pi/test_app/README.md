@@ -24,8 +24,9 @@ The IMU is an ST **ISM330BX** (WHO_AM_I 0x71) mounted **FLU**. `mpu6050_char.ko`
   `INTERNAL_FREQ_FINE`, spacing never compressed); default `fifo_stream=1`;
 - enables the on-chip **gyro LPF1** (`gyro_lpf1_bw=6` ≈ 27 Hz @ 240 Hz) and **accel LPF2**
   (`accel_lpf2_bw=2` = ODR/20 ≈ 12 Hz) to stop vibration aliasing;
-- runs the **SFLP** game rotation vector, gravity vector and gyro-bias estimate (`sflp_odr=120`)
-  and attaches the latest values to every sample;
+- runs the **SFLP** block (`sflp_odr=120`) and by default batches only its **gyro-bias** estimate
+  (`sflp_fifo_mask=4`), which the host AHRS uses live. The SFLP quaternion is not a valid attitude
+  on this part (see below); `sflp_fifo_mask=7` / `--sflp-mask 7` brings it back for diagnostics;
 - keeps `struct mpu6050_sample` as the default `read()` format (DR app unchanged);
   `MPU6050_IOC_SET_READ_FMT(MPU6050_FMT_EXT)` gives `struct mpu6050_ext_sample`.
 
@@ -71,12 +72,16 @@ wizard whenever the board is moved or remounted. `--no-wizard` skips it on the d
 
 ### Reading the two cubes
 
-- **Host Mahony AHRS (primary)** — fuses the calibrated gyro and accelerometer on the Pi; this is
-  the attitude used for gravity removal.
-- **On-chip SFLP (diagnostic)** — the ISM330BX's own fusion. Its gyro-bias and gravity outputs are
-  correct, but on the 2026-10-27 recordings its quaternion's gravity reference was ~90° off. The
-  dashboard shows "SFLP vs gravity" continuously; above 10° the SFLP cube is greyed and marked
-  INCONSISTENT and is not used for gravity removal.
+- **Host Mahony AHRS (primary)** — fuses the gyro and accelerometer on the Pi; its gyro bias comes
+  live from the SFLP estimate (status line "AHRS bias: SFLP (live)"), so it follows temperature.
+  This is the attitude used for gravity removal.
+- **On-chip SFLP** — with the default mask the cube reads "quaternion not batched". With
+  `--sflp-mask 7` it shows the SFLP attitude for diagnosis; expect "INCONSISTENT ~90°".
+  The 2026-10-27/30 recordings show why: the SFLP integrates the gyro correctly, but takes its gravity
+  reference from the accelerometer with X and Z exchanged (the chip delivers accel as Z,Y,X). Its
+  gravity output is derived from the same quaternion. DS14588 has no register to remap this, so treat
+  the SFLP attitude as unusable on this part (worth raising with ST). Its gyro-bias output is correct:
+  within ~0.02 dps of the true bias through a 4 °C warm-up, where the boot calibration drifted 0.09 dps.
 
 ### What the 2026-10-27 recordings showed (and what changed)
 
@@ -84,8 +89,11 @@ wizard whenever the board is moved or remounted. `--no-wizard` skips it on the d
 |---|---|---|
 | ~140 of 240 samples/s, `driver dropped` 95k, FIFO OVERRUN every ~150 ms | one I²C transfer per FIFO word plus a status poll per half period | 4-word bursts, fewer status polls; check 400 kHz I²C |
 | dt down to 1 ns, sample_rate_hz ≈ 10⁶, cube lag/jumps | time reconstruction collapsed while the FIFO was backlogged | spacing clamped ≥ 15/16 T, re-sync only on real gaps |
-| SFLP gravity 90° from the accelerometer | gravity word is Z,Y,X ordered and points down | decoded accordingly |
-| SFLP cube wrong when tilted | SFLP quaternion's gravity reference off | consistency check + AHRS fallback |
+| SFLP gravity 90° from the accelerometer | gravity word is Z,Y,X ordered (+g up, verified 2026-10-30) | decoded accordingly |
+| SFLP cube wrong when tilted, "INCONSISTENT 89–107°" (2026-10-30) | SFLP fuses the gyro with an X↔Z-swapped accelerometer | quaternion no longer batched by default; consistency now checked against the accelerometer |
+| AHRS yaw drift ~12° in 213 s at rest (2026-10-30) | boot gyro bias goes stale as the board warms | AHRS uses the SFLP gyro bias live (est. ~3°) |
+| ~1 % duplicate rows (same seq) in the CSV | UDP datagrams duplicated on the network (Wi-Fi) | dashboard drops duplicates ("dup" counter) |
+| drops/overruns return with `--sflp-odr 240` | doubles SFLP FIFO traffic | keep 120; default mask 4 |
 | board orientation uncertain | no install calibration | guided mount wizard + persistent `imu_mount.txt` |
 
 **Frame / FLU check.** After 2 s at rest the streamer prints `[FLU check]`: gravity must be on +z
