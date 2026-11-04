@@ -38,7 +38,7 @@ app_v4: $(DR_APP_SRCS)
 		-o dr_dead_reckoning_app $(DR_APP_SRCS) -lm
 
 driver_test:
-	$(MAKE) -C test_app imu_streamer
+	$(MAKE) -C test_app/imu_streamer
 
 deploy:
 	scp *.ko sijeo@10.197.87.7:/home/sijeo/dr_vehicle/
