@@ -9,12 +9,16 @@ Applies to: the ISM330BX mounted FLU (x forward, y left, z up), driver `mpu6050_
 `test_app/imu_streamer` + `imu_rotation_dashboard.py` for capture, and
 `dr_dead_reckoning_app_ins15_v3.c` as the consumer.
 
-> **Implemented for the test bench:** the mount part of §3–§4 (two-heading leveling and forward
-> direction) runs as a guided wizard in `test_app/imu_rotation_dashboard.py`. It starts at launch
-> or with key `m`, and its result is stored on the Pi in `imu_mount.txt`, which `imu_streamer`
-> loads at start. For the forward step it uses a nose-down tilt on the bench or a straight
-> acceleration in a vehicle. See `test_app/README.md`, "Step by step". The gyro-scale circle
-> test (§5) and the online items (§6) are not implemented yet.
+> **Implemented:**
+> - **§3–§4 mount calibration.** The DR app runs it in the vehicle (button / LED or a trigger file;
+>   step detection is automatic). The bench version is the dashboard wizard. Both write `imu_mount.txt`.
+>   See `DR_APP_README.md` §5.
+> - **§5 gyro z scale.** Estimated online from GNSS in turns (`sg` state) instead of the circle test.
+> - **§6.1 bias at stops.** ZARU in the DR app's nav filter, on top of the live SFLP bias.
+> - **§6.3 bias states** in the EKF.
+> - **§6.4 NHC.** Built into the vehicle motion model.
+>
+> Not yet implemented: the temperature model (§6.2) and the re-leveling alarm (§6.6).
 
 ---
 
@@ -245,11 +249,11 @@ put its z sensitivity in `accel_C[2][2]` and its offset (converted to m/s²) in 
 | `fs.gyro_dps` | `GYRO_LSB_PER_DPS` must match the driver FS | streamer reads it from the driver |
 | `g_local_mps2` | gravity constant in ZUPT / mechanisation | `cfg->gravity_mps2` |
 
-> **Mount default mismatch.** The DR app's default `mount_R_bv = diag(1,-1,-1)` assumes an
-> **FRD** sensor (lines ~1485–1629), but this installation is **FLU**, where the nominal mount
-> is **identity**, as `imu_core.c` already uses. Fix the DR app default, or always load
-> `R_bv` from the JSON. Otherwise y and z are inverted and every other calibration step will
-> look wrong.
+> **Mount default (resolved 2026-11).** The old DR app defaulted to `mount_R_bv = diag(1,-1,-1)`
+> (FRD) on this FLU board. The rewritten app uses the FLU identity (`--mount frd` for a z-down
+> installation) and loads `imu_mount.txt`. The JSON layout above was this guide's proposal; the
+> implementation stores the rotation in `imu_mount.txt`, the gyro calibration in
+> `imu_calibration.bin`, and the run-time estimates in `dr_state.txt` (see `DR_APP_README.md` §6).
 
 Loading order at boot: read the JSON and validate it (version, FS match, |R_bv| orthonormal,
 values inside the acceptance limits). Then apply `accel_C/O` and `R_bv`. Then run the existing

@@ -318,12 +318,23 @@ class Replayer(threading.Thread):
     def send_ctl(self, text: str) -> bool:
         return False
 
-    def run(self) -> None:
+    def _rows(self):
+        """CSV written by this dashboard, or imuframes_*.bin written by the DR app
+        (the same UDP frames back to back)."""
+        if self.path.suffix.lower() == ".bin":
+            with open(self.path, "rb") as fh:
+                data = fh.read()
+            i = 0
+            while i + 12 <= len(data):
+                size = struct.unpack_from("!H", data, i + 6)[0]
+                try:
+                    yield parse_frame(data[i:i + size])
+                except ValueError:
+                    self.bad += 1
+                i += size if size > 0 else 1
+            return
         with open(self.path, newline="") as fh:
-            t0_imu = t0_wall = None
             for row in csv.DictReader(fh):
-                if self.stop_event.is_set():
-                    return
                 d = {}
                 for k, s in row.items():
                     if k in INT_COLUMNS:
@@ -332,14 +343,21 @@ class Replayer(threading.Thread):
                         d[k] = float(s) if s not in ("", None) else math.nan
                 for c in COLUMNS:               # older recordings lack newer columns
                     d.setdefault(c, math.nan)
-                t = d["imu_time_ns"] * 1e-9
-                if t0_imu is None:
-                    t0_imu, t0_wall = t, time.monotonic()
-                lag = (t - t0_imu) / self.speed - (time.monotonic() - t0_wall)
-                if lag > 0:
-                    time.sleep(lag)
-                self.packets += 1
-                self.out.put(d)
+                yield d
+
+    def run(self) -> None:
+        t0_imu = t0_wall = None
+        for d in self._rows():
+            if self.stop_event.is_set():
+                return
+            t = d["imu_time_ns"] * 1e-9
+            if t0_imu is None:
+                t0_imu, t0_wall = t, time.monotonic()
+            lag = (t - t0_imu) / self.speed - (time.monotonic() - t0_wall)
+            if lag > 0:
+                time.sleep(lag)
+            self.packets += 1
+            self.out.put(d)
         print("[dashboard] replay finished", flush=True)
 
 
@@ -416,7 +434,10 @@ class MountWizard:
                 self._finish(tuple(s / self.n for s in self.sum))
         else:                                    # drive: horizontal accel w.r.t. the measured up
             up = self.captures["up"]
-            h = tuple(a - v_dot(acc, up) * u for a, u in zip(acc, up))
+            # change from the last still capture on the same spot: a sloped spot must not skew the yaw
+            ref = self.captures.get("f2") or self.captures["f1"]
+            dv = tuple(a - r for a, r in zip(acc, ref))
+            h = tuple(a - v_dot(dv, up) * u for a, u in zip(dv, up))
             if math.sqrt(v_dot(h, h)) >= self.MIN_DRIVE_ACC and d["gyro_norm_filt_dps"] < 5.0:
                 self._accumulate(h, t)
             rate = d["sample_rate_hz"] if 20.0 < d["sample_rate_hz"] < 5000.0 else 240.0
@@ -533,7 +554,7 @@ class MountWizard:
             y_new = v_cross(z_new, x_new)
             D = [list(x_new), list(y_new), list(z_new)]          # rows: new axes in the current frame
             slope = 0.5 * v_angle_deg(f1, f2) if f2 else math.nan
-            self.result = dict(D=D, euler=mat_to_euler_deg([[D[c][r] for c in range(3)] for r in range(3)]),
+            self.result = dict(D=D, euler=mat_to_euler_deg(D),
                                slope=slope, g=self.captures["g"], two_pos=bool(f2))
             self.state = "review"
             self.msg = ""
@@ -870,7 +891,8 @@ def main() -> int:
                     help="CSV output path (default imu_rotation_YYYYmmdd_HHMMSS.csv)")
     ap.add_argument("--no-record", action="store_true", help="start with recording off (toggle with 'r')")
     ap.add_argument("--no-wizard", action="store_true", help="do not start the mount calibration at launch")
-    ap.add_argument("--replay", type=Path, default=None, help="replay a CSV written by this dashboard")
+    ap.add_argument("--replay", type=Path, default=None,
+                    help="replay a CSV written by this dashboard, or imuframes_*.bin from the DR app")
     ap.add_argument("--speed", type=float, default=1.0, help="replay speed factor")
     ap.add_argument("--window", type=float, default=10.0, help="plot window [s]")
     args = ap.parse_args()

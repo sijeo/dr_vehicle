@@ -29,11 +29,16 @@ app_v2: dr_dead_reckoning_app_ins15.c
 app_v3: dr_dead_reckoning_app_ins15_v2.c
 	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o dr_dead_reckoning_app_ins15 $< $(CORE_SRCS) -lm -lpthread
 
-app_v4: dr_dead_reckoning_app_ins15_v3.c
-	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o dr_dead_reckoning_app_ins15 $< $(CORE_SRCS) -lm -lpthread
+# Final DR application: dr_dead_reckoning_app_ins15_v3.c + dr_nav.c + the
+# IMU chain proven in test_app/ (imu_core, imu_fusion, imu_mount, imu_wire).
+DR_APP_SRCS := dr_dead_reckoning_app_ins15_v3.c dr_nav.c \
+               test_app/imu_core.c test_app/imu_fusion.c test_app/imu_mount.c test_app/imu_wire.c
+app_v4: $(DR_APP_SRCS)
+	$(CC) --sysroot=$(SYSROOT) -std=gnu99 -O2 -Wall -Wextra -I. -Itest_app -pthread \
+		-o dr_dead_reckoning_app $(DR_APP_SRCS) -lm
 
-driver_test: test_app/imu_streamer.c
-	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o test_app/imu_streamer $< $(CORE_SRCS) -lm
+driver_test:
+	$(MAKE) -C test_app imu_streamer
 
 deploy:
 	scp *.ko sijeo@10.197.87.7:/home/sijeo/dr_vehicle/
@@ -46,5 +51,10 @@ deploy_app_2:
 	
 deploy_test:
 	scp test_app/imu_streamer sijeo@10.197.87.7:/home/sijeo/dr_vehicle/
-	
-.PHONY: all clean app driver_test deploy deploy_app
+
+# DR app + loader script + systemd unit (PI_HOST=user@ip to override)
+PI_HOST ?= sijeo@10.197.87.7
+deploy_dr:
+	scp dr_dead_reckoning_app load_dr_stack.sh dr_app.service $(PI_HOST):/home/sijeo/dr_vehicle/
+
+.PHONY: all clean app app_v4 driver_test deploy deploy_app deploy_dr

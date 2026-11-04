@@ -1,0 +1,22 @@
+# systemd unit for the vehicle DR application.
+#   sudo cp dr_app.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now dr_app
+#   journalctl -u dr_app -f          # live log
+[Unit]
+Description=Vehicle dead reckoning (ISM330BX + GNSS)
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/home/sijeo/dr_vehicle/load_dr_stack.sh
+# Add test options here, e.g. the GNSS outage test:
+# ExecStart=/home/sijeo/dr_vehicle/load_dr_stack.sh --outage-test 180,30
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=10
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

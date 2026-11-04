@@ -17,6 +17,13 @@ It uses the exact ±8 g LSQ accelerometer matrix and offset from the uploaded ap
 
 ## ISM330BX on-chip fusion (SFLP) + rotation dashboard
 
+> **Vehicle application:** `../dr_dead_reckoning_app_ins15_v3.c` compiles this same chain
+> (`imu_core.c`, `imu_fusion.c`, `imu_mount.c`, `imu_wire.c`) and adds the navigation filter; see
+> [../DR_APP_README.md](../DR_APP_README.md). `imu_mount.c` is shared by the streamer and the DR app:
+> mount file load/save, live apply, calibration math and the `IMUCTL` commands. A mount calibrated
+> here is reused by the DR app if the board is not moved. The dashboard can also replay the DR app's
+> `imuframes_*.bin` logs (`--replay file.bin`) and connect to the DR app live (`--udp` on the app).
+
 The IMU is an ST **ISM330BX** (WHO_AM_I 0x71) mounted **FLU**. `mpu6050_char.ko` now:
 
 - reads accel + gyro through the **hardware FIFO**, 4 words per I²C transfer

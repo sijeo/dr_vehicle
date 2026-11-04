@@ -1,5 +1,12 @@
 # MPU-6050 IIO on Raspberry Pi 3 Model B
 
+> **Current system (2026-11):** the IMU on this board is an ST **ISM330BX** (not an MPU-6050), driven by
+> `mpu6050_char.ko`. For the vehicle application (build, install, LED/button, calibration, logs,
+> analysis, vehicle test plan) see **[DR_APP_README.md](DR_APP_README.md)**. For the IMU bench tools see
+> [test_app/README.md](test_app/README.md), and for field calibration see
+> [IMU_FIELD_CALIBRATION.md](IMU_FIELD_CALIBRATION.md). The sections below describe the original
+> MPU-6050 IIO setup and are kept for reference.
+
 Guide to wire an MPU-6050 to a Raspberry Pi 3B, load the Industrial I/O (IIO) driver, verify data via sysfs and buffered reads, and run the included test apps.
 
 ## Build and load

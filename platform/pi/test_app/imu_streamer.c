@@ -175,6 +175,7 @@
 
 #include "imu_core.h"
 #include "imu_fusion.h"
+#include "imu_mount.h"
 #include "imu_wire.h"
 
 #include <arpa/inet.h>
@@ -249,24 +250,6 @@ static float gyro_lsb_per_dps_for(unsigned gyro_enum) {
     return gyro_enum < 4 ? 1000.0f / mdps[gyro_enum] : 0.0f;
 }
 
-/* mount_R_bv = Rz(yaw) * Ry(pitch) * Rx(roll) * R_preset  (sensor -> vehicle FLU). */
-static void build_mount(bool frd, float roll_deg, float pitch_deg, float yaw_deg, float R[3][3]) {
-    const float d2r = IMU_DEG2RAD;
-    float cr = cosf(roll_deg * d2r),  sr = sinf(roll_deg * d2r);
-    float cp = cosf(pitch_deg * d2r), sp = sinf(pitch_deg * d2r);
-    float cy = cosf(yaw_deg * d2r),   sy = sinf(yaw_deg * d2r);
-    const float T[3][3] = {
-        { cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr },
-        { sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr },
-        { -sp,     cp * sr,                cp * cr                },
-    };
-    /* FRD sensor (z down, y right): 180 deg about x maps it onto FLU. */
-    const float P[3] = { 1.0f, frd ? -1.0f : 1.0f, frd ? -1.0f : 1.0f };
-    int r, c;
-    for (r = 0; r < 3; r++)
-        for (c = 0; c < 3; c++) R[r][c] = T[r][c] * P[c];
-}
-
 /* Once the IMU has been still for 2 s, confirm gravity lands on vehicle +z
  * (i.e. the FLU mount is right) and report the residual tilt. */
 typedef struct {
@@ -312,77 +295,14 @@ static void flu_check_update(flu_check_t *c, const imu_output_t *o, float rate_h
                         "(see IMU_FIELD_CALIBRATION.md §2)\n", 100.0 * (g - IMU_GRAVITY_MPS2) / IMU_GRAVITY_MPS2);
 }
 
-/* ---- Mount persistence + runtime mount calibration ------------------------
- *
- * The dashboard's guided calibration computes a corrective rotation in the
- * current vehicle frame and sends it here ("IMUCTL MOUNT_DELTA <9 floats>").
- * The streamer pre-multiplies it into mount_R_bv, applies it live, saves it
- * to the mount file, and re-stamps the boot-calibration file so the next
- * start reuses both. The file holds the full 3x3 sensor->vehicle matrix. */
-#define MOUNT_FILE_TAG "imu_mount_R_bv_v1"
-
-static bool rot_valid(float R[3][3]) {
-    int r, c, k;
-    for (r = 0; r < 3; r++)
-        for (c = 0; c < 3; c++) {
-            float dot = 0.0f;
-            for (k = 0; k < 3; k++) dot += R[r][k] * R[c][k];
-            if (!isfinite(dot) || fabsf(dot - (r == c ? 1.0f : 0.0f)) > 2e-3f) return false;
-        }
-    return fabsf(R[0][0] * (R[1][1] * R[2][2] - R[1][2] * R[2][1])
-               - R[0][1] * (R[1][0] * R[2][2] - R[1][2] * R[2][0])
-               + R[0][2] * (R[1][0] * R[2][1] - R[1][1] * R[2][0]) - 1.0f) < 2e-3f;
+/* ---- Runtime mount calibration (dashboard wizard) ---------------------------
+ * The dashboard sends "IMUCTL MOUNT_DELTA <9 floats>" etc.; imu_mount.c does
+ * the work (R_bv <- delta * R_bv, live apply, save mount file, keep the boot
+ * calibration valid). Only packets from --host are accepted. */
+static int sflp_reset_ioctl(void *ctx) {
+    return ioctl(*(int *)ctx, MPU6050_IOC_SFLP_RESET) == 0 ? 0 : -errno;
 }
 
-static int mount_load(const char *path, float R[3][3]) {
-    char tag[32] = "";
-    float m[3][3];
-    FILE *fp = fopen(path, "r");
-    if (!fp) return -errno;
-    int n = fscanf(fp, "%31s %f %f %f %f %f %f %f %f %f", tag,
-                   &m[0][0], &m[0][1], &m[0][2], &m[1][0], &m[1][1], &m[1][2], &m[2][0], &m[2][1], &m[2][2]);
-    fclose(fp);
-    if (n != 10 || strcmp(tag, MOUNT_FILE_TAG) != 0 || !rot_valid(m)) return -EINVAL;
-    memcpy(R, m, sizeof(m));
-    return 0;
-}
-
-static int mount_save(const char *path, float R[3][3]) {
-    FILE *fp = fopen(path, "w");
-    if (!fp) return -errno;
-    fprintf(fp, "%s\n%.7f %.7f %.7f\n%.7f %.7f %.7f\n%.7f %.7f %.7f\n", MOUNT_FILE_TAG,
-            (double)R[0][0], (double)R[0][1], (double)R[0][2], (double)R[1][0], (double)R[1][1],
-            (double)R[1][2], (double)R[2][0], (double)R[2][1], (double)R[2][2]);
-    return fclose(fp) == 0 ? 0 : -EIO;
-}
-
-static int fmt_mount(char *buf, size_t n, const char *head, float R[3][3]) {
-    return snprintf(buf, n, "%s %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f", head,
-                    (double)R[0][0], (double)R[0][1], (double)R[0][2], (double)R[1][0], (double)R[1][1],
-                    (double)R[1][2], (double)R[2][0], (double)R[2][1], (double)R[2][2]);
-}
-
-static void apply_mount(imu_pipeline_t *pl, imu_fusion_t *fu, float R[3][3], const char *mount_path) {
-    memcpy(pl->cfg.mount_R_bv, R, sizeof(pl->cfg.mount_R_bv));
-    pl->lpf_initialized = false;          /* filter state was in the old frame */
-    pl->median_count = 0u;
-    imu_fusion_set_mount(fu, R);
-    if (pl->cal.valid) {                  /* keep the boot calibration valid for the new config */
-        pl->cal.config_crc32 = imu_config_crc32(&pl->cfg);
-        if (imu_pipeline_save_calibration(pl) != 0)
-            fprintf(stderr, "[mount] warning: could not re-save the calibration file\n");
-    }
-    if (mount_save(mount_path, R) != 0)
-        fprintf(stderr, "[mount] warning: could not write %s\n", mount_path);
-}
-
-/* Non-blocking: handle at most one control datagram from the dashboard host.
- *   IMUCTL MOUNT_DELTA r00 .. r22   R_bv <- delta * R_bv (rotation, vehicle frame)
- *   IMUCTL MOUNT_RESET              R_bv <- --mount preset without trim
- *   IMUCTL GET_MOUNT                report R_bv
- *   IMUCTL SFLP_RESET               restart the on-chip SFLP
- * Replies "IMUACK <cmd> OK|ERR ..." to the sender. Packets from any address
- * other than --host are ignored. */
 static void poll_control(int sock, const struct sockaddr_in *peer, int imu_fd, imu_pipeline_t *pl,
                          imu_fusion_t *fu, float preset[3][3], const char *mount_path) {
     char buf[512], reply[512];
@@ -392,36 +312,7 @@ static void poll_control(int sock, const struct sockaddr_in *peer, int imu_fd, i
     if (n <= 0 || from.sin_addr.s_addr != peer->sin_addr.s_addr) return;
     buf[n] = '\0';
     if (strncmp(buf, "IMUCTL ", 7) != 0) return;
-    const char *cmd = buf + 7;
-
-    if (strncmp(cmd, "MOUNT_DELTA", 11) == 0) {
-        float D[3][3], Rn[3][3];
-        int r, c, k;
-        if (sscanf(cmd + 11, "%f %f %f %f %f %f %f %f %f", &D[0][0], &D[0][1], &D[0][2], &D[1][0],
-                   &D[1][1], &D[1][2], &D[2][0], &D[2][1], &D[2][2]) != 9 || !rot_valid(D)) {
-            snprintf(reply, sizeof(reply), "IMUACK MOUNT_DELTA ERR not a rotation matrix");
-        } else {
-            for (r = 0; r < 3; r++)
-                for (c = 0; c < 3; c++) {
-                    Rn[r][c] = 0.0f;
-                    for (k = 0; k < 3; k++) Rn[r][c] += D[r][k] * pl->cfg.mount_R_bv[k][c];
-                }
-            apply_mount(pl, fu, Rn, mount_path);
-            fmt_mount(reply, sizeof(reply), "IMUACK MOUNT_DELTA OK", Rn);
-            fprintf(stderr, "[mount] calibration applied and saved to %s\n", mount_path);
-        }
-    } else if (strncmp(cmd, "MOUNT_RESET", 11) == 0) {
-        apply_mount(pl, fu, preset, mount_path);
-        fmt_mount(reply, sizeof(reply), "IMUACK MOUNT_RESET OK", preset);
-        fprintf(stderr, "[mount] reset to the --mount preset\n");
-    } else if (strncmp(cmd, "GET_MOUNT", 9) == 0) {
-        fmt_mount(reply, sizeof(reply), "IMUACK GET_MOUNT OK", pl->cfg.mount_R_bv);
-    } else if (strncmp(cmd, "SFLP_RESET", 10) == 0) {
-        int rc = ioctl(imu_fd, MPU6050_IOC_SFLP_RESET);
-        snprintf(reply, sizeof(reply), "IMUACK SFLP_RESET %s", rc == 0 ? "OK" : strerror(errno));
-    } else {
-        snprintf(reply, sizeof(reply), "IMUACK ERR unknown command");
-    }
+    imu_mount_handle_ctl(buf + 7, pl, fu, preset, mount_path, sflp_reset_ioctl, &imu_fd, reply, sizeof(reply));
     sendto(sock, reply, strlen(reply), 0, (struct sockaddr *)&from, fl);
 }
 
@@ -632,10 +523,10 @@ int main( int argc, char **argv ) {
     /* Sensor -> vehicle FLU. The config CRC covers the mount, so changing it
      * forces a fresh boot calibration instead of reusing a stale one. */
     float mount_preset[3][3];
-    build_mount(mount_frd, 0.0f, 0.0f, 0.0f, mount_preset);
-    build_mount(mount_frd, mount_rpy[0], mount_rpy[1], mount_rpy[2], cfg.mount_R_bv);
+    imu_mount_build(mount_frd, 0.0f, 0.0f, 0.0f, mount_preset);
+    imu_mount_build(mount_frd, mount_rpy[0], mount_rpy[1], mount_rpy[2], cfg.mount_R_bv);
     if (!mount_cli) {
-        int mrc = mount_load(mount_path, cfg.mount_R_bv);
+        int mrc = imu_mount_load(mount_path, cfg.mount_R_bv);
         if (mrc == 0)
             fprintf(stderr, "[imu_streamer] mount loaded from %s (dashboard calibration)\n", mount_path);
         else if (mrc != -ENOENT)
