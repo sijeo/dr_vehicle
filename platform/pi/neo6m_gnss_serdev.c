@@ -41,6 +41,19 @@
 #define RX_RING_SIZE 2048
 #define NMEA_PARSE_QUEUE_MAX 32
 
+/* UART baud rate. The NEO-6M defaults to 9600, but the TAU1204 fitted on
+ * this board defaults to a higher rate; at the wrong rate every sentence
+ * fails its checksum and have_fix never becomes 1. 0 = auto-detect. */
+static unsigned int baud;
+module_param(baud, uint, 0444);
+MODULE_PARM_DESC(baud, "UART baud rate, 0 = auto-detect (default)");
+
+static const unsigned int neo6m_baud_candidates[] = {
+    9600, 115200, 38400, 57600, 19200, 230400, 460800, 4800
+};
+#define NEO6M_BAUD_CHECK_MS   2000   /* evaluate one candidate per period */
+#define NEO6M_BAUD_LOST_CHECKS 5     /* re-scan after 10 s without valid NMEA */
+
 /**
  * struct nmea_line - one completed NMEA sentence waiting to be parsed.
  *
@@ -414,6 +427,16 @@ struct neo6m_priv {
 
     /* sysfs kobj */
     struct kobject *kobj;
+
+    /* Baud detection + raw-input diagnostics */
+    struct delayed_work baud_work;
+    unsigned int cur_baud;
+    unsigned int baud_idx;
+    bool baud_locked;
+    unsigned int quiet_checks;
+    u32 last_good_lines;
+    u32 rx_bytes;                         /* raw bytes from the UART */
+    char last_line[NMEA_MAX_LINE];        /* last '$' line received (protected by lock) */
 };
 
 static struct of_device_id neo6m_of_match[] = {
@@ -883,8 +906,10 @@ static void neo6m_parse_workfn(struct work_struct *w)
 static int neo6m_receive( struct serdev_device *serdev, const unsigned char *buf, size_t count)
 {
     struct neo6m_priv *priv = serdev_device_get_drvdata(serdev);
+    unsigned long flags;
     size_t i;
 
+    WRITE_ONCE(priv->rx_bytes, priv->rx_bytes + (u32)count);
     for (i = 0; i < count; i++)
     {
         char c = buf[i];
@@ -899,6 +924,10 @@ static int neo6m_receive( struct serdev_device *serdev, const unsigned char *buf
             {
                 /* Valid line, push for parsing */
                 neo6m_push_line_for_parse(priv, priv->line, priv->line_len);
+                spin_lock_irqsave(&priv->lock, flags);
+                memcpy(priv->last_line, priv->line, priv->line_len);
+                priv->last_line[priv->line_len] = '\0';
+                spin_unlock_irqrestore(&priv->lock, flags);
             }
             priv->line_len = 0;
             continue;
@@ -926,6 +955,83 @@ static const struct serdev_device_ops neo6m_serdev_ops = {
     .receive_buf = neo6m_receive,
     .write_wakeup = neo6m_write_wakeup,
 };
+
+/************** baud-rate detection ******************/
+
+static void neo6m_set_baud(struct neo6m_priv *p, unsigned int rate)
+{
+    unsigned int got = serdev_device_set_baudrate(p->serdev, rate);
+    p->cur_baud = got ? got : rate;
+    p->line_len = 0;                      /* drop any half line from the old rate */
+}
+
+/* Every NEO6M_BAUD_CHECK_MS: if checksum-valid sentences arrived, keep the
+ * rate; otherwise (auto mode) try the next candidate. */
+static void neo6m_baud_workfn(struct work_struct *w)
+{
+    struct neo6m_priv *p = container_of(to_delayed_work(w), struct neo6m_priv, baud_work);
+    unsigned long flags;
+    u32 good;
+
+    spin_lock_irqsave(&p->lock, flags);
+    good = p->nmea_rx_lines - p->nmea_bad_checksum;
+    spin_unlock_irqrestore(&p->lock, flags);
+
+    if (good != p->last_good_lines) {
+        p->last_good_lines = good;
+        p->quiet_checks = 0;
+        if (!p->baud_locked) {
+            p->baud_locked = true;
+            dev_info(p->dev, "NMEA detected at %u baud\n", p->cur_baud);
+        }
+    } else if (++p->quiet_checks >= (p->baud_locked ? NEO6M_BAUD_LOST_CHECKS : 1)) {
+        if (p->baud_locked)
+            dev_warn(p->dev, "no valid NMEA for %u s at %u baud - re-scanning\n",
+                     NEO6M_BAUD_LOST_CHECKS * NEO6M_BAUD_CHECK_MS / 1000, p->cur_baud);
+        p->baud_locked = false;
+        p->quiet_checks = 0;
+        p->baud_idx = (p->baud_idx + 1) % ARRAY_SIZE(neo6m_baud_candidates);
+        if (p->baud_idx == 0)
+            dev_warn(p->dev, "no valid NMEA at any baud rate (rx_bytes=%u) - check wiring, "
+                     "power and that the receiver outputs NMEA\n", READ_ONCE(p->rx_bytes));
+        neo6m_set_baud(p, neo6m_baud_candidates[p->baud_idx]);
+        dev_dbg(p->dev, "trying %u baud\n", p->cur_baud);
+    }
+    schedule_delayed_work(&p->baud_work, msecs_to_jiffies(NEO6M_BAUD_CHECK_MS));
+}
+
+static ssize_t show_baud(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    struct neo6m_priv *p = dev_get_drvdata(dev);
+    return scnprintf(buf, PAGE_SIZE, "%u %s\n", p->cur_baud,
+                     baud ? "fixed" : (p->baud_locked ? "auto-locked" : "auto-scanning"));
+}
+static DEVICE_ATTR(baud, 0444, show_baud, NULL);
+
+static ssize_t show_rx_bytes(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    struct neo6m_priv *p = dev_get_drvdata(dev);
+    return scnprintf(buf, PAGE_SIZE, "%u\n", READ_ONCE(p->rx_bytes));
+}
+static DEVICE_ATTR(rx_bytes, 0444, show_rx_bytes, NULL);
+
+static ssize_t show_last_line(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    struct neo6m_priv *p = dev_get_drvdata(dev);
+    unsigned long flags;
+    char line[NMEA_MAX_LINE];
+    size_t i;
+
+    spin_lock_irqsave(&p->lock, flags);
+    memcpy(line, p->last_line, sizeof(line));
+    spin_unlock_irqrestore(&p->lock, flags);
+    line[sizeof(line) - 1] = '\0';
+    for (i = 0; line[i]; i++)             /* garbage at a wrong baud rate: keep it printable */
+        if (line[i] < 0x20 || line[i] > 0x7e)
+            line[i] = '?';
+    return scnprintf(buf, PAGE_SIZE, "%s\n", line);
+}
+static DEVICE_ATTR(last_line, 0444, show_last_line, NULL);
 
 /**************sysfs******************/
 
@@ -1235,6 +1341,10 @@ static struct attribute *neo6m_attrs[] = {
     &dev_attr_pos_update_count.attr,
     &dev_attr_vel_update_count.attr,
     &dev_attr_parser_stats.attr,
+    /* baud detection / raw input */
+    &dev_attr_baud.attr,
+    &dev_attr_rx_bytes.attr,
+    &dev_attr_last_line.attr,
     NULL,
 };
 
@@ -1362,12 +1472,18 @@ static int neo6m_probe(struct serdev_device *serdev)
         dev_err(dev, "Failed to open serdev device\n");
         return ret; 
     }
-    ret = serdev_device_set_baudrate(serdev, 9600);
+    /* Baud: module parameter, else auto-detection starting at 9600 (see neo6m_baud_workfn) */
+    INIT_DELAYED_WORK(&p->baud_work, neo6m_baud_workfn);
+    p->baud_idx = 0;
+    p->cur_baud = baud ? baud : neo6m_baud_candidates[0];
+    ret = serdev_device_set_baudrate(serdev, p->cur_baud);
     if (ret == 0)
-    {               
+    {
         dev_err(dev, "Failed to set baudrate\n");
+        ret = -EINVAL;                    /* was 0: probe "succeeded" without a UART */
         goto err_close;
     }
+    p->cur_baud = ret;
     serdev_device_set_flow_control(serdev, false);
     /* 8N1 is default */
 
@@ -1407,7 +1523,10 @@ static int neo6m_probe(struct serdev_device *serdev)
         dev_err(dev, "Failed to create sysfs group\n");
         goto err_dev_destroy;
     }
-    dev_info(dev, "NEO-6M GNSS driver probed and ready @9600 8N1\n");
+    if (!baud)
+        schedule_delayed_work(&p->baud_work, msecs_to_jiffies(NEO6M_BAUD_CHECK_MS));
+    dev_info(dev, "GNSS driver ready, UART %u 8N1 (%s)\n", p->cur_baud,
+             baud ? "fixed by module parameter" : "auto-detecting");
     /* Printed so a userspace/module header mismatch can be spotted in dmesg. */
     dev_info(dev, "ioctl ABI: GET_FIX=0x%08lx (%zu B)  GET_FIX_V2=0x%08lx (%zu B)\n",
              (unsigned long)NEO6M_GNSS_IOC_GET_FIX, sizeof(struct neo6m_gnss_fix),
@@ -1443,8 +1562,9 @@ static void neo6m_remove(struct serdev_device *serdev)
     unregister_chrdev_region(p->devt, 1);
     class_destroy(p->cls);
 
-    /* Stop the UART feed first, then wait for the worker to drain what it
-     * picked up before close, then free anything left in the queue. */
+    /* Stop baud detection and the UART feed first, then wait for the worker
+     * to drain what it picked up before close, then free anything left. */
+    cancel_delayed_work_sync(&p->baud_work);
     serdev_device_close(serdev);
     cancel_work_sync(&p->parse_work);
 
