@@ -39,23 +39,23 @@ app_v4: $(DR_APP_SRCS)
 	$(CC) --sysroot=$(SYSROOT) -std=gnu99 -O2 -Wall -Wextra -I. -Itest_app -pthread \
 		-o dr_dead_reckoning_app $(DR_APP_SRCS) -lm
 
-driver_test:
-	$(MAKE) -C test_app/imu_streamer
+test_neo6m: test_app/test_neo6m_gnss_serdev.c
+	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -I$(CORE_DIR) -o test_neo6m_gnss_serdev $< $(CORE_SRCS) -lm -lpthread
 
 deploy:
-	scp *.ko sijeo@10.197.87.7:/home/sijeo/dr_vehicle/
+	scp *.ko sijeo@10.81.69.7:/home/sijeo/dr_vehicle/
 
 deploy_app:
-	scp dr_dead_reckoning_app sijeo@192.168.68.104:/home/sijeo/dr_vehicle/
+	scp dr_dead_reckoning_app sijeo@10.81.69.7:/home/sijeo/dr_vehicle/
 
 deploy_app_2:
-	scp dr_dead_reckoning_app_ins15 sijeo@192.168.68.104:/home/sijeo/dr_vehicle/
+	scp dr_dead_reckoning_app_ins15 sijeo@10.81.69.7:/home/sijeo/dr_vehicle/
 	
 deploy_test:
-	scp test_app/imu_streamer sijeo@10.197.87.7:/home/sijeo/dr_vehicle/
+	scp test_app/imu_streamer sijeo@10.81.69.7:/home/sijeo/dr_vehicle/
 
 # DR app + loader script + systemd unit (PI_HOST=user@ip to override)
-PI_HOST ?= sijeo@10.197.87.7
+PI_HOST ?= sijeo@10.81.69.7
 deploy_dr:
 	scp dr_dead_reckoning_app load_dr_stack.sh dr_app.service $(PI_HOST):/home/sijeo/dr_vehicle/
 
