@@ -250,7 +250,7 @@ For basic NMEA data reception, you only need:
 3. **TX** (NEO-6M) → **RX** (Pi)
 
 ### UART Configuration
-The NEO-6M uses **9600 baud, 8N1** by default, connected to Raspberry Pi's primary UART (UART0).
+The NEO-6M uses **9600 baud, 8N1** by default (the TAU1204 on the current board uses a different rate; the driver auto-detects it), connected to Raspberry Pi's primary UART (UART0, which needs `dtoverlay=disable-bt` on a Pi 3).
 Remove serial console from /boot/cmdline.txt (no console=ttyAMA0,...).
 
 Device Tree should bind to uart0:
@@ -467,4 +467,17 @@ Best validated with real outage test data on the ISM330.
 4. **Initial P₀ bias terms** (lines 879–880) — reflect tighter bias bounds
 5. **Q inflation tiers** (lines 110–113) — optional, tune empirically
 
-** 'In the config.txt of the /boot/firmare/ directory of raspberry pi, we need to make sure the dtoverlay=neo6m-serdev, dtoverlay=mpu6050-rpi3-b-overlay, enable-uart=1, dtoverlay=disable-ble is added '
+**In `/boot/firmware/config.txt` (or `/boot/config.txt`) add exactly** (2026-11 corrected; the
+earlier note had `enable-uart=1` and `dtoverlay=disable-ble`, which the firmware silently ignores):
+
+```
+enable_uart=1
+dtoverlay=disable-bt          # Pi 3: give the PL011 (uart0) to GPIO14/15 instead of Bluetooth
+dtoverlay=neo6m-serdev
+dtoverlay=mpu6050-rpi3-b-overlay
+dtparam=i2c_arm_baudrate=400000
+gpio=26=ip,pu                 # DR app push button
+```
+
+Then `sudo systemctl disable hciuart`, remove `console=serial0,...` from `cmdline.txt`, and reboot.
+`test_app/gnss_baud_probe.py` checks all of this and finds the GNSS baud rate.

@@ -49,7 +49,7 @@ module_param(baud, uint, 0444);
 MODULE_PARM_DESC(baud, "UART baud rate, 0 = auto-detect (default)");
 
 static const unsigned int neo6m_baud_candidates[] = {
-    9600, 115200, 38400, 57600, 19200, 230400, 460800, 4800
+    9600, 115200, 38400, 57600, 19200, 230400, 460800, 921600, 4800
 };
 #define NEO6M_BAUD_CHECK_MS   2000   /* evaluate one candidate per period */
 #define NEO6M_BAUD_LOST_CHECKS 5     /* re-scan after 10 s without valid NMEA */
