@@ -362,7 +362,18 @@ static void *gnss_thread(void *arg) {
     A->gnss_dev_ok = true;
     {
         struct neo6m_gnss_fix_v2 p;
+        struct neo6m_gnss_fix p1;
         if (ioctl(fd, NEO6M_GNSS_IOC_GET_FIX_V2, &p) != 0 && errno == ENOTTY) use_v2 = false;
+        if (!use_v2 && ioctl(fd, NEO6M_GNSS_IOC_GET_FIX, &p1) != 0 && errno == ENOTTY) {
+            /* Neither number is known: the loaded .ko was built from another
+             * neo6m_gnss_ioctl.h (the numbers encode the struct sizes). */
+            dbg(A, "GNSS: FATAL ioctl mismatch — %s rejects GET_FIX=0x%08lx (%zu B) and GET_FIX_V2=0x%08lx (%zu B). "
+                   "Rebuild and reload neo6m_gnss_serdev.ko from this source tree (dmesg shows the numbers it expects).",
+                A->o.gnss_dev, (unsigned long)NEO6M_GNSS_IOC_GET_FIX, sizeof(struct neo6m_gnss_fix),
+                (unsigned long)NEO6M_GNSS_IOC_GET_FIX_V2, sizeof(struct neo6m_gnss_fix_v2));
+            close(fd);
+            return NULL;
+        }
         dbg(A, "GNSS: %s ioctl", use_v2 ? "v2 (sequence counters)" : "v1 (UTC change detection)");
     }
     while (!A->stop) {

@@ -1285,6 +1285,16 @@ static long neo6m_chr_ioctl(struct file *file, unsigned int cmd, unsigned long a
         return 0;
     }
 
+    /* Same magic/nr but a different size field means userspace was built
+     * with another version of neo6m_gnss_ioctl.h than this module. */
+    if (_IOC_TYPE(cmd) == NEO6M_GNSS_IOC_MAGIC)
+        dev_warn_ratelimited(p->dev,
+            "ioctl 0x%08x (nr %u, size %u) not recognised: this module expects GET_FIX=0x%08lx "
+            "(%zu B) / GET_FIX_V2=0x%08lx (%zu B) — rebuild the module and the app from the same "
+            "neo6m_gnss_ioctl.h\n",
+            cmd, _IOC_NR(cmd), _IOC_SIZE(cmd),
+            (unsigned long)NEO6M_GNSS_IOC_GET_FIX, sizeof(struct neo6m_gnss_fix),
+            (unsigned long)NEO6M_GNSS_IOC_GET_FIX_V2, sizeof(struct neo6m_gnss_fix_v2));
     return -ENOTTY;
 }
 
@@ -1398,6 +1408,10 @@ static int neo6m_probe(struct serdev_device *serdev)
         goto err_dev_destroy;
     }
     dev_info(dev, "NEO-6M GNSS driver probed and ready @9600 8N1\n");
+    /* Printed so a userspace/module header mismatch can be spotted in dmesg. */
+    dev_info(dev, "ioctl ABI: GET_FIX=0x%08lx (%zu B)  GET_FIX_V2=0x%08lx (%zu B)\n",
+             (unsigned long)NEO6M_GNSS_IOC_GET_FIX, sizeof(struct neo6m_gnss_fix),
+             (unsigned long)NEO6M_GNSS_IOC_GET_FIX_V2, sizeof(struct neo6m_gnss_fix_v2));
     return 0;
 
 err_dev_destroy:

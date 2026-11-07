@@ -252,6 +252,7 @@ First drives (a second person handles the laptop/notes; never touch the button w
 | Symptom | Likely cause / fix |
 |---|---|
 | LED 5 Hz forever, `IMU: cannot open` | driver not loaded / wrong overlay; `dmesg`, `ls /dev/mpu6050-0` |
+| stays WAIT_GNSS although the receiver has a fix; debug log `GNSS: FATAL ioctl mismatch`; `test_neo6m_gnss_serdev` says "Inappropriate ioctl for device" | the loaded `neo6m_gnss_serdev.ko` was built from an older `neo6m_gnss_ioctl.h` (the ioctl numbers encode the struct sizes). Rebuild it (`make` in `platform/pi` now builds both drivers), `sudo rmmod neo6m_gnss_serdev && sudo insmod neo6m_gnss_serdev.ko`; `dmesg \| grep "ioctl ABI"` must show `GET_FIX=0x80264e01`, `GET_FIX_V2=0x80424e02` |
 | never leaves "short flash" | no GNSS fix (antenna, sky view), or the vehicle has not exceeded 15 km/h yet |
 | `fifo_overrun` / `driver_dropped` rising | I²C not at 400 kHz; or keep `--sflp-mask 4` (default) |
 | heading wrong by ~180° after reversing out at start | heading came from the saved state but the vehicle was moved while off; it corrects at the first drive > 15 km/h |

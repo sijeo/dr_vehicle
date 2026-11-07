@@ -1,4 +1,6 @@
-obj-m := mpu6050_char.o
+# Both drivers must be rebuilt whenever their *_ioctl.h header changes: the
+# ioctl numbers encode the struct sizes, so a stale .ko answers ENOTTY.
+obj-m := mpu6050_char.o neo6m_gnss_serdev.o
 
 KDIR := $(HOME)/rpi_work/kernel_rpi/linux
 CROSS_COMPILE ?= arm-linux-gnueabihf-
